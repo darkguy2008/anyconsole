@@ -9,6 +9,6 @@ exec qemu-system-x86_64 \
   -device ich9-ahci,id=ahci -drive file=disk.img,format=raw,if=none,id=d0 -device ide-hd,drive=d0,bus=ahci.0 \
   -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$API_PORT-:$API_PORT,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22 \
   -device e1000e,netdev=net0,id=$NIC \
-  -vga std -vnc :0 \
+  -vga none -device virtio-gpu-pci -vnc :0 \
   -monitor unix:monitor.sock,server,nowait \
   -serial file:boot.log

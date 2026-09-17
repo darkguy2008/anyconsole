@@ -1,0 +1,12 @@
+#!/bin/sh
+. /etc/profile
+export XDG_RUNTIME_DIR=/run/user
+export LIBSEAT_BACKEND=builtin
+export WLR_RENDERER=pixman
+export LIBGL_ALWAYS_SOFTWARE=1
+export LIBGL_DRIVERS_PATH=/lib
+export GBM_BACKENDS_PATH=/lib
+export WLR_LIBINPUT_NO_DEVICES=1
+mkdir -p "$XDG_RUNTIME_DIR"
+exec >>/data/kiosk.log 2>&1
+exec cage -- /opt/anyconsole/session

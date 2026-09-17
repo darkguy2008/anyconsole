@@ -15,6 +15,7 @@ cp /boot/vmlinuz-lts $STAGE/boot/kernel
 cp --parents -t $STAGE "/lib/modules/$KERNEL_VERSION/modules.builtin"
 for module in $MODULES; do modprobe --show-depends "$module"; done |
   awk '$1 == "insmod" { print $2 }' | sort -u | xargs cp --parents -t $STAGE
+find "$STAGE/lib/modules/$KERNEL_VERSION" -name '*.ko.gz' -exec gunzip -f {} +
 depmod -b "$PWD/$STAGE" "$KERNEL_VERSION"
 docker run --rm -e VERSION="$VERSION" -v "$PWD:/src" debian:trixie sh /src/vm/mkroot.in
 rm -rf $STAGE "vm/rel/$VERSION"
