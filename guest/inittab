@@ -3,6 +3,6 @@ tty1::respawn:/opt/anyconsole/kiosk
 ttyS0::respawn:-/bin/sh
 ::respawn:/bin/dhcpcd -B -4 eth0
 ::respawn:/bin/dropbear -F -R -E
-::respawn:/bin/sh -c '. /etc/otad.conf; exec /bin/httpd -f -p $API_PORT -h /www'
+::respawn:/bin/sh -c '. /etc/anyconsole.conf; exec /bin/httpd -f -p $API_PORT -h /www'
 ::ctrlaltdel:/bin/reboot
 ::shutdown:/bin/umount -a -r

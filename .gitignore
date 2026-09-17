@@ -1,10 +1,4 @@
-vm/disk.img
-vm/efivars.fd
-vm/boot.log
-vm/rootfs.tar.gz
-vm/stage/
-vm/rel/
-vm/cache/
-vm/monitor.sock
+build/out/
+rel/
 .DS_Store
 app/feature-*

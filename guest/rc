@@ -1,5 +1,5 @@
 #!/bin/sh
-. /etc/otad.conf
+. /etc/anyconsole.conf
 mount -t proc proc /proc
 mount -t ramfs dev /dev
 mdev -s
