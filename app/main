@@ -1,6 +1,8 @@
 #!/bin/sh
 export TERM=linux
 clear
+. /etc/anyconsole-release
+echo "anyconsole app v$VERSION"
 echo "anyconsole slot $(otad slot)  boot $(cat /data/boots)"
 for program in /opt/anyconsole/*; do
   [ -x "$program" ] && [ "$program" != /opt/anyconsole/main ] && "$program"
