@@ -1,0 +1,22 @@
+#!/bin/sh
+. /etc/otad.conf
+mount -t proc proc /proc
+mount -t ramfs dev /dev
+mdev -s
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts
+mount -t ramfs ramfs /run
+mount -o remount,rw /
+modprobe -a $MODULES
+ip link set eth0 up
+udhcpc -i eth0 -b -q -s /usr/share/udhcpc/default.script &
+mount -t ext4 "$(findfs LABEL=data)" /data
+mount -t vfat -o iocharset=ascii,codepage=437 "$(findfs LABEL=ESP)" /boot/efi
+mkdir -p /data/root /data/ota
+otad mark-good
+read -r boot_count 2>/dev/null < /data/boots || boot_count=0
+boot_count=$((boot_count + 1))
+echo "$boot_count" > /data/boots
+. /etc/anyconsole-release
+echo "anyconsole $VERSION slot=$(otad slot) boots=$boot_count" | tee /dev/tty1 > /dev/ttyS0
+setsid otad watch >> /data/otad.log 2>&1 &

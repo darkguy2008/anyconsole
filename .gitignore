@@ -1,0 +1,10 @@
+vm/disk.img
+vm/efivars.fd
+vm/boot.log
+vm/rootfs.tar.gz
+vm/stage/
+vm/rel/
+vm/cache/
+vm/monitor.sock
+.DS_Store
+app/feature-*

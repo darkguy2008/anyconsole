@@ -1,0 +1,58 @@
+#!/bin/sh
+. /etc/otad.conf
+. /etc/anyconsole-release
+STATE_DIR=/data/ota
+[ -f $STATE_DIR/state ] && . $STATE_DIR/state
+STATE=${STATE:-none}
+STAGED_VERSION=${STAGED_VERSION:-0}
+AVAILABLE_SINCE=${AVAILABLE_SINCE:-0}
+
+SLOT=$([ "$(awk '$2 == "/" { print $1 }' /proc/mounts)" = "$(findfs LABEL=root-a)" ] && echo a || echo b)
+INACTIVE=$([ "$SLOT" = a ] && echo b || echo a)
+
+announce() { echo "ota: $*" | tee /dev/tty1 2>/dev/null > /dev/ttyS0; }
+
+remember() {
+  printf 'STATE=%s\nSTAGED_VERSION=%s\nAVAILABLE_SINCE=%s\n' "$1" "$2" "${3:-0}" > $STATE_DIR/state
+  . $STATE_DIR/state
+}
+
+arm_boot() { grub-editenv "$GRUBENV" set slot="$1" prev="$2" tries=1; }
+
+sync_release() {
+  announce "syncing v$REL to slot $INACTIVE"
+  mount -t ext4 "$(findfs "LABEL=root-$INACTIVE")" /mnt || return 1
+  rsync -ac --numeric-ids --delete --delay-updates --stats \
+    "rsync://$OTA_HOST/rel/$REL/" /mnt/ > $STATE_DIR/rsync.log 2>&1 ||
+    { umount /mnt; announce "sync failed"; return 1; }
+  umount /mnt
+  remember synced "$REL"
+  announce "v$REL synced to slot $INACTIVE, not yet active"
+}
+
+stage_release() {
+  arm_boot "$INACTIVE" "$SLOT"
+  remember staged "$REL"
+  announce "v$REL staged on slot $INACTIVE, applies on restart"
+}
+
+poll() {
+  rsync -q "rsync://$OTA_HOST/rel/index" $STATE_DIR/index 2>/dev/null || return 0
+  . /etc/otad.conf
+  . $STATE_DIR/index
+  [ "$REL" != "$VERSION" ] || return 0
+  if [ "$STAGED_VERSION" != "$REL" ]; then
+    remember available "$REL" "$(date +%s)"
+    announce "v$REL available, sync in ${SYNC_DELAY}s"
+  fi
+  [ "$STATE" = available ] && [ $(( $(date +%s) - AVAILABLE_SINCE )) -ge "$SYNC_DELAY" ] && sync_release
+  [ "$STATE" = synced ] && [ "$AUTO_INSTALL" = 1 ] && stage_release
+  [ "$STATE" = staged ] && [ "$AUTO_REBOOT" = 1 ] && { announce restarting; reboot; }
+  return 0
+}
+
+case "${1:-}" in
+  slot) echo "$SLOT" ;;
+  mark-good) arm_boot "$SLOT" "$SLOT" ;;
+  watch) while :; do poll; sleep "$OTA_INTERVAL"; done ;;
+esac

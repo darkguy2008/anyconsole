@@ -1,0 +1,5 @@
+::sysinit:/etc/rc
+tty1::respawn:/opt/anyconsole/main
+ttyS0::respawn:-/bin/sh
+::ctrlaltdel:/bin/reboot
+::shutdown:/bin/umount -a -r
