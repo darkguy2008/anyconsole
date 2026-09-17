@@ -1,23 +1,33 @@
 #!/bin/sh
 set -eux
-BINARIES="/bin/busybox /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv"
+BINARIES="/bin/busybox /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd"
 apt-get update
-apt-get install -y --no-install-recommends busybox btop ncurses-base rsync grub-common pax-utils
+apt-get install -y --no-install-recommends busybox btop ncurses-base rsync grub-common pax-utils dropbear-bin dhcpcd-base
 ROOTFS=/rootfs
 mkdir -p $ROOTFS/etc $ROOTFS/proc $ROOTFS/sys $ROOTFS/dev $ROOTFS/run $ROOTFS/tmp \
-  $ROOTFS/mnt $ROOTFS/data $ROOTFS/boot/efi $ROOTFS/usr/share/terminfo/l $ROOTFS/usr/share/udhcpc $ROOTFS/opt
+  $ROOTFS/mnt $ROOTFS/data $ROOTFS/boot/efi $ROOTFS/usr/share/terminfo/l $ROOTFS/usr/lib $ROOTFS/var/lib \
+  $ROOTFS/www/cgi-bin $ROOTFS/opt
 lddtree --copy-to-tree $ROOTFS --bindir /bin --libdir /lib $BINARIES
 busybox --install -s $ROOTFS/bin
 ln -s bin $ROOTFS/sbin; ln -s ../bin $ROOTFS/usr/bin; ln -s ../bin $ROOTFS/usr/sbin; ln -s lib $ROOTFS/lib64
 ln -s /data/root $ROOTFS/root
+ln -s /data/dropbear $ROOTFS/etc/dropbear
+ln -s /data/dhcpcd $ROOTFS/var/lib/dhcpcd
+cp -a /usr/lib/dhcpcd $ROOTFS/usr/lib/
+cp /etc/dhcpcd.conf $ROOTFS/etc/
+printf 'root:x:0:0:root:/root:/bin/sh\ndhcpcd:x:100:65534::/:/bin/false\n' > $ROOTFS/etc/passwd
+. /src/vm/guest/otad.conf
+printf 'root:%s:::::::\n' "$(busybox mkpasswd -m sha512 "$CONSOLE_PASSWORD")" > $ROOTFS/etc/shadow
+chmod 600 $ROOTFS/etc/shadow
+printf 'root:x:0:\nnogroup:x:65534:\n' > $ROOTFS/etc/group
 cp /usr/share/terminfo/l/linux $ROOTFS/usr/share/terminfo/l/
 printf 'export LANG=C.UTF-8\nexport TERM=linux\nexport PATH=/bin:/opt/anyconsole\n' > $ROOTFS/etc/profile
 cp /src/vm/guest/rc /src/vm/guest/inittab /src/vm/guest/otad.conf $ROOTFS/etc/
 cp /src/vm/guest/otad $ROOTFS/bin/
-cp /src/vm/guest/udhcpc.script $ROOTFS/usr/share/udhcpc/default.script
+cp /src/vm/guest/api $ROOTFS/www/cgi-bin/
 cp -a /src/app $ROOTFS/opt/anyconsole
 printf 'VERSION=%s\n' "$VERSION" > $ROOTFS/etc/anyconsole-release
-chmod +x $ROOTFS/etc/rc $ROOTFS/bin/otad $ROOTFS/usr/share/udhcpc/default.script
+chmod +x $ROOTFS/etc/rc $ROOTFS/bin/otad $ROOTFS/www/cgi-bin/api
 cp -a /src/vm/stage/. $ROOTFS/
 mknod $ROOTFS/dev/console c 5 1
 mknod $ROOTFS/dev/null c 1 3

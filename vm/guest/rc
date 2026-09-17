@@ -4,15 +4,14 @@ mount -t proc proc /proc
 mount -t ramfs dev /dev
 mdev -s
 mkdir -p /dev/pts
-mount -t devpts devpts /dev/pts
+mount -t devpts -o ptmxmode=0666 devpts /dev/pts
+ln -sf pts/ptmx /dev/ptmx
 mount -t ramfs ramfs /run
 mount -o remount,rw /
 modprobe -a $MODULES
-ip link set eth0 up
-udhcpc -i eth0 -b -q -s /usr/share/udhcpc/default.script &
 mount -t ext4 "$(findfs LABEL=data)" /data
 mount -t vfat -o iocharset=ascii,codepage=437 "$(findfs LABEL=ESP)" /boot/efi
-mkdir -p /data/root /data/ota
+mkdir -p /data/root /data/ota /data/dhcpcd /data/dropbear
 otad mark-good
 read -r boot_count 2>/dev/null < /data/boots || boot_count=0
 boot_count=$((boot_count + 1))
