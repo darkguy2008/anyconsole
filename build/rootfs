@@ -2,7 +2,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 . guest/config
-. build/cache
+. build/apt-cache
 
 VERSION=$(cat VERSION)
 KERNEL_VERSION=$(basename /lib/modules/*-lts)
