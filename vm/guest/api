@@ -1,0 +1,20 @@
+#!/bin/sh
+. /etc/anyconsole-release
+STATE_DIR=/data/ota
+
+reply() { printf 'Status: %s\r\nContent-Type: application/json\r\n\r\n%s\n' "$1" "$2"; }
+
+status() {
+  [ -f $STATE_DIR/state ] && . $STATE_DIR/state
+  printf '{"version":%s,"slot":"%s","inactive_staged":%s,"ota":"%s","boots":%s,"address":"%s","uptime":%s}' \
+    "$VERSION" "$(otad slot)" "${STAGED_VERSION:-0}" "${STATE:-none}" "$(cat /data/boots)" \
+    "$(ip addr show eth0 | awk '$1 == "inet" { print $2 }')" "$(cut -d. -f1 /proc/uptime)"
+}
+
+case "$REQUEST_METHOD $PATH_INFO" in
+  "GET /status") reply 200 "$(status)" ;;
+  "POST /update") otad update && reply 200 "$(status)" || reply 409 "$(status)" ;;
+  "POST /reboot") reply 200 "$(status)"; exec 1>&-; reboot ;;
+  "POST /poweroff") reply 200 "$(status)"; exec 1>&-; poweroff ;;
+  *) reply 404 '{"error":"no such endpoint"}' ;;
+esac

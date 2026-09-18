@@ -2,6 +2,13 @@
 set -eu
 cd "$(dirname "$0")"
 INDEX=vm/rel/index
+. vm/guest/otad.conf
+
+if [ "${ANYCONSOLE_ONHOST:-}" != 1 ]; then
+  [ "${1:-}" = force ] || echo $(( $(cat VERSION) + 1 )) > VERSION
+  rsync -a --delete --exclude .git --exclude-from=.gitignore ./ "$DEPLOY_HOST:$DEPLOY_PATH/"
+  exec ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && ANYCONSOLE_ONHOST=1 ./deploy.sh $*"
+fi
 
 serve() {
   printf 'use chroot = no\nuid = root\ngid = root\n[rel]\npath = %s/vm/rel\nread only = yes\n' \
@@ -15,11 +22,8 @@ case "${1:-}" in
   *) mode= ;;
 esac
 
-if [ "${1:-}" = force ]; then
-  version=$(cat VERSION)
-else
-  version=$(( $(cat VERSION) + 1 ))
-  echo "$version" > VERSION
+version=$(cat VERSION)
+if [ "${1:-}" != force ]; then
   date -u > app/changelog
   printf '#!/bin/sh\necho "feature %s online"\n' "$version" > "app/feature-$version"
   chmod +x "app/feature-$version"

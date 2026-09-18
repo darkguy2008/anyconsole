@@ -1,3 +1,0 @@
-#!/bin/sh
-[ "$1" = bound ] || [ "$1" = renew ] || exit 0
-ip addr add "$ip/$mask" dev "$interface"

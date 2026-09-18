@@ -12,6 +12,13 @@ INACTIVE=$([ "$SLOT" = a ] && echo b || echo a)
 
 announce() { echo "ota: $*" | tee /dev/tty1 2>/dev/null > /dev/ttyS0; }
 
+lock() { exec 9>$STATE_DIR/lock; flock -n 9; }
+
+fetch() {
+  rsync -q "rsync://$OTA_HOST/rel/index" $STATE_DIR/index 2>/dev/null || return 1
+  . $STATE_DIR/index
+}
+
 remember() {
   printf 'STATE=%s\nSTAGED_VERSION=%s\nAVAILABLE_SINCE=%s\n' "$1" "$2" "${3:-0}" > $STATE_DIR/state
   . $STATE_DIR/state
@@ -37,10 +44,9 @@ stage_release() {
 }
 
 poll() {
-  rsync -q "rsync://$OTA_HOST/rel/index" $STATE_DIR/index 2>/dev/null || return 0
-  . /etc/otad.conf
-  . $STATE_DIR/index
+  fetch || return 0
   [ "$REL" != "$VERSION" ] || return 0
+  lock || return 0
   if [ "$STAGED_VERSION" != "$REL" ]; then
     remember available "$REL" "$(date +%s)"
     announce "v$REL available, sync in ${SYNC_DELAY}s"
@@ -53,6 +59,12 @@ poll() {
 
 case "${1:-}" in
   slot) echo "$SLOT" ;;
-  mark-good) arm_boot "$SLOT" "$SLOT" ;;
-  watch) while :; do poll; sleep "$OTA_INTERVAL"; done ;;
+  mark-good)
+    arm_boot "$SLOT" "$SLOT"
+    [ "$STAGED_VERSION" = "$VERSION" ] && remember installed "$VERSION" ;;
+  watch) while :; do (poll); sleep "$OTA_INTERVAL"; done ;;
+  update)
+    lock || exit 1
+    fetch || exit 1
+    [ "$REL" = "$VERSION" ] || { sync_release && stage_release; } ;;
 esac
