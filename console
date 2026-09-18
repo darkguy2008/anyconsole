@@ -13,7 +13,7 @@ case "${1:-status}" in
     api POST reboot ;;
   start) ssh "$DEPLOY_HOST" "setsid $DEPLOY_PATH/vm/run.sh >/dev/null 2>&1 &" ;;
   link) ssh "$DEPLOY_HOST" "echo set_link $NIC $2 | socat - UNIX-CONNECT:$DEPLOY_PATH/vm/monitor.sock" >/dev/null ;;
-  ssh) shift; exec sshpass -p "$CONSOLE_PASSWORD" ssh -o ProxyCommand="ssh $DEPLOY_HOST socat - TCP:127.0.0.1:$SSH_PORT" root@anyconsole "$@" ;;
+  ssh) shift; exec sshpass -p "$CONSOLE_PASSWORD" ssh -J "$DEPLOY_HOST" -p "$SSH_PORT" root@127.0.0.1 "$@" ;;
   log) ssh "$DEPLOY_HOST" "tail -n ${2:-40} $DEPLOY_PATH/vm/boot.log" ;;
   *) echo "usage: console [status|update|reboot|poweroff|push|start|link on|off|ssh|log]" >&2; exit 1 ;;
 esac
