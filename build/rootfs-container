@@ -59,7 +59,7 @@ configure_locale() {
 
 install_system() {
   cp /src/guest/rc /src/guest/inittab $ROOTFS/etc/
-  cp /src/config $ROOTFS/etc/anyconsole.conf
+  cp /src/guest/config $ROOTFS/etc/anyconsole.conf
   cp /src/guest/otad $ROOTFS/bin/
   cp /src/guest/api $ROOTFS/www/cgi-bin/
   printf 'VERSION=%s\n' "$VERSION" > $ROOTFS/etc/anyconsole-release
