@@ -1,0 +1,68 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+DISK_SIZE=${DISK_SIZE:-8G}
+ESP_MIB=512
+SLOT_MIB=2048
+MOUNT=/mnt/anyconsole
+DISK=build/out/disk.img
+ROOTFS=build/out/rootfs.tar.gz
+esp_end=$((1 + ESP_MIB))
+slot_a_end=$((esp_end + SLOT_MIB))
+slot_b_end=$((slot_a_end + SLOT_MIB))
+
+partition_disk() {
+  rm -f "$DISK"
+  truncate -s "$DISK_SIZE" "$DISK"
+  parted -s "$DISK" mklabel gpt \
+    mkpart ESP fat32 1MiB ${esp_end}MiB set 1 esp on \
+    mkpart root-a ext4 ${esp_end}MiB ${slot_a_end}MiB \
+    mkpart root-b ext4 ${slot_a_end}MiB ${slot_b_end}MiB \
+    mkpart data ext4 ${slot_b_end}MiB 100%
+  loop=$(losetup -fP --show "$DISK")
+  mkfs.vfat -F32 -n ESP "${loop}p1"
+  mkfs.ext4 -qF -L root-a "${loop}p2"
+  mkfs.ext4 -qF -L root-b "${loop}p3"
+  mkfs.ext4 -qF -L data "${loop}p4"
+}
+
+install_rootfs() {
+  mkdir -p "$MOUNT"
+  for slot in 2 3; do
+    mount "${loop}p$slot" "$MOUNT"
+    tar -C "$MOUNT" -xzf "$ROOTFS"
+    umount "$MOUNT"
+  done
+}
+
+install_bootloader() {
+  mount "${loop}p1" "$MOUNT"
+  mkdir -p "$MOUNT/EFI/BOOT" "$MOUNT/grub"
+  grub-mkimage -O x86_64-efi -p '(,gpt1)/grub' -o "$MOUNT/EFI/BOOT/BOOTX64.EFI" \
+    part_gpt ext2 fat normal linux search search_label test all_video gfxterm efi_gop loadenv
+  cat > "$MOUNT/grub/grub.cfg" <<'GRUB'
+set timeout=2
+load_env
+set target="$prev"
+if [ "$tries" = "1" ]; then
+  set target="$slot"
+  set tries=0
+  save_env tries
+fi
+menuentry "anyconsole (slot $target)" {
+  search --no-floppy --label "root-$target" --set=root
+  linux /boot/kernel console=tty0 console=ttyS0 rootfstype=ext4 rw root=LABEL=root-$target
+  initrd /boot/initramfs
+}
+GRUB
+  grub-editenv "$MOUNT/grub/grubenv" create
+  grub-editenv "$MOUNT/grub/grubenv" set slot=a prev=a tries=1
+  umount "$MOUNT"
+}
+
+sh build/rootfs
+partition_disk
+install_rootfs
+install_bootloader
+losetup -d "$loop"
+cp -f /usr/share/OVMF/OVMF_VARS.fd build/out/efivars.fd

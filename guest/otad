@@ -1,5 +1,5 @@
 #!/bin/sh
-. /etc/otad.conf
+. /etc/anyconsole.conf
 . /etc/anyconsole-release
 STATE_DIR=/data/ota
 [ -f $STATE_DIR/state ] && . $STATE_DIR/state
