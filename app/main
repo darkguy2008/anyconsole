@@ -1,5 +1,5 @@
 #!/bin/sh
-export TERM=linux
+. /etc/profile
 clear
 . /etc/anyconsole-release
 echo "anyconsole app v$VERSION"
