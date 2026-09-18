@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-. config
+. guest/config
 
 VERSION=$(cat VERSION)
 KERNEL_VERSION=$(basename /lib/modules/*-lts)

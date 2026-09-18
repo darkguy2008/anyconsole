@@ -2,6 +2,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 . config
+. guest/config
 exec qemu-system-x86_64 \
   -machine q35,accel=kvm -cpu host -smp 4 -m 4096 \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \

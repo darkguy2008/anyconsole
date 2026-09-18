@@ -2,6 +2,7 @@
 set -eu
 cd "$(dirname "$0")"
 . config
+. guest/config
 api() { ssh "$DEPLOY_HOST" curl -fsS -X "$1" "localhost:$API_PORT/cgi-bin/api/$2"; echo; }
 
 case "${1:-status}" in
