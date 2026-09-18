@@ -2,12 +2,14 @@
 set -eu
 cd "$(dirname "$0")/.."
 . guest/config
+. build/cache
 
 VERSION=$(cat VERSION)
 KERNEL_VERSION=$(basename /lib/modules/*-lts)
 STAGE=build/out/stage
 INITRAMFS_CACHE=build/out/cache/initramfs-$KERNEL_VERSION
 RELEASE=rel/$VERSION
+BASE_IMAGE=anyconsole-rootfs-base
 
 stage_kernel() {
   rm -rf "$STAGE"
@@ -23,16 +25,19 @@ stage_kernel() {
   depmod -b "$PWD/$STAGE" "$KERNEL_VERSION"
 }
 
-build_userspace() {
-  docker run --rm -e VERSION="$VERSION" -v "$PWD:/src" debian:trixie sh /src/build/rootfs-container
+build_base() {
+  ensure_apt_cache
+  docker build --network host --build-arg APT_PROXY="$APT_PROXY" -t "$BASE_IMAGE" - < build/base.Dockerfile
 }
 
-publish_release() {
-  rm -rf "$STAGE" "$RELEASE"
-  mkdir -p "$RELEASE"
-  tar -xzf build/out/rootfs.tar.gz -C "$RELEASE"
+build_userspace() {
+  rm -rf "$RELEASE"
+  mkdir -p "$RELEASE" build/out/cache/downloads
+  docker run --rm -e VERSION="$VERSION" -e DOWNLOAD_CACHE=/downloads \
+    -v "$PWD:/src" -v "$PWD/$RELEASE:/rootfs" -v "$PWD/build/out/cache/downloads:/downloads" \
+    "$BASE_IMAGE" sh /src/build/rootfs-container
 }
 
 stage_kernel
+build_base
 build_userspace
-publish_release

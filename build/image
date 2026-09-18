@@ -6,7 +6,7 @@ ESP_MIB=512
 SLOT_MIB=2048
 MOUNT=/mnt/anyconsole
 DISK=build/out/disk.img
-ROOTFS=build/out/rootfs.tar.gz
+RELEASE=rel/$(cat VERSION)
 esp_end=$((1 + ESP_MIB))
 slot_a_end=$((esp_end + SLOT_MIB))
 slot_b_end=$((slot_a_end + SLOT_MIB))
@@ -30,7 +30,7 @@ install_rootfs() {
   mkdir -p "$MOUNT"
   for slot in 2 3; do
     mount "${loop}p$slot" "$MOUNT"
-    tar -C "$MOUNT" -xzf "$ROOTFS"
+    cp -a "$RELEASE"/. "$MOUNT"/
     umount "$MOUNT"
   done
 }

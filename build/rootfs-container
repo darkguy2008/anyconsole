@@ -9,12 +9,6 @@ CORE_URL=https://buildbot.libretro.com/nightly/linux/x86_64/latest/fceumm_libret
 ROM_URL=https://shiru.untergrund.net/files/nes/alter_ego.zip
 . /src/config
 
-install_packages() {
-  apt-get update
-  apt-get install -y --no-install-recommends busybox btop ncurses-base rsync grub-common pax-utils dropbear-bin dhcpcd-base \
-    cage retroarch libgl1 libgl1-mesa-dri mesa-libgallium libglx-mesa0 libegl-mesa0 libgles2 xkb-data curl ca-certificates unzip
-}
-
 make_skeleton() {
   mkdir -p $ROOTFS/etc $ROOTFS/proc $ROOTFS/sys $ROOTFS/dev $ROOTFS/run $ROOTFS/tmp \
     $ROOTFS/mnt $ROOTFS/data $ROOTFS/boot/efi $ROOTFS/usr/share/terminfo/l $ROOTFS/usr/lib $ROOTFS/var/lib \
@@ -68,10 +62,10 @@ install_system() {
 install_app() {
   cp -a /src/app $ROOTFS/opt/anyconsole
   mkdir -p $ROOTFS/opt/anyconsole/cores $ROOTFS/opt/anyconsole/games
-  curl -fsSL "$CORE_URL" -o /tmp/core.zip
-  unzip -o /tmp/core.zip -d $ROOTFS/opt/anyconsole/cores
-  curl -fsSL "$ROM_URL" -o /tmp/rom.zip
-  unzip -o /tmp/rom.zip -d /tmp/rom
+  curl -fsSL -R -z "$DOWNLOAD_CACHE/core.zip" -o "$DOWNLOAD_CACHE/core.zip" "$CORE_URL"
+  unzip -o "$DOWNLOAD_CACHE/core.zip" -d $ROOTFS/opt/anyconsole/cores
+  curl -fsSL -R -z "$DOWNLOAD_CACHE/rom.zip" -o "$DOWNLOAD_CACHE/rom.zip" "$ROM_URL"
+  unzip -o "$DOWNLOAD_CACHE/rom.zip" -d /tmp/rom
   cp "$(find /tmp/rom -iname '*.nes' | head -1)" $ROOTFS/opt/anyconsole/games/alter_ego.nes
 }
 
@@ -80,10 +74,8 @@ finalize() {
   cp -a /src/build/out/stage/. $ROOTFS/
   mknod $ROOTFS/dev/console c 5 1
   mknod $ROOTFS/dev/null c 1 3
-  tar -C $ROOTFS -czf /src/build/out/rootfs.tar.gz .
 }
 
-install_packages
 make_skeleton
 copy_binaries
 install_busybox
