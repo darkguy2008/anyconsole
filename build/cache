@@ -1,0 +1,23 @@
+#!/bin/sh
+CONTAINER=anyconsole-apt-cache
+PORT=3142
+APT_PROXY="http://127.0.0.1:$PORT"
+
+ensure_apt_cache() {
+  docker image inspect "$CONTAINER" >/dev/null 2>&1 || docker build -t "$CONTAINER" - <<'EOF'
+FROM debian:trixie
+RUN apt-get update && apt-get install -y --no-install-recommends apt-cacher-ng && rm -rf /var/lib/apt/lists/*
+EOF
+  [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)" = true ] || {
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    docker run -d --name "$CONTAINER" -p "127.0.0.1:$PORT:$PORT" \
+      -v "$CONTAINER":/var/cache/apt-cacher-ng "$CONTAINER" \
+      sh -c 'chown -R apt-cacher-ng:apt-cacher-ng /var/cache/apt-cacher-ng && exec apt-cacher-ng -c /etc/apt-cacher-ng ForeGround=1' >/dev/null
+  }
+  for _ in $(seq 30); do
+    wget -qO /dev/null "http://127.0.0.1:$PORT/acng-report.html" && return 0
+    sleep 1
+  done
+  echo "apt cache not ready on 127.0.0.1:$PORT" >&2
+  return 1
+}
