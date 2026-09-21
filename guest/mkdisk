@@ -1,0 +1,45 @@
+#!/bin/sh
+set -eu
+disk=$1 release=$2 esp=$3
+ESP_MIB=512
+SLOT_MIB=2048
+PART_WAIT_ATTEMPTS=50
+mount_point=$(mktemp -d)
+
+part() { case $disk in *[0-9]) echo "${disk}p$1" ;; *) echo "$disk$1" ;; esac; }
+
+wait_for_partitions() {
+  attempt=0
+  until [ -b "$(part 4)" ]; do
+    attempt=$((attempt + 1))
+    [ $attempt -le $PART_WAIT_ATTEMPTS ] || { echo "$(part 4) never appeared" >&2; exit 1; }
+    sleep 0.1
+  done
+}
+
+partition_disk() {
+  sfdisk -q --wipe always --wipe-partitions always "$disk" <<TABLE
+label: gpt
+size=${ESP_MIB}MiB, type=uefi, name=ESP
+size=${SLOT_MIB}MiB, type=linux, name=root-a
+size=${SLOT_MIB}MiB, type=linux, name=root-b
+type=linux, name=data
+TABLE
+  wait_for_partitions
+  mkfs.fat -F32 -n ESP "$(part 1)" >/dev/null
+  mke2fs -qF -t ext4 -L root-a "$(part 2)"
+  mke2fs -qF -t ext4 -L root-b "$(part 3)"
+  mke2fs -qF -t ext4 -L data "$(part 4)"
+}
+
+fill() {
+  mount "$(part "$1")" "$mount_point"
+  cp -a "$2"/. "$mount_point"/
+  umount "$mount_point"
+}
+
+partition_disk
+fill 2 "$release"
+fill 3 "$release"
+fill 1 "$esp"
+rmdir "$mount_point"
