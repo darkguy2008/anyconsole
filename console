@@ -16,9 +16,19 @@ case "${1:-status}" in
     rsync -a --delete --exclude .git --exclude-from=.gitignore ./ "$DEPLOY_HOST:$DEPLOY_PATH/"
     ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/image >/dev/null"
     rsync -S --progress "$DEPLOY_HOST:$DEPLOY_PATH/build/out/installer.img" build/out/ ;;
+  flash)
+    disks=$(diskutil list external physical | awk '/^\/dev\/disk/ { print $1 }')
+    [ -n "$disks" ] || { echo "no external disk plugged in" >&2; exit 1; }
+    for disk in $disks; do echo "$disk  $(diskutil info "$disk" | awk -F': *' '/Media Name|Disk Size/ { printf "%s  ", $2 }')"; done
+    printf 'flash build/out/installer.img to (ERASES it): '
+    read -r disk
+    echo "$disks" | grep -qx "$disk" || { echo "not an external disk: $disk" >&2; exit 1; }
+    diskutil unmountDisk "$disk"
+    sudo dd if=build/out/installer.img of="/dev/r${disk#/dev/}" bs=4m status=progress
+    diskutil eject "$disk" ;;
   start) ssh "$DEPLOY_HOST" "setsid $DEPLOY_PATH/build/run >/dev/null 2>&1 &" ;;
   link) ssh "$DEPLOY_HOST" "echo set_link $NIC $2 | socat - UNIX-CONNECT:$DEPLOY_PATH/build/out/monitor.sock" >/dev/null ;;
   ssh) shift; exec sshpass -p "$CONSOLE_PASSWORD" ssh -J "$DEPLOY_HOST" -p "$SSH_PORT" root@127.0.0.1 "$@" ;;
   log) ssh "$DEPLOY_HOST" "tail -n ${2:-40} $DEPLOY_PATH/build/out/boot.log" ;;
-  *) echo "usage: console [status|update|reboot|poweroff|push|image|start|link on|off|ssh|log]" >&2; exit 1 ;;
+  *) echo "usage: console [status|update|reboot|poweroff|push|image|flash|start|link on|off|ssh|log]" >&2; exit 1 ;;
 esac
