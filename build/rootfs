@@ -18,9 +18,11 @@ stage_kernel() {
     mkinitfs -F "base ata scsi usb nvme ext4 kms" -o "$INITRAMFS_CACHE" "$KERNEL_VERSION"
   cp "$INITRAMFS_CACHE" "$STAGE/boot/initramfs"
   cp /boot/vmlinuz-lts "$STAGE/boot/kernel"
-  cp -r --parents -t "$STAGE" "/lib/modules/$KERNEL_VERSION/modules.builtin" /lib/firmware/rtl_nic
+  cp --parents -t "$STAGE" "/lib/modules/$KERNEL_VERSION/modules.builtin"
   for module in $MODULES; do modprobe --show-depends "$module"; done |
     awk '$1 == "insmod" { print $2 }' | sort -u | xargs cp --parents -t "$STAGE"
+  for module in $MODULES; do modinfo -F firmware "$module"; done |
+    sort -u | while read -r firmware; do cp --parents -t "$STAGE" /lib/firmware/$firmware*; done
   find "$STAGE/lib/modules/$KERNEL_VERSION" -name '*.ko.gz' -exec gunzip -f {} +
   depmod -b "$PWD/$STAGE" "$KERNEL_VERSION"
 }
