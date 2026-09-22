@@ -1,13 +1,18 @@
+#include <SDL2/SDL.h>
 #include <fcntl.h>
 #include <linux/uinput.h>
+#include <dirent.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 #define FIFO "/run/pad"
+#define NODES "/run/pads"
 #define SEATS 4
 #define PAD_NAME "Sony Interactive Entertainment DualSense Wireless Controller"
 #define PAD_VENDOR 0x054c
@@ -42,6 +47,21 @@ static const struct control controls[] = {
 
 static int pad[SEATS];
 static int held[SEATS][CONTROLS];
+static const char *const sdl_button[SDL_CONTROLLER_BUTTON_MAX] = {
+    [SDL_CONTROLLER_BUTTON_A] = "cross", [SDL_CONTROLLER_BUTTON_B] = "circle",
+    [SDL_CONTROLLER_BUTTON_X] = "square", [SDL_CONTROLLER_BUTTON_Y] = "triangle",
+    [SDL_CONTROLLER_BUTTON_BACK] = "create", [SDL_CONTROLLER_BUTTON_START] = "options", [SDL_CONTROLLER_BUTTON_GUIDE] = "ps",
+    [SDL_CONTROLLER_BUTTON_LEFTSHOULDER] = "l1", [SDL_CONTROLLER_BUTTON_RIGHTSHOULDER] = "r1",
+    [SDL_CONTROLLER_BUTTON_LEFTSTICK] = "l3", [SDL_CONTROLLER_BUTTON_RIGHTSTICK] = "r3",
+    [SDL_CONTROLLER_BUTTON_DPAD_UP] = "up", [SDL_CONTROLLER_BUTTON_DPAD_DOWN] = "down",
+    [SDL_CONTROLLER_BUTTON_DPAD_LEFT] = "left", [SDL_CONTROLLER_BUTTON_DPAD_RIGHT] = "right",
+    [SDL_CONTROLLER_BUTTON_TOUCHPAD] = "touch", [SDL_CONTROLLER_BUTTON_MISC1] = "mute",
+};
+static const char *const sdl_axis[SDL_CONTROLLER_AXIS_MAX] = {
+    [SDL_CONTROLLER_AXIS_LEFTX] = "lx", [SDL_CONTROLLER_AXIS_LEFTY] = "ly",
+    [SDL_CONTROLLER_AXIS_RIGHTX] = "rx", [SDL_CONTROLLER_AXIS_RIGHTY] = "ry",
+    [SDL_CONTROLLER_AXIS_TRIGGERLEFT] = "l2", [SDL_CONTROLLER_AXIS_TRIGGERRIGHT] = "r2",
+};
 
 static struct input_absinfo range(const struct control *c) {
     if (c->direction) return (struct input_absinfo){.minimum = -1, .maximum = 1};
@@ -51,6 +71,26 @@ static struct input_absinfo range(const struct control *c) {
 static void emit(int fd, unsigned short type, unsigned short code, int value) {
     struct input_event events[2] = {{.type = type, .code = code, .value = value}, {.type = EV_SYN, .code = SYN_REPORT}};
     if (write(fd, events, sizeof events) < 0) perror("pad write");
+}
+
+static void node_path(int seat, char *path, size_t size) { snprintf(path, size, NODES "/js%d", seat); }
+
+static void expose(int seat, int fd) {
+    char sysname[UINPUT_MAX_NAME_SIZE], path[PATH_MAX], id[WORD_MAX + 1] = "";
+    if (ioctl(fd, UI_GET_SYSNAME(sizeof sysname), sysname) < 0) { perror("uinput sysname"); return; }
+    snprintf(path, sizeof path, "/sys/devices/virtual/input/%s", sysname);
+    DIR *dir = opendir(path);
+    for (struct dirent *entry; dir && (entry = readdir(dir));) {
+        if (strncmp(entry->d_name, "js", 2)) continue;
+        snprintf(path, sizeof path, "/sys/devices/virtual/input/%s/%s/dev", sysname, entry->d_name);
+        FILE *dev = fopen(path, "r");
+        if (dev) { if (!fgets(id, sizeof id, dev)) id[0] = 0; fclose(dev); }
+    }
+    if (dir) closedir(dir);
+    unsigned major, minor;
+    if (sscanf(id, "%u:%u", &major, &minor) != 2) { fprintf(stderr, "seat %d: no joystick node\n", seat + 1); return; }
+    node_path(seat, path, sizeof path);
+    if (mknod(path, S_IFCHR | S_IRUSR, makedev(major, minor)) < 0) perror(path);
 }
 
 static void plug(int seat) {
@@ -70,10 +110,14 @@ static void plug(int seat) {
     if (ioctl(fd, UI_DEV_SETUP, &setup) < 0 || ioctl(fd, UI_DEV_CREATE) < 0) { perror("uinput create"); close(fd); return; }
     memset(held[seat], 0, sizeof held[seat]);
     pad[seat] = fd;
+    expose(seat, fd);
 }
 
 static void unplug(int seat) {
     if (pad[seat] < 0) return;
+    char path[PATH_MAX];
+    node_path(seat, path, sizeof path);
+    unlink(path);
     close(pad[seat]);
     pad[seat] = -1;
 }
@@ -104,20 +148,56 @@ static int seat_of(const char *word) {
     return seat >= 0 && seat < SEATS ? seat : -1;
 }
 
+static void command(char *line) {
+    char first[WORD_MAX + 1], second[WORD_MAX + 1];
+    int value;
+    int words = sscanf(line, "%" STRINGIFY(WORD_MAX) "s %" STRINGIFY(WORD_MAX) "s %d", first, second, &value);
+    if (words == 3 && seat_of(first) >= 0) drive(seat_of(first), second, value);
+    else if (words == 2 && !strcmp(first, "plug") && seat_of(second) >= 0) plug(seat_of(second));
+    else if (words == 2 && !strcmp(first, "unplug") && seat_of(second) >= 0) unplug(seat_of(second));
+    else fprintf(stderr, "bad command: %s", line);
+}
+
+static int read_commands(void *unused) {
+    (void)unused;
+    FILE *commands = fopen(FIFO, "r+");
+    if (!commands) { perror(FIFO); exit(1); }
+    char line[BUFSIZ];
+    while (fgets(line, sizeof line, commands)) {
+        SDL_Event event = {.user = {.type = SDL_USEREVENT, .data1 = strdup(line)}};
+        SDL_PushEvent(&event);
+    }
+    exit(1);
+}
+
+static int scaled(int value, int min, int max) { return (value - min) * AXIS_MAX / (max - min); }
+
+static void attach(int index) {
+    if (SDL_JoystickGetDeviceVendor(index) == PAD_VENDOR && SDL_JoystickGetDeviceProduct(index) == PAD_PRODUCT) return;
+    if (!SDL_GameControllerOpen(index)) fprintf(stderr, "%s: %s\n", SDL_JoystickNameForIndex(index), SDL_GetError());
+}
+
 int main(void) {
     memset(pad, -1, sizeof pad);
-    mkfifo(FIFO, 0666);
-    FILE *commands = fopen(FIFO, "r+");
-    if (!commands) { perror(FIFO); return 1; }
+    mkfifo(FIFO, S_IRUSR | S_IWUSR);
+    setenv("SDL_JOYSTICK_DISABLE_UDEV", "1", 1);
+    if (SDL_Init(SDL_INIT_GAMECONTROLLER) < 0) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
+    SDL_CreateThread(read_commands, "commands", NULL);
     plug(0);
-    char line[BUFSIZ], first[WORD_MAX + 1], second[WORD_MAX + 1];
-    int value;
-    while (fgets(line, sizeof line, commands)) {
-        int words = sscanf(line, "%" STRINGIFY(WORD_MAX) "s %" STRINGIFY(WORD_MAX) "s %d", first, second, &value);
-        if (words == 3 && seat_of(first) >= 0) drive(seat_of(first), second, value);
-        else if (words == 2 && !strcmp(first, "plug") && seat_of(second) >= 0) plug(seat_of(second));
-        else if (words == 2 && !strcmp(first, "unplug") && seat_of(second) >= 0) unplug(seat_of(second));
-        else fprintf(stderr, "bad command: %s", line);
+    for (SDL_Event event; SDL_WaitEvent(&event);) {
+        switch (event.type) {
+        case SDL_USEREVENT: command(event.user.data1); free(event.user.data1); break;
+        case SDL_CONTROLLERDEVICEADDED: attach(event.cdevice.which); break;
+        case SDL_CONTROLLERBUTTONDOWN:
+        case SDL_CONTROLLERBUTTONUP:
+            if (sdl_button[event.cbutton.button]) drive(0, sdl_button[event.cbutton.button], event.cbutton.state == SDL_PRESSED);
+            break;
+        case SDL_CONTROLLERAXISMOTION:
+            if (!sdl_axis[event.caxis.axis]) break;
+            if (event.caxis.axis >= SDL_CONTROLLER_AXIS_TRIGGERLEFT) drive(0, sdl_axis[event.caxis.axis], scaled(event.caxis.value, 0, SDL_JOYSTICK_AXIS_MAX));
+            else drive(0, sdl_axis[event.caxis.axis], scaled(event.caxis.value, SDL_JOYSTICK_AXIS_MIN, SDL_JOYSTICK_AXIS_MAX));
+            break;
+        }
     }
     return 1;
 }

@@ -31,7 +31,7 @@ fetch_retroarch() {
   done
 }
 
-build_padd() { gcc $CFLAGS -o /bin/padd /src/guest/padd.c; }
+build_padd() { gcc $CFLAGS -o /bin/padd /src/guest/padd.c $(sdl2-config --cflags --libs); }
 
 copy_binaries() {
   lddtree --copy-to-tree $ROOTFS --bindir /bin --libdir /lib $BINARIES $SEAT

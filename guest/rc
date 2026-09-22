@@ -9,7 +9,7 @@ mount -o remount,rw /
 modprobe -a $MODULES
 mount -t ext4 "$(findfs LABEL=data)" /data
 mount -t vfat "$(findfs LABEL=ESP)" /boot/efi
-mkdir -p /data/root /data/ota /data/dhcpcd /data/dropbear
+mkdir -p /data/root /data/ota /data/dhcpcd /data/dropbear /run/pads
 otad mark-good
 read -r boot_count 2>/dev/null < /data/boots || boot_count=0
 boot_count=$((boot_count + 1))
