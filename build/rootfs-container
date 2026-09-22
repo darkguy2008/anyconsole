@@ -3,12 +3,14 @@ set -eux
 
 ROOTFS=/rootfs
 LIBDIR=/usr/lib/x86_64-linux-gnu
-BINARIES="/bin/busybox /sbin/sfdisk /sbin/mke2fs /sbin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd"
+BINARIES="/bin/busybox /bin/padd /sbin/sfdisk /sbin/mke2fs /sbin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd"
 RETROARCH_URL=https://buildbot.libretro.com/stable/1.22.2/linux/x86_64/RetroArch.7z
 RETROARCH_DIR=/tmp/retroarch
 SEAT="/usr/bin/cage $RETROARCH_DIR/squashfs-root/usr/bin/retroarch $LIBDIR/dri/swrast_dri.so $LIBDIR/dri/kms_swrast_dri.so $LIBDIR/dri/virtio_gpu_dri.so $LIBDIR/gbm/dri_gbm.so $LIBDIR/libEGL_mesa.so.0 $LIBDIR/libGLX_mesa.so.0"
 CORE_URL=https://buildbot.libretro.com/nightly/linux/x86_64/latest/fceumm_libretro.so.zip
 ROM_URL=https://shiru.untergrund.net/files/nes/alter_ego.zip
+PAD_PROFILE_URL='https://raw.githubusercontent.com/libretro/retroarch-joypad-autoconfig/master/linuxraw/Sony%20Interactive%20Entertainment%20DualSense%20Wireless%20Controller.cfg'
+CFLAGS="-O2 -Wall -Wextra -Werror"
 . /src/config
 
 make_skeleton() {
@@ -28,6 +30,8 @@ fetch_retroarch() {
     ! [ -e "$LIBDIR/${bundled##*/}" ] || rm "$bundled"
   done
 }
+
+build_padd() { gcc $CFLAGS -o /bin/padd /src/guest/padd.c; }
 
 copy_binaries() {
   lddtree --copy-to-tree $ROOTFS --bindir /bin --libdir /lib $BINARIES $SEAT
@@ -83,6 +87,9 @@ install_app() {
   fetch rom.zip "$ROM_URL"
   7z x -y -o/tmp/rom "$DOWNLOAD_CACHE/rom.zip" >/dev/null
   cp "$(find /tmp/rom -iname '*.nes' | head -1)" $ROOTFS/opt/anyconsole/games/alter_ego.nes
+  fetch pad-profile.cfg "$PAD_PROFILE_URL"
+  mkdir -p $ROOTFS/opt/anyconsole/autoconfig/linuxraw
+  cp "$DOWNLOAD_CACHE/pad-profile.cfg" $ROOTFS/opt/anyconsole/autoconfig/linuxraw/
 }
 
 finalize() {
@@ -94,6 +101,7 @@ finalize() {
 
 make_skeleton
 fetch_retroarch
+build_padd
 copy_binaries
 install_busybox
 configure_network
