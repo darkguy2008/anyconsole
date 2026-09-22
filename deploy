@@ -20,7 +20,7 @@ build_release() {
 serve_releases() {
   printf 'use chroot = no\nuid = root\ngid = root\n[rel]\npath = %s/rel\nread only = yes\n' \
     "$PWD" > /etc/rsyncd.conf
-  rc-service rsyncd started || rc-service rsyncd start
+  rc-service rsyncd status >/dev/null || rc-service rsyncd start
 }
 
 [ "${ANYCONSOLE_ONHOST:-}" = 1 ] || push_to_host "$@"

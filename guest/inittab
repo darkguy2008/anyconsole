@@ -1,5 +1,6 @@
 ::sysinit:/etc/rc
 tty1::respawn:/opt/anyconsole/kiosk
+::respawn:/bin/padd
 ttyS0::respawn:-/bin/sh
 ::respawn:/bin/dhcpcd -B -4 eth0
 ::respawn:/bin/dropbear -F -R -E

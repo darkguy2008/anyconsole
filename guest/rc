@@ -1,15 +1,12 @@
 #!/bin/sh
 . /etc/anyconsole.conf
 mount -t proc proc /proc
-mount -t ramfs dev /dev
-mdev -s
 mkdir -p /dev/pts
 mount -t devpts -o ptmxmode=0666 devpts /dev/pts
 ln -sf pts/ptmx /dev/ptmx
 mount -t ramfs ramfs /run
 mount -o remount,rw /
 modprobe -a $MODULES
-mdev -s
 mount -t ext4 "$(findfs LABEL=data)" /data
 mount -t vfat "$(findfs LABEL=ESP)" /boot/efi
 mkdir -p /data/root /data/ota /data/dhcpcd /data/dropbear
