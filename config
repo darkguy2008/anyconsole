@@ -5,3 +5,5 @@ NIC=nic0
 
 DEPLOY_HOST=ale
 DEPLOY_PATH=anyconsole
+
+sync_host() { rsync -a --delete --exclude .git --exclude-from=.gitignore ./ "$DEPLOY_HOST:$DEPLOY_PATH/"; }

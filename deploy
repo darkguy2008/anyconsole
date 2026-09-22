@@ -6,7 +6,7 @@ INDEX=rel/index
 
 push_to_host() {
   [ "${1:-}" = force ] || echo $(( $(cat VERSION) + 1 )) > VERSION
-  rsync -a --delete --exclude .git --exclude-from=.gitignore ./ "$DEPLOY_HOST:$DEPLOY_PATH/"
+  sync_host
   exec ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && ANYCONSOLE_ONHOST=1 ./deploy $*"
 }
 

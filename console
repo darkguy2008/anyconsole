@@ -3,6 +3,7 @@ set -eu
 cd "$(dirname "$0")"
 . config
 . guest/config
+INSTALLER=build/out/installer.img
 api() { ssh "$DEPLOY_HOST" curl -fsS -X "$1" "localhost:$API_PORT/cgi-bin/api/$2"; echo; }
 
 case "${1:-status}" in
@@ -13,20 +14,21 @@ case "${1:-status}" in
     api POST update
     api POST reboot ;;
   image)
-    rsync -a --delete --exclude .git --exclude-from=.gitignore ./ "$DEPLOY_HOST:$DEPLOY_PATH/"
+    sync_host
     ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/image >/dev/null"
-    rsync -S --progress "$DEPLOY_HOST:$DEPLOY_PATH/build/out/installer.img" build/out/ ;;
+    rsync -S --progress "$DEPLOY_HOST:$DEPLOY_PATH/$INSTALLER" "$INSTALLER" ;;
   flash)
-    disks=$(diskutil list external physical | awk '/^\/dev\/disk/ { print $1 }')
-    [ -n "$disks" ] || { echo "no external disk plugged in" >&2; exit 1; }
     set --
-    for disk in $disks; do set -- "$@" "$disk  $(diskutil info "$disk" | awk -F': *' '/Media Name|Disk Size/ { printf "%s  ", $2 }')"; done
-    PS3="flash build/out/installer.img to (ERASES it): "
-    select choice in "$@"; do [ -n "$choice" ] && break; done
-    disk=${choice%% *}
+    for disk in $(diskutil list external physical | awk '/^\/dev\/disk/ { sub("^/dev/", "", $1); print $1 }'); do
+      set -- "$@" "$disk$(diskutil info "$disk" | awk -F': *' '/Media Name|Disk Size/ { printf "  %s", $2 }')"
+    done
+    [ $# -gt 0 ] || { echo "no external disk plugged in" >&2; exit 1; }
+    PS3="flash $INSTALLER to (ERASES it): "
+    select disk; do [ -n "$disk" ] && break; done
+    disk=${disk%% *}
     [ -n "$disk" ] || exit 1
     diskutil unmountDisk "$disk"
-    sudo dd if=build/out/installer.img of="/dev/r${disk#/dev/}" bs=4m status=progress
+    sudo dd if="$INSTALLER" of="/dev/r$disk" bs=4m status=progress
     diskutil eject "$disk" ;;
   start) ssh "$DEPLOY_HOST" "setsid $DEPLOY_PATH/build/run >/dev/null 2>&1 &" ;;
   link) ssh "$DEPLOY_HOST" "echo set_link $NIC $2 | socat - UNIX-CONNECT:$DEPLOY_PATH/build/out/monitor.sock" >/dev/null ;;
