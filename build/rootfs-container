@@ -88,8 +88,7 @@ install_app() {
   7z x -y -o/tmp/rom "$DOWNLOAD_CACHE/rom.zip" >/dev/null
   cp "$(find /tmp/rom -iname '*.nes' | head -1)" $ROOTFS/opt/anyconsole/games/alter_ego.nes
   fetch pad-profile.cfg "$PAD_PROFILE_URL"
-  mkdir -p $ROOTFS/opt/anyconsole/autoconfig/linuxraw
-  cp "$DOWNLOAD_CACHE/pad-profile.cfg" $ROOTFS/opt/anyconsole/autoconfig/linuxraw/
+  install -D "$DOWNLOAD_CACHE/pad-profile.cfg" -t $ROOTFS/opt/anyconsole/autoconfig/linuxraw
 }
 
 finalize() {
