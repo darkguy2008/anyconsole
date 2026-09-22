@@ -1,0 +1,46 @@
+#!/bin/sh
+. /etc/anyconsole.conf
+modprobe -a $MODULES
+own_disk=$(basename "$(readlink -f "/sys/class/block/$(findfs LABEL=installer | cut -c6-)/..")")
+SECTOR_BYTES=512
+BYTES_PER_GB=$((1024 * 1024 * 1024))
+
+wait_key() { echo "$1"; read -r _; }
+restart() { echo b > /proc/sysrq-trigger; }
+
+list_disks() {
+  for path in /sys/block/*; do
+    name=${path##*/}
+    [ -f "$path/device/model" ] && [ "$name" != "$own_disk" ] || continue
+    echo "/dev/$name $(( $(cat "$path/size") * SECTOR_BYTES / BYTES_PER_GB ))GB $(cat "$path/device/model")"
+  done
+}
+
+choose_disk() {
+  disks=$(list_disks)
+  [ -n "$disks" ] || { wait_key "No disk found. Press Enter to reboot."; restart; }
+  echo "$disks" | awk '{ print NR ") " $0 }'
+  printf 'Install anyconsole to disk number: '
+  read -r number
+  target=$(echo "$disks" | awk -v n="$number" 'NR == n { print $1 }')
+  [ -n "$target" ] || return 1
+  printf 'ERASE %s and install? [y/N] ' "$target"
+  read -r answer
+  [ "$answer" = y ]
+}
+
+install() {
+  mount -t tmpfs tmpfs /tmp
+  mount --bind / /mnt
+  mount "$(findfs LABEL=INSTALL)" /boot/efi
+  mkdisk "$target" /mnt /boot/efi
+}
+
+echo "anyconsole installer"
+until choose_disk; do :; done
+if install; then
+  wait_key "Installed. Remove the USB drive and press Enter to reboot."
+else
+  wait_key "Install failed. Press Enter to reboot."
+fi
+restart

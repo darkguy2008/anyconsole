@@ -2,67 +2,77 @@
 set -eu
 cd "$(dirname "$0")/.."
 DISK_SIZE=${DISK_SIZE:-8G}
-ESP_MIB=512
-SLOT_MIB=2048
-MOUNT=/mnt/anyconsole
+INSTALLER_SLACK_MIB=64
 DISK=build/out/disk.img
+INSTALLER=build/out/installer.img
+ESP=build/out/esp
 RELEASE=rel/$(cat VERSION)
-esp_end=$((1 + ESP_MIB))
-slot_a_end=$((esp_end + SLOT_MIB))
-slot_b_end=$((slot_a_end + SLOT_MIB))
+MOUNT=/mnt/anyconsole
 
-partition_disk() {
-  rm -f "$DISK"
-  truncate -s "$DISK_SIZE" "$DISK"
-  parted -s "$DISK" mklabel gpt \
-    mkpart ESP fat32 1MiB ${esp_end}MiB set 1 esp on \
-    mkpart root-a ext4 ${esp_end}MiB ${slot_a_end}MiB \
-    mkpart root-b ext4 ${slot_a_end}MiB ${slot_b_end}MiB \
-    mkpart data ext4 ${slot_b_end}MiB 100%
-  loop=$(losetup -fP --show "$DISK")
-  mkfs.vfat -F32 -n ESP "${loop}p1"
-  mkfs.ext4 -qF -L root-a "${loop}p2"
-  mkfs.ext4 -qF -L root-b "${loop}p3"
-  mkfs.ext4 -qF -L data "${loop}p4"
-}
-
-install_rootfs() {
-  mkdir -p "$MOUNT"
-  for slot in 2 3; do
-    mount "${loop}p$slot" "$MOUNT"
-    cp -a "$RELEASE"/. "$MOUNT"/
-    umount "$MOUNT"
-  done
-}
-
-install_bootloader() {
-  mount "${loop}p1" "$MOUNT"
-  mkdir -p "$MOUNT/EFI/BOOT" "$MOUNT/grub"
-  grub-mkimage -O x86_64-efi -p '(,gpt1)/grub' -o "$MOUNT/EFI/BOOT/BOOTX64.EFI" \
+build_esp() {
+  rm -rf "$ESP"
+  mkdir -p "$ESP/EFI/BOOT" "$ESP/grub"
+  grub-mkimage -O x86_64-efi -p '(,gpt1)/grub' -o "$ESP/EFI/BOOT/BOOTX64.EFI" \
     part_gpt ext2 fat normal linux search search_label test all_video gfxterm efi_gop loadenv
-  cat > "$MOUNT/grub/grub.cfg" <<'GRUB'
+  cat > "$ESP/grub/grub.cfg" <<'GRUB'
 set timeout=2
-load_env
-set target="$prev"
-if [ "$tries" = "1" ]; then
-  set target="$slot"
-  set tries=0
-  save_env tries
+if search --no-floppy --label installer --set=root; then
+  set label=installer
+  set extra="quiet init=/bin/installer"
+else
+  load_env
+  set target="$prev"
+  if [ "$tries" = "1" ]; then
+    set target="$slot"
+    set tries=0
+    save_env tries
+  fi
+  set label="root-$target"
+  set extra=""
+  search --no-floppy --label "$label" --set=root
 fi
-menuentry "anyconsole (slot $target)" {
-  search --no-floppy --label "root-$target" --set=root
-  linux /boot/kernel console=tty0 console=ttyS0 rootfstype=ext4 rw root=LABEL=root-$target
+menuentry "anyconsole ($label)" {
+  linux /boot/kernel console=ttyS0 console=tty0 rootfstype=ext4 rw root=LABEL=$label $extra
   initrd /boot/initramfs
 }
 GRUB
-  grub-editenv "$MOUNT/grub/grubenv" create
-  grub-editenv "$MOUNT/grub/grubenv" set slot=a prev=a tries=1
+  grub-editenv "$ESP/grub/grubenv" create
+  grub-editenv "$ESP/grub/grubenv" set slot=a prev=a tries=1
+}
+
+build_disk() {
+  rm -f "$DISK"
+  truncate -s "$DISK_SIZE" "$DISK"
+  loop=$(losetup -fP --show "$DISK")
+  sh guest/mkdisk "$loop" "$RELEASE" "$ESP"
+  losetup -d "$loop"
+}
+
+build_installer() {
+  rm -f "$INSTALLER"
+  esp_mib=$(( $(du -sm "$ESP" | cut -f1) + INSTALLER_SLACK_MIB ))
+  release_mib=$(du -sm "$RELEASE" | cut -f1)
+  truncate -s "$((esp_mib + release_mib + INSTALLER_SLACK_MIB + 1))M" "$INSTALLER"
+  loop=$(losetup -fP --show "$INSTALLER")
+  sfdisk -q "$loop" <<TABLE
+label: gpt
+size=${esp_mib}MiB, type=uefi, name=INSTALL
+type=linux, name=installer
+TABLE
+  mkfs.fat -n INSTALL "${loop}p1" >/dev/null
+  mke2fs -qF -t ext4 -L installer "${loop}p2"
+  mkdir -p "$MOUNT"
+  mount "${loop}p2" "$MOUNT"
+  cp -a "$RELEASE"/. "$MOUNT"/
   umount "$MOUNT"
+  mount "${loop}p1" "$MOUNT"
+  cp -a "$ESP"/. "$MOUNT"/
+  umount "$MOUNT"
+  losetup -d "$loop"
 }
 
 sh build/rootfs
-partition_disk
-install_rootfs
-install_bootloader
-losetup -d "$loop"
+build_esp
+build_disk
+build_installer
 cp -f /usr/share/OVMF/OVMF_VARS.fd build/out/efivars.fd
