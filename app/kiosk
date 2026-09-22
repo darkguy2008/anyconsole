@@ -9,4 +9,4 @@ export GBM_BACKENDS_PATH=/lib
 export WLR_LIBINPUT_NO_DEVICES=1
 mkdir -p "$XDG_RUNTIME_DIR"
 exec >>/data/kiosk.log 2>&1
-exec cage -- /opt/anyconsole/session
+exec unshare -m --propagation private sh -c "mount --bind /run/pads /dev/input && exec cage -- /opt/anyconsole/session"
