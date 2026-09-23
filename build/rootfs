@@ -10,30 +10,28 @@ MODULE_DIR=/lib/modules/$KERNEL_VERSION
 STAGE=build/out/stage
 INITRAMFS_FEATURES="base ata scsi usb nvme ext4"
 INITRAMFS_CACHE=build/out/cache/initramfs-$KERNEL_VERSION-$(echo $INITRAMFS_FEATURES | tr " " -)
-DISPLAY_FEATURE=/etc/mkinitfs/features.d/kms.modules
+MODULE_TREE=build/out/module-tree
+MODULE_FEATURES=build/out/features
 RELEASE=rel/$VERSION
 BASE_IMAGE=anyconsole-rootfs-base
 
-display_modules() {
-  cd "$MODULE_DIR" && for entry in $(cat "$DISPLAY_FEATURE"); do
-    [ ! -e "$entry" ] || find "$entry" -name "*.ko.gz" -exec basename -s .ko.gz -a {} +
-  done
-}
+install_firmware() { apk add -q linux-firmware; }
 
 stage_kernel() {
-  modules="$MODULES $(display_modules)"
   rm -rf "$STAGE"
   mkdir -p "$STAGE/boot" build/out/cache
   [ -f "$INITRAMFS_CACHE" ] ||
     mkinitfs -F "$INITRAMFS_FEATURES" -o "$INITRAMFS_CACHE" "$KERNEL_VERSION"
   cp "$INITRAMFS_CACHE" "$STAGE/boot/initramfs"
   cp /boot/vmlinuz-lts "$STAGE/boot/kernel"
-  cp --parents -t "$STAGE" "$MODULE_DIR/modules.builtin" "$MODULE_DIR/modules.builtin.modinfo" "$MODULE_DIR/modules.order"
-  modprobe -a --show-depends $modules | awk '$1 == "insmod" { print $2 }' | sort -u | xargs cp --parents -t "$STAGE"
-  modinfo -F firmware $modules | sort -u | while read -r firmware; do
-    for file in /lib/firmware/$firmware*; do [ ! -e "$file" ] || cp --parents -t "$STAGE" "$file"; done
-  done
-  depmod -b "$PWD/$STAGE" "$KERNEL_VERSION"
+}
+
+stage_modules() {
+  rm -rf "$MODULE_TREE"
+  mkdir -p "$MODULE_FEATURES" "$STAGE/lib"
+  modinfo -n $MODULES | sed "s|^$MODULE_DIR/||" > "$MODULE_FEATURES/anyconsole.modules"
+  mkinitfs -l -k -t "$PWD/$MODULE_TREE" -P "$PWD/$MODULE_FEATURES" -F "base kms anyconsole" "$KERNEL_VERSION" >/dev/null
+  cp -a "$MODULE_TREE/lib/modules" "$MODULE_TREE/lib/firmware" "$STAGE/lib/"
 }
 
 build_base() {
@@ -49,6 +47,11 @@ build_userspace() {
     "$BASE_IMAGE" sh /src/build/rootfs-container
 }
 
+dedup_releases() { hardlink -q -t rel; }
+
+install_firmware
 stage_kernel
+stage_modules
 build_base
 build_userspace
+dedup_releases

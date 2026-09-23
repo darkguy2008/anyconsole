@@ -6,7 +6,7 @@ LIBDIR=/usr/lib/x86_64-linux-gnu
 BINARIES="/bin/busybox /bin/padd /bin/splash /sbin/sfdisk /sbin/mke2fs /sbin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd"
 RETROARCH_URL=https://buildbot.libretro.com/stable/1.22.2/linux/x86_64/RetroArch.7z
 RETROARCH_DIR=/tmp/retroarch
-SEAT="/usr/bin/cage $RETROARCH_DIR/squashfs-root/usr/bin/retroarch $LIBDIR/dri/swrast_dri.so $LIBDIR/dri/kms_swrast_dri.so $LIBDIR/dri/virtio_gpu_dri.so $LIBDIR/gbm/dri_gbm.so $LIBDIR/libEGL_mesa.so.0 $LIBDIR/libGLX_mesa.so.0"
+SEAT="/usr/bin/cage $RETROARCH_DIR/squashfs-root/usr/bin/retroarch $LIBDIR/gbm/dri_gbm.so $LIBDIR/libEGL_mesa.so.0"
 CORE_URL=https://buildbot.libretro.com/nightly/linux/x86_64/latest/fceumm_libretro.so.zip
 ROM_URL=https://shiru.untergrund.net/files/nes/alter_ego.zip
 PAD_PROFILE_URL='https://raw.githubusercontent.com/libretro/retroarch-joypad-autoconfig/master/linuxraw/Sony%20Interactive%20Entertainment%20DualSense%20Wireless%20Controller.cfg'
@@ -44,8 +44,9 @@ build_splash() {
 
 copy_binaries() {
   lddtree --copy-to-tree $ROOTFS --bindir /bin --libdir /lib $BINARIES $SEAT
-  mv $ROOTFS/bin/*_dri.so $ROOTFS/bin/dri_gbm.so $ROOTFS/bin/libEGL_mesa.so.0 $ROOTFS/bin/libGLX_mesa.so.0 $ROOTFS/lib/
-  mkdir -p $ROOTFS/usr/share/glvnd/egl_vendor.d $ROOTFS/usr/share/X11
+  mkdir -p $ROOTFS/usr/share/glvnd/egl_vendor.d $ROOTFS/usr/share/X11 $ROOTFS$LIBDIR/gbm
+  mv $ROOTFS/bin/libEGL_mesa.so.0 $ROOTFS/lib/
+  mv $ROOTFS/bin/dri_gbm.so $ROOTFS$LIBDIR/gbm/
   cp /usr/share/glvnd/egl_vendor.d/50_mesa.json $ROOTFS/usr/share/glvnd/egl_vendor.d/
   cp -a /usr/share/X11/xkb $ROOTFS/usr/share/X11/
   cp -a /usr/share/libinput $ROOTFS/usr/share/
