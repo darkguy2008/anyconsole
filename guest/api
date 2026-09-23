@@ -7,6 +7,13 @@ STATE_DIR=/data/ota
 reply() { printf 'Status: %s\r\nContent-Type: application/json\r\n\r\n%s\n' "$1" "$2"; }
 body() { head -c "${CONTENT_LENGTH:-0}"; }
 
+remove_store() {
+  case $1 in ''|*[!0-9]*) return 1 ;; esac
+  [ "$1" -ge 1 ] && [ "$1" -le "$(wc -l < "$STORES_FILE")" ] || return 1
+  awk -v position="$1" 'NR != position' "$STORES_FILE" > "$STORES_FILE.partial"
+  mv "$STORES_FILE.partial" "$STORES_FILE"
+}
+
 status() {
   [ -f $STATE_DIR/state ] && . $STATE_DIR/state
   printf '{"version":%s,"slot":"%s","inactive_staged":%s,"ota":"%s","boots":%s,"address":"%s","uptime":%s}' \
@@ -21,6 +28,7 @@ case "$REQUEST_METHOD $PATH_INFO" in
   "POST /reboot") reply 200 "$(status)"; exec 1>&-; reboot ;;
   "POST /poweroff") reply 200 "$(status)"; exec 1>&-; poweroff ;;
   "POST /stores") { body; echo; } >> "$STORES_FILE" && reply 200 '{}' ;;
+  "DELETE /stores/"*) remove_store "${PATH_INFO#/stores/}" && reply 200 '{}' || reply 404 '{"error":"no such store"}' ;;
   "POST /input") { body; echo; } > "$PAD_FIFO" && reply 200 '{}' ;;
   "POST /volume") wpctl set-volume -l "$VOLUME_LIMIT" @DEFAULT_AUDIO_SINK@ "$(body)%" && reply 200 '{}' || reply 409 '{"error":"no audio output"}' ;;
   *) reply 404 '{"error":"no such endpoint"}' ;;

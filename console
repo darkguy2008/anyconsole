@@ -13,7 +13,12 @@ api() { printf '%s' "${3:-}" | ssh "$DEPLOY_HOST" curl -fsS -X "$1" --data-binar
 case "${1:-status}" in
   status) api GET status ;;
   state) api GET state ;;
-  store) api POST stores "$2" ;;
+  store)
+    case "${2:-}" in
+      add) api POST stores "$3" ;;
+      del) api DELETE "stores/$3" ;;
+      *) exec "$0" help ;;
+    esac ;;
   input) shift; api POST input "$(printf '%s\n' "$@")" ;;
   volume) api POST volume "$2" ;;
   update|reboot|poweroff) api POST "$1" ;;
@@ -49,7 +54,8 @@ case "${1:-status}" in
 usage: console <command>
   status     show the running console's OTA state
   state      show the console's screen, games, stores, audio and inputs
-  store smb://[user:password@]host/share/path  add a game store
+  store add smb://[user:password@]host/share/path  add a game store
+  store del <n>  remove the nth store listed by state
   input <line>...  send pad lines ("1 a 1", "1 guide 0") or events ("EV_KEY KEY_LEFTMETA 1")
   volume <percent>  set the output volume
   update     make it sync and stage the published release

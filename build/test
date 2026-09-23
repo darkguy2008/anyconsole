@@ -168,6 +168,12 @@ tap guide
 api POST volume $TEST_VOLUME >/dev/null
 expect ".audio.volume == $TEST_VOLUME"
 
+api DELETE stores/1 >/dev/null
+expect '(.stores | length) == 0 and all(.games[]; (.stores | length) == 0)'
+expect "($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed))"
+api POST stores "$TEST_STORE_URL" >/dev/null
+expect '.stores[0].online and all(.games[]; (.stores | length) == 1)'
+
 guest reboot
 wait_for $BOOT_SECONDS booted 2
 expect "($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed))"
