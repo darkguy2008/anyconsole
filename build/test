@@ -2,57 +2,173 @@
 set -eu
 cd "$(dirname "$0")/.."
 . config
+. guest/config
 VERSION=$(cat VERSION)
 OUT=build/out/test
-TARGET_SIZE=8G
+TARGET_SIZE=16G
 SSH_TEST_PORT=2223
-POLL_SECONDS=2
-POLL_ATTEMPTS=90
+API_TEST_PORT=8081
+POLLS_PER_SECOND=10
+POLL_INTERVAL=$(awk "BEGIN { print 1 / $POLLS_PER_SECOND }")
+STEP_SECONDS=15
+BOOT_SECONDS=180
+INSTALL_SECONDS=1200
+STARTED=$(date +%s)
+TEST_VOLUME=10
 
 monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
 guest() {
   sshpass -p "$CONSOLE_PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o LogLevel=ERROR -o ConnectTimeout=$POLL_SECONDS -p $SSH_TEST_PORT root@127.0.0.1 "$@"
+    -o LogLevel=ERROR -o ConnectTimeout=1 -o ControlMaster=auto -o ControlPath=$OUT/ssh.sock -o ControlPersist=yes \
+    -p $SSH_TEST_PORT root@127.0.0.1 "$@"
+}
+api() { curl -fsS -X "$1" --data-binary "${3:-}" "127.0.0.1:$API_TEST_PORT/cgi-bin/api/$2"; }
+state() { api GET state; }
+log() { echo "$1 +$(($(date +%s) - STARTED))s: $2"; }
+diagnose() {
+  guest "cat $STATE_FILE /tmp/install.log; echo; for log in $LOG_DIR/*.log; do echo \"== \$log\"; tail -n 15 \"\$log\"; done" >&2 || true
 }
 wait_for() {
-  attempt=0
+  attempts=$(($1 * POLLS_PER_SECOND)) attempt=0
+  shift
   until "$@" >/dev/null 2>&1; do
     attempt=$((attempt + 1))
-    [ $attempt -le $POLL_ATTEMPTS ] || { echo "FAIL: timed out waiting for: $*" >&2; exit 1; }
-    sleep $POLL_SECONDS
+    [ $attempt -le $attempts ] || { log FAIL "timed out waiting for: $*" >&2; diagnose; exit 1; }
+    sleep $POLL_INTERVAL
   done
 }
-booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /data/boots) = $1 ] && pidof retroarch"; }
+holds() { state | jq -e "$1"; }
+expect() { wait_for $STEP_SECONDS holds "$1"; log ok "$1"; }
+status_of() { echo ".games[] | select(.key == \"$1\") | .status == \"$2\""; }
+send() { api POST input "$(printf '%s\n' "$@")" >/dev/null; }
+tap() { send "1 $1 1" "1 $1 0"; }
+key() { send "EV_KEY $1 1" "EV_KEY $1 0"; }
+choose() {
+  target=$(state | jq "[.rows[].label] | index(\"$1\")")
+  [ "$target" != null ] || { log FAIL "no row $1" >&2; diagnose; exit 1; }
+  while selected=$(state | jq .selected); [ "$selected" != "$target" ]; do
+    if [ "$selected" -lt "$target" ]; then tap dpdown; else tap dpup; fi
+    wait_for $STEP_SECONDS holds ".selected != $selected"
+  done
+  tap a
+}
+snapshot() { monitor "screendump $OUT/$1.ppm"; wait_for $STEP_SECONDS test -s "$OUT/$1.ppm"; magick "$OUT/$1.ppm" "$OUT/$1.png"; rm "$OUT/$1.ppm"; }
+booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /data/boots) = $1 ] && pidof overlay && [ -s $STATE_FILE ]"; }
 
 start_vm() {
+  sh build/store
   rm -rf $OUT
   mkdir -p $OUT
   truncate -s $TARGET_SIZE $OUT/target.img
   cp /usr/share/OVMF/OVMF_VARS.fd $OUT/efivars.fd
-  qemu-system-x86_64 \
-    -machine q35,accel=kvm -cpu host -smp 2 -m 2048 -display none \
-    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
-    -drive if=pflash,format=raw,file=$OUT/efivars.fd \
-    -device ich9-ahci,id=ahci -drive file=$OUT/target.img,format=raw,if=none,id=d0 -device ide-hd,drive=d0,bus=ahci.0 \
+  run_qemu $OUT/efivars.fd $OUT/target.img \
+    "hostfwd=tcp:127.0.0.1:$SSH_TEST_PORT-:22,hostfwd=tcp:127.0.0.1:$API_TEST_PORT-:$API_PORT" \
     -device qemu-xhci -drive file=build/out/installer.img,format=raw,if=none,id=usb0 -device usb-storage,drive=usb0,id=stick \
-    -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_TEST_PORT-:22 -device e1000e,netdev=net0 \
-    -vga none -device virtio-gpu-pci \
-    -monitor unix:$OUT/monitor.sock,server,nowait \
-    -serial file:$OUT/serial.log &
+    -display none -monitor unix:$OUT/monitor.sock,server,nowait -serial file:$OUT/serial.log &
   trap 'monitor quit' EXIT
 }
 
 install_from_stick() {
-  wait_for guest true
+  wait_for $BOOT_SECONDS guest true
   for key in 1 ret y ret; do monitor "sendkey $key"; done
-  wait_for guest 'findfs LABEL=data && ! pidof mkdisk'
+  wait_for $BOOT_SECONDS guest 'findfs LABEL=data && ! pidof mkdisk'
   monitor "device_del stick"
   monitor "sendkey ret"
 }
 
+install_game() {
+  choose "$2"
+  expect '.screen == "game"'
+  choose "Install from"
+  wait_for $INSTALL_SECONDS holds "$(status_of "$1" installed)"
+  log ok "installed $1"
+}
+
+play_game() {
+  choose Play
+  expect ".active == \"$1\" and (.dashboard | not) and ($(status_of "$1" running))"
+  wait_for $STEP_SECONDS guest "swaymsg -s /run/user/sway-ipc.*.sock -t get_tree | jq -e '[.. | objects | select(.type? == \"workspace\" and .name == \"$1\") | .. | .app_id? | strings] | length == 1'"
+  log ok "$1 window is up on its workspace"
+  sandbox_globals=$(guest "WAYLAND_DISPLAY=$SOCKETS_DIR/${1%/*}-${1#*/}/wayland-0 wayland-info")
+  echo "$sandbox_globals" | grep -q "'wl_compositor'" && ! echo "$sandbox_globals" | grep -q -e zwlr_layer_shell_v1 -e zwlr_screencopy_manager_v1 ||
+    { log FAIL "$1 is not confined by its security context" >&2; exit 1; }
+  log ok "$1 sees no privileged wayland protocols"
+}
+
+open_store() {
+  choose Store
+  expect '.screen == "store"'
+}
+
+back_to_dashboard() {
+  tap guide
+  expect '.guide and .screen == "guide"'
+  choose Dashboard
+  expect '.dashboard and (.guide | not) and .screen == "home"'
+}
+
 start_vm
 install_from_stick
-wait_for booted 1
+wait_for $BOOT_SECONDS booted 1
+expect '.screen == "home" and .dashboard and (.rows | length) == 1'
+snapshot home
+
+api POST stores "$TEST_STORE_URL" >/dev/null
+expect '.stores[0].online and ([.games[].key] | index("alter-ego/nes") != null)'
+
+open_store
+install_game alter-ego/nes "Alter Ego"
+play_game alter-ego/nes
+snapshot alter-ego
+wait_for $STEP_SECONDS guest ". /etc/profile; pw-dump | jq -e '[.[] | select(.info.props[\"media.class\"]? == \"Stream/Output/Audio\" and .info.state == \"running\")] | length == 1'"
+log ok "the game plays sound into PipeWire"
+
+tap guide
+expect ".guide and .screen == \"guide\" and ($(status_of alter-ego/nes paused)) and .audio.output != \"\""
+snapshot guide
+choose Dashboard
+expect '.dashboard and (.guide | not) and .screen == "home"'
+
+open_store
+install_game lan-master/nes "LAN Master"
+play_game lan-master/nes
+expect "$(status_of alter-ego/nes paused)"
+
+key KEY_LEFTMETA
+expect ".guide and ($(status_of lan-master/nes paused))"
+tap b
+expect "(.guide | not) and ($(status_of lan-master/nes running))"
+send "1 back 1" "1 start 1" "1 start 0" "1 back 0"
+expect '.guide'
+tap guide
+expect "(.guide | not) and ($(status_of lan-master/nes running))"
+
+back_to_dashboard
+choose "Alter Ego"
+choose Resume
+expect ".active == \"alter-ego/nes\" and ($(status_of alter-ego/nes running)) and ($(status_of lan-master/nes paused))"
+
+back_to_dashboard
+choose "LAN Master"
+choose Close
+expect "$(status_of lan-master/nes installed)"
+choose Uninstall
+expect '[.games[] | select(.key == "lan-master/nes")] | all(.status == "")'
+
+tap b
+open_store
+install_game commander-keen/msdos "Commander Keen"
+play_game commander-keen/msdos
+key KEY_ENTER
+snapshot keen
+key KEY_LEFTMETA
+expect ".guide and ($(status_of commander-keen/msdos paused))"
+tap guide
+
+api POST volume $TEST_VOLUME >/dev/null
+expect ".audio.volume == $TEST_VOLUME"
+
 guest reboot
-wait_for booted 2
-echo "PASS: v$VERSION installed from USB, booted twice into the kiosk"
+wait_for $BOOT_SECONDS booted 2
+expect "($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed))"
+log PASS "v$VERSION installed from USB, installed games from the store, played, switched, closed, uninstalled, and kept them across a reboot"

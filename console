@@ -4,10 +4,18 @@ cd "$(dirname "$0")"
 . config
 . guest/config
 INSTALLER=build/out/installer.img
-api() { ssh "$DEPLOY_HOST" curl -fsS -X "$1" "localhost:$API_PORT/cgi-bin/api/$2"; echo; }
+build_image() {
+  ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/image >/dev/null"
+  rsync -S --progress "$DEPLOY_HOST:$DEPLOY_PATH/$INSTALLER" "$INSTALLER"
+}
+api() { printf '%s' "${3:-}" | ssh "$DEPLOY_HOST" curl -fsS -X "$1" --data-binary @- "localhost:$API_PORT/cgi-bin/api/$2"; echo; }
 
 case "${1:-status}" in
   status) api GET status ;;
+  state) api GET state ;;
+  store) api POST stores "$2" ;;
+  input) shift; api POST input "$(printf '%s\n' "$@")" ;;
+  volume) api POST volume "$2" ;;
   update|reboot|poweroff) api POST "$1" ;;
   push)
     ./deploy
@@ -15,8 +23,7 @@ case "${1:-status}" in
     api POST reboot ;;
   image)
     sync_host
-    ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/image >/dev/null"
-    rsync -S --progress "$DEPLOY_HOST:$DEPLOY_PATH/$INSTALLER" "$INSTALLER" ;;
+    build_image ;;
   flash)
     set --
     for disk in $(diskutil list external physical | awk '/^\/dev\/disk/ { sub("^/dev/", "", $1); print $1 }'); do
@@ -32,7 +39,8 @@ case "${1:-status}" in
     diskutil eject "$disk" ;;
   test)
     sync_host
-    ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/image >/dev/null 2>&1 && sh build/test" ;;
+    build_image
+    ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/test" ;;
   start) ssh "$DEPLOY_HOST" "setsid $DEPLOY_PATH/build/run >/dev/null 2>&1 &" ;;
   link) ssh "$DEPLOY_HOST" "echo set_link $NIC $2 | socat - UNIX-CONNECT:$DEPLOY_PATH/build/out/monitor.sock" >/dev/null ;;
   ssh) shift; exec sshpass -p "$CONSOLE_PASSWORD" ssh -J "$DEPLOY_HOST" -p "$SSH_PORT" root@127.0.0.1 "$@" ;;
@@ -40,6 +48,10 @@ case "${1:-status}" in
   *) cat >&2 <<'USAGE'
 usage: console <command>
   status     show the running console's OTA state
+  state      show the console's screen, games, stores, audio and inputs
+  store smb://[user:password@]host/share/path  add a game store
+  input <line>...  send pad lines ("1 a 1", "1 guide 0") or events ("EV_KEY KEY_LEFTMETA 1")
+  volume <percent>  set the output volume
   update     make it sync and stage the published release
   reboot     reboot it
   poweroff   power it off

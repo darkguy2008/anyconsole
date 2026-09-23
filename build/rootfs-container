@@ -3,51 +3,75 @@ set -eux
 
 ROOTFS=/rootfs
 LIBDIR=/usr/lib/x86_64-linux-gnu
-BINARIES="/bin/busybox /bin/padd /bin/splash /sbin/sfdisk /sbin/mke2fs /sbin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd"
-RETROARCH_URL=https://buildbot.libretro.com/stable/1.22.2/linux/x86_64/RetroArch.7z
-RETROARCH_DIR=/tmp/retroarch
-SEAT="/usr/bin/cage $RETROARCH_DIR/squashfs-root/usr/bin/retroarch $LIBDIR/gbm/dri_gbm.so $LIBDIR/libEGL_mesa.so.0"
-CORE_URL=https://buildbot.libretro.com/nightly/linux/x86_64/latest/fceumm_libretro.so.zip
-ROM_URL=https://shiru.untergrund.net/files/nes/alter_ego.zip
-PAD_PROFILE_URL='https://raw.githubusercontent.com/libretro/retroarch-joypad-autoconfig/master/linuxraw/Sony%20Interactive%20Entertainment%20DualSense%20Wireless%20Controller.cfg'
-CFLAGS="-O2 -Wall -Wextra -Werror"
+BINARIES="/bin/busybox /usr/bin/mountpoint /usr/sbin/modprobe /bin/padd /bin/splash /bin/overlay /sbin/sfdisk /sbin/mke2fs /sbin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd /usr/bin/udevadm /usr/sbin/mount.cifs /usr/bin/jq"
+SEAT="/usr/bin/sway /usr/bin/swaymsg /usr/bin/wayland-info $LIBDIR/gbm/dri_gbm.so"
+EGL_VENDORS=/usr/share/glvnd/egl_vendor.d
+UDEV="/usr/bin/udevadm $LIBDIR/systemd/libsystemd-shared-*.so"
+AUDIO="/usr/bin/pipewire /usr/bin/pipewire-pulse /usr/bin/wireplumber /usr/bin/wpctl /usr/bin/pw-dump"
+AUDIO_PLUGINS="$LIBDIR/pipewire-0.3 $LIBDIR/spa-0.2 $LIBDIR/wireplumber-0.5"
+DOCKER="/usr/bin/dockerd /usr/bin/docker /usr/bin/containerd /usr/bin/containerd-shim-runc-v2 /usr/bin/runc"
+DOCKER_PLUGINS=/usr/libexec/docker/cli-plugins
+DATA="/usr/lib/udev/hwdb.bin /usr/share/pipewire /usr/share/wireplumber /usr/share/alsa /usr/share/alsa-card-profile /usr/lib/udev/rules.d /etc/fonts /usr/share/fonts/opentype/inter/Inter-Regular.otf /etc/ssl/certs/ca-certificates.crt"
+LAYER_SHELL_URL=https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/raw/master/unstable/wlr-layer-shell-unstable-v1.xml
+PROTOCOLS=$(pkg-config --variable=pkgdatadir wayland-protocols)
+CFLAGS="-O2 -Wall -Wextra -Werror -I/tmp"
 . /src/config
+. /src/guest/config
 
 make_skeleton() {
   mkdir -p $ROOTFS/etc $ROOTFS/proc $ROOTFS/sys $ROOTFS/dev $ROOTFS/run $ROOTFS/tmp \
     $ROOTFS/mnt $ROOTFS/data $ROOTFS/boot/efi $ROOTFS/usr/share/terminfo/l $ROOTFS/usr/lib $ROOTFS/var/lib \
-    $ROOTFS/www/cgi-bin $ROOTFS/opt $ROOTFS/usr/share/anyconsole
+    $ROOTFS/www/cgi-bin $ROOTFS/opt $ROOTFS/usr/share/anyconsole $ROOTFS/etc/docker $ROOTFS/etc/pipewire/pipewire.conf.d $ROOTFS/etc/wireplumber/wireplumber.conf.d
+  ln -s /run $ROOTFS/var/run
 }
 
 fetch() { curl -fsSL -R -z "$DOWNLOAD_CACHE/$1" -o "$DOWNLOAD_CACHE/$1" "$2" || [ -f "$DOWNLOAD_CACHE/$1" ]; }
 
-fetch_retroarch() {
-  fetch retroarch.7z "$RETROARCH_URL"
-  7z e -o$RETROARCH_DIR "$DOWNLOAD_CACHE/retroarch.7z" RetroArch-Linux-x86_64/RetroArch-Linux-x86_64.AppImage >/dev/null
-  chmod +x $RETROARCH_DIR/RetroArch-Linux-x86_64.AppImage
-  (cd $RETROARCH_DIR && ./RetroArch-Linux-x86_64.AppImage --appimage-extract >/dev/null)
-  for bundled in $RETROARCH_DIR/squashfs-root/usr/lib/*; do
-    ! [ -e "$LIBDIR/${bundled##*/}" ] || rm "$bundled"
-  done
+write_shared_header() {
+  for name in $SHARED_WITH_C; do
+    eval "value=\$$name"
+    printf '#define %s "%s"\n' "$name" "$value"
+  done > /tmp/anyconsole.h
 }
 
-build_padd() { gcc $CFLAGS -o /bin/padd /src/guest/padd.c $(sdl2-config --cflags --libs); }
+dlopened() {
+  { jq -r .ICD.library_path $EGL_VENDORS/*.json
+    readelf -n --wide $UDEV | sed -n 's/^.*Dlopen Metadata: //p' | jq -r '.[].soname[]'
+  } | sort -u | while read -r library; do [ ! -e "$LIBDIR/$library" ] || echo "$LIBDIR/$library"; done
+}
+
+build_padd() { gcc $CFLAGS -o /bin/padd /src/guest/padd.c $(sdl2-config --cflags --libs) $(pkg-config --cflags --libs libevdev); }
+
+generate_protocol() {
+  wayland-scanner client-header "$1" "/tmp/$(basename "$1" .xml).h"
+  wayland-scanner private-code "$1" "/tmp/$(basename "$1" .xml).c"
+}
 
 build_splash() {
-  xdg_shell=$(pkg-config --variable=pkgdatadir wayland-protocols)/stable/xdg-shell/xdg-shell.xml
-  wayland-scanner client-header "$xdg_shell" /tmp/xdg-shell.h
-  wayland-scanner private-code "$xdg_shell" /tmp/xdg-shell.c
-  gcc $CFLAGS -I/tmp -o /bin/splash /src/guest/splash.c /tmp/xdg-shell.c \
+  generate_protocol "$PROTOCOLS/stable/xdg-shell/xdg-shell.xml"
+  gcc $CFLAGS -o /bin/splash /src/guest/splash.c /tmp/xdg-shell.c \
     $(pkg-config --cflags --libs libdrm libpng pixman-1 wayland-client) -lm
   rsvg-convert -o $ROOTFS/usr/share/anyconsole/splash.png /src/guest/splash.svg
 }
 
+build_overlay() {
+  fetch wlr-layer-shell-unstable-v1.xml "$LAYER_SHELL_URL"
+  generate_protocol "$DOWNLOAD_CACHE/wlr-layer-shell-unstable-v1.xml"
+  generate_protocol "$PROTOCOLS/staging/security-context/security-context-v1.xml"
+  gcc $CFLAGS -o /bin/overlay /src/guest/overlay.c /tmp/wlr-layer-shell-unstable-v1.c /tmp/security-context-v1.c /tmp/xdg-shell.c \
+    $(pkg-config --cflags --libs cairo json-c libevdev wayland-client)
+}
+
 copy_binaries() {
-  lddtree --copy-to-tree $ROOTFS --bindir /bin --libdir /lib $BINARIES $SEAT
-  mkdir -p $ROOTFS/usr/share/glvnd/egl_vendor.d $ROOTFS/usr/share/X11 $ROOTFS$LIBDIR/gbm
-  mv $ROOTFS/bin/libEGL_mesa.so.0 $ROOTFS/lib/
+  dlopened=$(dlopened)
+  lddtree --copy-to-tree $ROOTFS --bindir /bin --libdir /lib $BINARIES $SEAT $dlopened $AUDIO $DOCKER
+  lddtree --copy-to-tree $ROOTFS --libdir /lib $(find $AUDIO_PLUGINS -name '*.so')
+  ln -s udevadm $ROOTFS/bin/systemd-udevd
+  cp -a --parents $DATA $DOCKER_PLUGINS $ROOTFS/
+  mkdir -p $ROOTFS$EGL_VENDORS $ROOTFS/usr/share/X11 $ROOTFS$LIBDIR/gbm
+  for library in $dlopened; do mv "$ROOTFS/bin/${library##*/}" $ROOTFS/lib/; done
   mv $ROOTFS/bin/dri_gbm.so $ROOTFS$LIBDIR/gbm/
-  cp /usr/share/glvnd/egl_vendor.d/50_mesa.json $ROOTFS/usr/share/glvnd/egl_vendor.d/
+  cp $EGL_VENDORS/*.json $ROOTFS$EGL_VENDORS/
   cp -a /usr/share/X11/xkb $ROOTFS/usr/share/X11/
   cp -a /usr/share/libinput $ROOTFS/usr/share/
   mkdir -p $ROOTFS$LIBDIR/gconv
@@ -79,40 +103,34 @@ configure_users() {
 
 configure_locale() {
   cp /usr/share/terminfo/l/linux $ROOTFS/usr/share/terminfo/l/
-  printf 'export LANG=C.UTF-8\nexport TERM=linux\nexport PATH=/bin:/opt/anyconsole\n' > $ROOTFS/etc/profile
+  printf 'export LANG=C.UTF-8\nexport TERM=linux\nexport PATH=/bin:/opt/anyconsole\nexport HOME=/root\nexport XDG_RUNTIME_DIR=/run/user\n' > $ROOTFS/etc/profile
 }
 
 install_system() {
   cp /src/guest/rc /src/guest/inittab $ROOTFS/etc/
   cp /src/guest/config $ROOTFS/etc/anyconsole.conf
-  cp /src/guest/otad /src/guest/installer /src/guest/mkdisk $ROOTFS/bin/
+  cp /src/guest/otad /src/guest/installer /src/guest/mkdisk /src/guest/games $ROOTFS/bin/
+  cp /src/guest/daemon.json $ROOTFS/etc/docker/
+  cp /src/guest/pipewire.conf $ROOTFS/etc/pipewire/pipewire.conf.d/anyconsole.conf
+  cp /src/guest/wireplumber.conf $ROOTFS/etc/wireplumber/wireplumber.conf.d/anyconsole.conf
   cp /src/guest/api $ROOTFS/www/cgi-bin/
   printf 'VERSION=%s\n' "$VERSION" > $ROOTFS/etc/anyconsole-release
 }
 
-install_app() {
-  cp -a /src/app $ROOTFS/opt/anyconsole
-  mkdir -p $ROOTFS/opt/anyconsole/cores $ROOTFS/opt/anyconsole/games
-  fetch core.zip "$CORE_URL"
-  7z x -y -o$ROOTFS/opt/anyconsole/cores "$DOWNLOAD_CACHE/core.zip" >/dev/null
-  fetch rom.zip "$ROM_URL"
-  7z x -y -o/tmp/rom "$DOWNLOAD_CACHE/rom.zip" >/dev/null
-  cp "$(find /tmp/rom -iname '*.nes' | head -1)" $ROOTFS/opt/anyconsole/games/alter_ego.nes
-  fetch pad-profile.cfg "$PAD_PROFILE_URL"
-  install -D "$DOWNLOAD_CACHE/pad-profile.cfg" -t $ROOTFS/opt/anyconsole/autoconfig/linuxraw
-}
+install_app() { cp -a /src/app $ROOTFS/opt/anyconsole; }
 
 finalize() {
-  chmod +x $ROOTFS/etc/rc $ROOTFS/bin/otad $ROOTFS/bin/installer $ROOTFS/bin/mkdisk $ROOTFS/www/cgi-bin/api
+  chmod +x $ROOTFS/etc/rc $ROOTFS/bin/otad $ROOTFS/bin/installer $ROOTFS/bin/mkdisk $ROOTFS/bin/games $ROOTFS/www/cgi-bin/api
   cp -a /src/build/out/stage/. $ROOTFS/
   mknod $ROOTFS/dev/console c 5 1
   mknod $ROOTFS/dev/null c 1 3
 }
 
 make_skeleton
-fetch_retroarch
+write_shared_header
 build_padd
 build_splash
+build_overlay
 copy_binaries
 install_busybox
 configure_network

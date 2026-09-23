@@ -1,8 +1,6 @@
 #!/bin/sh
 . /etc/profile
-export XDG_RUNTIME_DIR=/run/user
+. /etc/anyconsole.conf
 export LIBSEAT_BACKEND=builtin
-export WLR_LIBINPUT_NO_DEVICES=1
-mkdir -p "$XDG_RUNTIME_DIR"
-exec >>/data/kiosk.log 2>&1
-exec unshare -m --propagation private sh -c "mount --bind /run/pads /dev/input && exec cage -- /opt/anyconsole/session"
+exec >>"$LOG_DIR/kiosk.log" 2>&1
+exec unshare -m --propagation private sh -c "mount --bind $INPUT_NODES /dev/input && exec sway --config /opt/anyconsole/sway.conf"

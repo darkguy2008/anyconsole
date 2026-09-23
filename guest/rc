@@ -1,4 +1,5 @@
 #!/bin/sh
+. /etc/profile
 . /etc/anyconsole.conf
 mount -t proc proc /proc
 mkdir -p /dev/pts
@@ -16,7 +17,10 @@ for status in /sys/class/drm/card*-*/status; do
   grub-editenv "$GRUBENV" list | grep -qxF "gfxmode=$gfxmode" || grub-editenv "$GRUBENV" set gfxmode="$gfxmode"
   break
 done
-mkdir -p /data/root /data/ota /data/dhcpcd /data/dropbear /run/pads
+mkdir -p /data/root /data/ota /data/dhcpcd /data/dropbear /data/saves /run/stores "$GAMES_DIR" "$LOG_DIR" \
+  "$PAD_NODES" "$INPUT_NODES" "$INPUTS_DIR" "$CATALOG_DIR" "$SOCKETS_DIR"
+mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+mount -t cgroup2 cgroup2 /sys/fs/cgroup
 otad mark-good
 read -r boot_count 2>/dev/null < /data/boots || boot_count=0
 boot_count=$((boot_count + 1))

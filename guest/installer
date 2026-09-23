@@ -1,8 +1,12 @@
 #!/bin/sh
 . /etc/anyconsole.conf
+mount -t tmpfs tmpfs /run
+mount -t tmpfs tmpfs /tmp
 load_drivers
 own_disk=$(basename "$(readlink -f "/sys/class/block/$(findfs LABEL=installer | cut -c6-)/..")")
 SECTOR_BYTES=512
+INSTALL_LOG=/tmp/install.log
+FAILURE_LINES=15
 BYTES_PER_GB=$((1024 * 1024 * 1024))
 
 wait_key() { echo "$1"; read -r _; }
@@ -30,9 +34,7 @@ choose_disk() {
 }
 
 start_ssh() {
-  mount -t tmpfs tmpfs /tmp
   mount -t tmpfs tmpfs /data
-  mount -t tmpfs tmpfs /run
   mkdir -p /data/root /data/dhcpcd /data/dropbear /dev/pts
   mount -t devpts devpts /dev/pts
   dhcpcd -4 -w eth0 >/dev/null 2>&1
@@ -43,7 +45,7 @@ start_ssh() {
 install() {
   mount --bind / /mnt
   mount "$(findfs LABEL=INSTALL)" /boot/efi
-  mkdisk "$target" /mnt /boot/efi
+  mkdisk "$target" /mnt /boot/efi > $INSTALL_LOG 2>&1
 }
 
 echo "anyconsole installer"
@@ -52,6 +54,7 @@ until choose_disk; do :; done
 if install; then
   wait_key "Installed. Remove the USB drive and press Enter to reboot."
 else
-  wait_key "Install failed. Press Enter to reboot."
+  tail -n $FAILURE_LINES $INSTALL_LOG
+  wait_key "Install failed, full log in $INSTALL_LOG. Press Enter to reboot."
 fi
 restart

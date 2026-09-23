@@ -6,4 +6,16 @@ NIC=nic0
 DEPLOY_HOST=ale
 DEPLOY_PATH=anyconsole
 
+TEST_STORE=build/out/store
+TEST_STORE_URL=smb://10.0.2.4/qemu
+
+run_qemu() {
+  vars=$1 disk=$2 forwards=$3
+  shift 3
+  qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 4 -m 4096 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd -drive if=pflash,format=raw,file="$vars" \
+    -device ich9-ahci,id=ahci -drive file="$disk",format=raw,if=none,id=d0 -device ide-hd,drive=d0,bus=ahci.0 \
+    -netdev user,id=net0,$forwards,smb=$PWD/$TEST_STORE -device e1000e,netdev=net0,id=$NIC \
+    -audiodev none,id=sound -device ich9-intel-hda -device hda-micro,audiodev=sound -vga std "$@"
+}
 sync_host() { rsync -a --delete --exclude .git --exclude-from=.gitignore ./ "$DEPLOY_HOST:$DEPLOY_PATH/"; }
