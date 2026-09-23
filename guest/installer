@@ -1,6 +1,6 @@
 #!/bin/sh
 . /etc/anyconsole.conf
-modprobe -a $MODULES
+load_drivers
 own_disk=$(basename "$(readlink -f "/sys/class/block/$(findfs LABEL=installer | cut -c6-)/..")")
 SECTOR_BYTES=512
 BYTES_PER_GB=$((1024 * 1024 * 1024))

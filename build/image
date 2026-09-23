@@ -13,14 +13,25 @@ build_esp() {
   rm -rf "$ESP"
   mkdir -p "$ESP/EFI/BOOT" "$ESP/grub"
   grub-mkimage -O x86_64-efi -p '(,gpt1)/grub' -o "$ESP/EFI/BOOT/BOOTX64.EFI" \
-    part_gpt ext2 fat normal linux search search_label test all_video gfxterm efi_gop loadenv
+    part_gpt ext2 fat normal linux search search_label test all_video gfxterm gfxmenu png efi_gop loadenv
+  cp "$RELEASE/usr/share/anyconsole/splash.png" "$ESP/grub/"
+  cat > "$ESP/grub/theme.txt" <<'THEME'
+desktop-image: "splash.png"
+desktop-image-scale-method: "padding"
+desktop-color: "#000000"
++ boot_menu { width = 0 height = 0 }
+THEME
   cat > "$ESP/grub/grub.cfg" <<'GRUB'
 set timeout=2
+load_env
+set gfxpayload=keep
+set theme=$prefix/theme.txt
+terminal_output gfxterm
 if search --no-floppy --label installer --set=root; then
   set label=installer
-  set extra="quiet init=/bin/installer"
+  set extra="console=tty0 quiet init=/bin/installer"
 else
-  load_env
+  set extra="drm_kms_helper.fbdev_emulation=0"
   set target="$prev"
   if [ "$tries" = "1" ]; then
     set target="$slot"
@@ -28,16 +39,15 @@ else
     save_env tries
   fi
   set label="root-$target"
-  set extra=""
   search --no-floppy --label "$label" --set=root
 fi
 menuentry "anyconsole ($label)" {
-  linux /boot/kernel console=ttyS0 console=tty0 rootfstype=ext4 rw root=LABEL=$label $extra
+  linux /boot/kernel console=ttyS0 rootfstype=ext4 rw root=LABEL=$label $extra
   initrd /boot/initramfs
 }
 GRUB
   grub-editenv "$ESP/grub/grubenv" create
-  grub-editenv "$ESP/grub/grubenv" set slot=a prev=a tries=1
+  grub-editenv "$ESP/grub/grubenv" set slot=a prev=a tries=1 gfxmode=auto
 }
 
 build_disk() {

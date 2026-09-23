@@ -6,24 +6,33 @@ cd "$(dirname "$0")/.."
 
 VERSION=$(cat VERSION)
 KERNEL_VERSION=$(basename /lib/modules/*-lts)
+MODULE_DIR=/lib/modules/$KERNEL_VERSION
 STAGE=build/out/stage
-INITRAMFS_CACHE=build/out/cache/initramfs-$KERNEL_VERSION
+INITRAMFS_FEATURES="base ata scsi usb nvme ext4"
+INITRAMFS_CACHE=build/out/cache/initramfs-$KERNEL_VERSION-$(echo $INITRAMFS_FEATURES | tr " " -)
+DISPLAY_FEATURE=/etc/mkinitfs/features.d/kms.modules
 RELEASE=rel/$VERSION
 BASE_IMAGE=anyconsole-rootfs-base
 
+display_modules() {
+  cd "$MODULE_DIR" && for entry in $(cat "$DISPLAY_FEATURE"); do
+    [ ! -e "$entry" ] || find "$entry" -name "*.ko.gz" -exec basename -s .ko.gz -a {} +
+  done
+}
+
 stage_kernel() {
+  modules="$MODULES $(display_modules)"
   rm -rf "$STAGE"
   mkdir -p "$STAGE/boot" build/out/cache
   [ -f "$INITRAMFS_CACHE" ] ||
-    mkinitfs -F "base ata scsi usb nvme ext4 kms" -o "$INITRAMFS_CACHE" "$KERNEL_VERSION"
+    mkinitfs -F "$INITRAMFS_FEATURES" -o "$INITRAMFS_CACHE" "$KERNEL_VERSION"
   cp "$INITRAMFS_CACHE" "$STAGE/boot/initramfs"
   cp /boot/vmlinuz-lts "$STAGE/boot/kernel"
-  cp --parents -t "$STAGE" "/lib/modules/$KERNEL_VERSION/modules.builtin"
-  for module in $MODULES; do modprobe --show-depends "$module"; done |
-    awk '$1 == "insmod" { print $2 }' | sort -u | xargs cp --parents -t "$STAGE"
-  for module in $MODULES; do modinfo -F firmware "$module"; done |
-    sort -u | while read -r firmware; do cp --parents -t "$STAGE" /lib/firmware/$firmware*; done
-  find "$STAGE/lib/modules/$KERNEL_VERSION" -name '*.ko.gz' -exec gunzip -f {} +
+  cp --parents -t "$STAGE" "$MODULE_DIR/modules.builtin" "$MODULE_DIR/modules.builtin.modinfo" "$MODULE_DIR/modules.order"
+  modprobe -a --show-depends $modules | awk '$1 == "insmod" { print $2 }' | sort -u | xargs cp --parents -t "$STAGE"
+  modinfo -F firmware $modules | sort -u | while read -r firmware; do
+    for file in /lib/firmware/$firmware*; do [ ! -e "$file" ] || cp --parents -t "$STAGE" "$file"; done
+  done
   depmod -b "$PWD/$STAGE" "$KERNEL_VERSION"
 }
 
