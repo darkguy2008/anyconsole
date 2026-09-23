@@ -6,14 +6,21 @@ mount -t devpts -o ptmxmode=0666 devpts /dev/pts
 ln -sf pts/ptmx /dev/ptmx
 mount -t ramfs ramfs /run
 mount -o remount,rw /
-modprobe -a $MODULES
+load_drivers
+splash drm
 mount -t ext4 "$(findfs LABEL=data)" /data
 mount -t vfat "$(findfs LABEL=ESP)" /boot/efi
+for status in /sys/class/drm/card*-*/status; do
+  [ "$(cat "$status")" = connected ] || continue
+  gfxmode="$(head -1 "${status%/status}/modes"),auto"
+  grub-editenv "$GRUBENV" list | grep -qxF "gfxmode=$gfxmode" || grub-editenv "$GRUBENV" set gfxmode="$gfxmode"
+  break
+done
 mkdir -p /data/root /data/ota /data/dhcpcd /data/dropbear /run/pads
 otad mark-good
 read -r boot_count 2>/dev/null < /data/boots || boot_count=0
 boot_count=$((boot_count + 1))
 echo "$boot_count" > /data/boots
 . /etc/anyconsole-release
-echo "anyconsole $VERSION slot=$(otad slot) boots=$boot_count" | tee /dev/tty1 > /dev/ttyS0
+echo "anyconsole $VERSION slot=$(otad slot) boots=$boot_count"
 setsid otad watch >> /data/otad.log 2>&1 &

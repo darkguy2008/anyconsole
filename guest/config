@@ -1,5 +1,7 @@
-MODULES="e1000e r8169 af_packet vfat nls_cp437 nls_utf8 virtio_pci virtio_gpu evdev uinput joydev usbhid hid-generic"
+MODULES="e1000e r8169 af_packet vfat nls_cp437 nls_utf8 virtio_pci evdev uinput joydev usbhid hid-generic"
 API_PORT=8080
+
+load_drivers() { modprobe -a $MODULES; modprobe -qa $(cat /sys/bus/*/devices/*/modalias); }
 
 OTA_HOST=10.0.0.236
 OTA_INTERVAL=5

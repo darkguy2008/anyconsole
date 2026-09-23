@@ -1,5 +1,7 @@
 #!/bin/sh
 mkdir -p /data/retroarch/saves /data/retroarch/states
+killall -q splash
+splash wayland
 retroarch --config /opt/anyconsole/retroarch.cfg \
   -L /opt/anyconsole/cores/fceumm_libretro.so \
   /opt/anyconsole/games/alter_ego.nes &
