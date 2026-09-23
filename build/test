@@ -1,0 +1,58 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+. config
+VERSION=$(cat VERSION)
+OUT=build/out/test
+TARGET_SIZE=8G
+SSH_TEST_PORT=2223
+POLL_SECONDS=2
+POLL_ATTEMPTS=90
+
+monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
+guest() {
+  sshpass -p "$CONSOLE_PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR -o ConnectTimeout=$POLL_SECONDS -p $SSH_TEST_PORT root@127.0.0.1 "$@"
+}
+wait_for() {
+  attempt=0
+  until "$@" >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    [ $attempt -le $POLL_ATTEMPTS ] || { echo "FAIL: timed out waiting for: $*" >&2; exit 1; }
+    sleep $POLL_SECONDS
+  done
+}
+booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /data/boots) = $1 ] && pidof retroarch"; }
+
+start_vm() {
+  rm -rf $OUT
+  mkdir -p $OUT
+  truncate -s $TARGET_SIZE $OUT/target.img
+  cp /usr/share/OVMF/OVMF_VARS.fd $OUT/efivars.fd
+  qemu-system-x86_64 \
+    -machine q35,accel=kvm -cpu host -smp 2 -m 2048 -display none \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+    -drive if=pflash,format=raw,file=$OUT/efivars.fd \
+    -device ich9-ahci,id=ahci -drive file=$OUT/target.img,format=raw,if=none,id=d0 -device ide-hd,drive=d0,bus=ahci.0 \
+    -device qemu-xhci -drive file=build/out/installer.img,format=raw,if=none,id=usb0 -device usb-storage,drive=usb0,id=stick \
+    -netdev user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_TEST_PORT-:22 -device e1000e,netdev=net0 \
+    -vga none -device virtio-gpu-pci \
+    -monitor unix:$OUT/monitor.sock,server,nowait \
+    -serial file:$OUT/serial.log &
+  trap 'monitor quit' EXIT
+}
+
+install_from_stick() {
+  wait_for guest true
+  for key in 1 ret y ret; do monitor "sendkey $key"; done
+  wait_for guest 'findfs LABEL=data && ! pidof mkdisk'
+  monitor "device_del stick"
+  monitor "sendkey ret"
+}
+
+start_vm
+install_from_stick
+wait_for booted 1
+guest reboot
+wait_for booted 2
+echo "PASS: v$VERSION installed from USB, booted twice into the kiosk"

@@ -30,9 +30,27 @@ case "${1:-status}" in
     diskutil unmountDisk "$disk"
     sudo dd if="$INSTALLER" of="/dev/r$disk" bs=4m status=progress
     diskutil eject "$disk" ;;
+  test)
+    sync_host
+    ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/image >/dev/null 2>&1 && sh build/test" ;;
   start) ssh "$DEPLOY_HOST" "setsid $DEPLOY_PATH/build/run >/dev/null 2>&1 &" ;;
   link) ssh "$DEPLOY_HOST" "echo set_link $NIC $2 | socat - UNIX-CONNECT:$DEPLOY_PATH/build/out/monitor.sock" >/dev/null ;;
   ssh) shift; exec sshpass -p "$CONSOLE_PASSWORD" ssh -J "$DEPLOY_HOST" -p "$SSH_PORT" root@127.0.0.1 "$@" ;;
   log) ssh "$DEPLOY_HOST" "tail -n ${2:-40} $DEPLOY_PATH/build/out/boot.log" ;;
-  *) echo "usage: console [status|update|reboot|poweroff|push|image|flash|start|link on|off|ssh|log]" >&2; exit 1 ;;
+  *) cat >&2 <<'USAGE'
+usage: console <command>
+  status     show the running console's OTA state
+  update     make it sync and stage the published release
+  reboot     reboot it
+  poweroff   power it off
+  push       deploy a new release, then update and reboot it
+  image      build disk + USB installer on the build host, fetch installer.img
+  flash      write installer.img to an external disk (erases it)
+  test       build, then install from the USB image and boot twice in QEMU
+  start      boot the QEMU test VM on the build host
+  link on|off  connect or unplug the VM's network cable
+  ssh [cmd]  shell into the running console
+  log [n]    tail the VM's serial boot log
+USAGE
+    exit 1 ;;
 esac
