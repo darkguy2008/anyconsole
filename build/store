@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+. config
+DOWNLOADS=build/out/cache/downloads
+NES_HOMEBREW=https://web.archive.org/web/2020id_/https://shiru.untergrund.net/files/nes
+DOS_SHAREWARE=https://www.commander-keen.com/downloads
+
+fetch() { curl -fsSL -R -z "$DOWNLOADS/$1" -o "$DOWNLOADS/$1" "$2" || [ -f "$DOWNLOADS/$1" ]; }
+
+add_game() {
+  mkdir -p "$TEST_STORE/$1/$3/rom"
+  jq -n --arg title "$2" '{title: $title}' > "$TEST_STORE/$1/manifest.json"
+  cp "$4" "$TEST_STORE/$1/$3/rom/$2.${4##*.}"
+}
+
+add_nes_homebrew() {
+  fetch "$2.zip" "$NES_HOMEBREW/$2.zip"
+  rm -rf "/tmp/$2" && mkdir "/tmp/$2" && unzip -q "$DOWNLOADS/$2.zip" -d "/tmp/$2"
+  add_game "$1" "$3" nes "$(find "/tmp/$2" -iname '*.nes' | head -1)"
+}
+
+mkdir -p "$DOWNLOADS"
+rm -rf "$TEST_STORE"
+add_nes_homebrew alter-ego alter_ego "Alter Ego"
+add_nes_homebrew lan-master lan_master "LAN Master"
+fetch keen1.zip "$DOS_SHAREWARE/keen1.zip"
+add_game commander-keen "Commander Keen" msdos "$DOWNLOADS/keen1.zip"

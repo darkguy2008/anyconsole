@@ -29,9 +29,12 @@ stage_kernel() {
 stage_modules() {
   rm -rf "$MODULE_TREE"
   mkdir -p "$MODULE_FEATURES" "$STAGE/lib"
-  modinfo -n $MODULES | sed "s|^$MODULE_DIR/||" > "$MODULE_FEATURES/anyconsole.modules"
+  softdeps=$(modinfo -F softdep $MODULES | tr ' ' '\n' | grep -v ':$')
+  { modinfo -n $MODULES $softdeps | grep "^$MODULE_DIR/" | sed "s|^$MODULE_DIR/||"; printf "%s\n" $MODULE_TREES; } > "$MODULE_FEATURES/anyconsole.modules"
   mkinitfs -l -k -t "$PWD/$MODULE_TREE" -P "$PWD/$MODULE_FEATURES" -F "base kms anyconsole" "$KERNEL_VERSION" >/dev/null
   cp -a "$MODULE_TREE/lib/modules" "$MODULE_TREE/lib/firmware" "$STAGE/lib/"
+  find "$STAGE/lib/modules" -name '*.ko.gz' -exec gunzip {} +
+  depmod -b "$STAGE" "$KERNEL_VERSION"
 }
 
 build_base() {

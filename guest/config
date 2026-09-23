@@ -1,7 +1,27 @@
-MODULES="e1000e r8169 af_packet vfat nls_cp437 nls_utf8 virtio_pci evdev uinput joydev usbhid hid-generic"
+MODULES="e1000e r8169 af_packet vfat nls_cp437 nls_utf8 virtio_pci evdev uinput joydev usbhid hid-generic overlay cifs"
+MODULE_TREES="kernel/sound"
 API_PORT=8080
 
-load_drivers() { modprobe -a $MODULES; modprobe -qa $(cat /sys/bus/*/devices/*/modalias); }
+PAD_FIFO=/run/pad
+PAD_NODES=/run/pads
+INPUT_NODES=/run/input
+INPUTS_DIR=/run/inputs
+STATE_FILE=/run/state.json
+STORES_FILE=/data/stores
+CATALOG_DIR=/run/catalog
+GAMES_DIR=/data/games
+SOCKETS_DIR=/run/games
+LOG_DIR=/data/log
+GUIDE_DEVICE="anyconsole guide"
+VOLUME_LIMIT=1.0
+SHARED_WITH_C="PAD_FIFO PAD_NODES INPUT_NODES INPUTS_DIR STATE_FILE STORES_FILE CATALOG_DIR GAMES_DIR SOCKETS_DIR LOG_DIR GUIDE_DEVICE VOLUME_LIMIT"
+
+load_drivers() {
+  modprobe -a $MODULES
+  systemd-udevd --daemon
+  udevadm trigger --action=add
+  udevadm settle
+}
 
 OTA_HOST=10.0.0.236
 OTA_INTERVAL=5

@@ -1,0 +1,101 @@
+#!/bin/sh
+set -eu
+. /etc/anyconsole.conf
+MOUNTS=/run/stores
+SAVES=/data/saves
+RECIPES=/opt/anyconsole/recipes
+PLATFORMS=/run/platforms
+IMAGE=anyconsole
+LAUNCH_LABEL=anyconsole.launch
+GAME_LABEL=anyconsole.game
+SMB=smb://
+
+platforms() {
+  [ -s $PLATFORMS ] || docker build -q --call targets,format=json $RECIPES |
+    jq -r '.targets[] | select(.description) | .name' > $PLATFORMS
+  cat $PLATFORMS
+}
+
+build() { docker build -q --network host --target "$1" -t "$IMAGE/$1" $RECIPES >/dev/null; }
+
+mount_store() {
+  share=${2#"$SMB"} options=ro,soft
+  case $share in
+    *@*) credentials=${share%%@*} share=${share#*@} ;;
+    *) credentials= options=$options,guest ;;
+  esac
+  mkdir -p "$MOUNTS/$1"
+  mountpoint -q "$MOUNTS/$1" ||
+    USER=${credentials%%:*} PASSWD=${credentials#*:} mount.cifs "//$share" "$MOUNTS/$1" -o "$options"
+}
+
+refresh_store() {
+  mount_store "$1" "$2" &&
+    rsync -a --delete --delay-updates --include='/*/' --include='/*/manifest.json' \
+      $(platforms | sed 's|.*|--include=/*/&/|') --exclude='*' "$MOUNTS/$1/" "$CATALOG_DIR/$1/" ||
+    { rm -rf "${CATALOG_DIR:?}/$1"; ! mountpoint -q "$MOUNTS/$1" || umount -l "$MOUNTS/$1"; }
+}
+
+refresh() {
+  store=0
+  [ -f "$STORES_FILE" ] || return 0
+  platforms >/dev/null
+  while read -r url; do
+    store=$((store + 1))
+    refresh_store $store "$url" &
+  done < "$STORES_FILE"
+  wait
+}
+
+install() {
+  echo "preparing $3"
+  build "$3"
+  echo "copying"
+  rm -rf "$GAMES_DIR/$2/.$3"
+  mkdir -p "$GAMES_DIR/$2/.$3"
+  cp "$MOUNTS/$1/$2/manifest.json" "$GAMES_DIR/$2/"
+  rsync -a "$MOUNTS/$1/$2/$3/rom/" "$GAMES_DIR/$2/.$3/rom/"
+  mv "$GAMES_DIR/$2/.$3" "$GAMES_DIR/$2/$3"
+}
+
+uninstall() {
+  rm -rf "${GAMES_DIR:?}/$1/$2"
+  [ -n "$(find "$GAMES_DIR/$1" -mindepth 1 -maxdepth 1 -type d)" ] || rm -rf "${GAMES_DIR:?}/$1"
+}
+
+launch_file() {
+  for extension in $(docker image inspect -f "{{index .Config.Labels \"$LAUNCH_LABEL\"}}" "$IMAGE/$2"); do
+    file=$(find "$1" -maxdepth 1 -iname "*.$extension" | head -n 1)
+    [ -z "$file" ] || { echo "${file##*/}"; return; }
+  done
+  echo "no launchable file in $1" >&2
+  return 1
+}
+
+run() {
+  rom=$GAMES_DIR/$1/$2/rom saves=$SAVES/$1-$2
+  docker image inspect "$IMAGE/$2" >/dev/null 2>&1 || build "$2"
+  file=$(launch_file "$rom" "$2")
+  mkdir -p "$saves"
+  exec docker run --rm -i --label "$GAME_LABEL=$1/$2" \
+    --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp \
+    --device /dev/dri --device-cgroup-rule 'c 13:* rm' -v "$PAD_NODES:/dev/input:ro" \
+    -v "$3:/run/wayland" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
+    -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
+    -v "$rom:/game:ro" -v "$saves:/saves" "$IMAGE/$2" "/game/$file"
+}
+
+stop() { docker ps -q --filter "label=$GAME_LABEL" | xargs -r docker rm -f >/dev/null; }
+
+case "${1:-}" in
+  refresh|install|uninstall|run|stop) command=$1; shift; $command "$@" ;;
+  *) cat >&2 <<'USAGE'
+usage: games <command>
+  refresh                         mount every store in /data/stores and list its games
+  install <store> <slug> <platform>  build the platform recipe and copy the game from a store
+  uninstall <slug> <platform>     delete an installed game, keeping its saves
+  run <slug> <platform> <wayland dir>  play an installed game in its sandbox
+  stop                            remove every running game container
+USAGE
+    exit 1 ;;
+esac

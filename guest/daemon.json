@@ -1,0 +1,1 @@
+{"data-root": "/data/docker", "bridge": "none", "iptables": false, "ip6tables": false, "userland-proxy": false}
