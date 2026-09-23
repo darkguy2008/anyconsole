@@ -25,8 +25,10 @@ mount_store() {
     *) credentials= options=$options,guest ;;
   esac
   mkdir -p "$MOUNTS/$1"
-  mountpoint -q "$MOUNTS/$1" ||
-    USER=${credentials%%:*} PASSWD=${credentials#*:} mount.cifs "//$share" "$MOUNTS/$1" -o "$options"
+  mounted=$(awk -v point="$MOUNTS/$1" '$2 == point { print $1 }' /proc/mounts)
+  [ "$mounted" != "//$share" ] || return 0
+  [ -z "$mounted" ] || umount -l "$MOUNTS/$1"
+  USER=${credentials%%:*} PASSWD=${credentials#*:} mount.cifs "//$share" "$MOUNTS/$1" -o "$options"
 }
 
 refresh_store() {
@@ -36,15 +38,26 @@ refresh_store() {
     { rm -rf "${CATALOG_DIR:?}/$1"; ! mountpoint -q "$MOUNTS/$1" || umount -l "$MOUNTS/$1"; }
 }
 
+prune() {
+  for catalog in "$CATALOG_DIR"/*; do
+    [ ! -d "$catalog" ] || [ "${catalog##*/}" -le "$1" ] || rm -rf "$catalog"
+  done
+  for mount in "$MOUNTS"/*; do
+    [ ! -d "$mount" ] || [ "${mount##*/}" -le "$1" ] || { ! mountpoint -q "$mount" || umount -l "$mount"; rmdir "$mount"; }
+  done
+}
+
 refresh() {
   store=0
-  [ -f "$STORES_FILE" ] || return 0
-  platforms >/dev/null
-  while read -r url; do
-    store=$((store + 1))
-    refresh_store $store "$url" &
-  done < "$STORES_FILE"
-  wait
+  if [ -f "$STORES_FILE" ]; then
+    platforms >/dev/null
+    while read -r url; do
+      store=$((store + 1))
+      refresh_store $store "$url" &
+    done < "$STORES_FILE"
+    wait
+  fi
+  prune $store
 }
 
 install() {
