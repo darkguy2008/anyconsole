@@ -3,4 +3,3 @@ killall -q splash
 splash wayland
 games stop
 overlay
-swaymsg exit

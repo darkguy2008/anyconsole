@@ -21,6 +21,7 @@ case "${1:-status}" in
     esac ;;
   input) shift; api POST input "$(printf '%s\n' "$@")" ;;
   volume) api POST volume "$2" ;;
+  set) api POST settings "$2 ${3:-}" ;;
   update|reboot|poweroff) api POST "$1" ;;
   push)
     ./deploy
@@ -48,7 +49,7 @@ case "${1:-status}" in
     ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/test" ;;
   start) ssh "$DEPLOY_HOST" "setsid $DEPLOY_PATH/build/run >/dev/null 2>&1 &" ;;
   link) ssh "$DEPLOY_HOST" "echo set_link $NIC $2 | socat - UNIX-CONNECT:$DEPLOY_PATH/build/out/monitor.sock" >/dev/null ;;
-  ssh) shift; exec sshpass -p "$CONSOLE_PASSWORD" ssh -J "$DEPLOY_HOST" -p "$SSH_PORT" root@127.0.0.1 "$@" ;;
+  ssh) shift; password_ssh -J "$DEPLOY_HOST" -p "$SSH_PORT" root@127.0.0.1 "$@" ;;
   log) ssh "$DEPLOY_HOST" "tail -n ${2:-40} $DEPLOY_PATH/build/out/boot.log" ;;
   *) cat >&2 <<'USAGE'
 usage: console <command>
@@ -58,6 +59,8 @@ usage: console <command>
   store del <n>  remove the nth store listed by state
   input <line>...  send pad lines ("1 a 1", "1 guide 0") or events ("EV_KEY KEY_LEFTMETA 1")
   volume <percent>  set the output volume
+  set display [label]  show the console on this display from state (none = Auto)
+  set resolution <height>  render games and menus at this 16:9 height (0 = Auto)
   update     make it sync and stage the published release
   reboot     reboot it
   poweroff   power it off

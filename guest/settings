@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+. /etc/anyconsole.conf
+case "${1:-} ${2:-}" in
+  "display "*) ;;
+  "resolution "*) case " 0 $RESOLUTIONS " in *" $2 "*) ;; *) echo "resolution must be 0 (Auto) or one of: $RESOLUTIONS" >&2; exit 1 ;; esac ;;
+  *) echo "usage: settings display [label] | settings resolution <height>" >&2; exit 1 ;;
+esac
+exec 9>"$SETTINGS_FILE.lock"
+flock 9
+{ cat "$SETTINGS_FILE" 2>/dev/null || echo '{}'; } |
+  jq --arg name "$1" --arg value "${2:-}" '.[$name] = (if $name == "resolution" then $value | tonumber else $value end)' > "$SETTINGS_FILE.partial"
+mv "$SETTINGS_FILE.partial" "$SETTINGS_FILE"

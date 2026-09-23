@@ -15,10 +15,12 @@ BOOT_SECONDS=180
 INSTALL_SECONDS=1200
 STARTED=$(date +%s)
 TEST_VOLUME=10
+SECOND_DISPLAY_WIDTH=1920
+SECOND_DISPLAY_HEIGHT=1080
 
 monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
 guest() {
-  sshpass -p "$CONSOLE_PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  password_ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o LogLevel=ERROR -o ConnectTimeout=1 -o ControlMaster=auto -o ControlPath=$OUT/ssh.sock -o ControlPersist=yes \
     -p $SSH_TEST_PORT root@127.0.0.1 "$@"
 }
@@ -52,7 +54,7 @@ choose() {
   done
   tap a
 }
-snapshot() { monitor "screendump $OUT/$1.ppm"; wait_for $STEP_SECONDS test -s "$OUT/$1.ppm"; magick "$OUT/$1.ppm" "$OUT/$1.png"; rm "$OUT/$1.ppm"; }
+snapshot() { monitor "screendump $OUT/$1.png -f png"; wait_for $STEP_SECONDS test -s "$OUT/$1.png"; }
 booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /data/boots) = $1 ] && pidof overlay && [ -s $STATE_FILE ]"; }
 
 start_vm() {
@@ -64,7 +66,7 @@ start_vm() {
   run_qemu $OUT/efivars.fd $OUT/target.img \
     "hostfwd=tcp:127.0.0.1:$SSH_TEST_PORT-:22,hostfwd=tcp:127.0.0.1:$API_TEST_PORT-:$API_PORT" \
     -device qemu-xhci -drive file=build/out/installer.img,format=raw,if=none,id=usb0 -device usb-storage,drive=usb0,id=stick \
-    -display none -monitor unix:$OUT/monitor.sock,server,nowait -serial file:$OUT/serial.log &
+    -device virtio-gpu-pci,xres=$SECOND_DISPLAY_WIDTH,yres=$SECOND_DISPLAY_HEIGHT -display none -monitor unix:$OUT/monitor.sock,server,nowait -serial file:$OUT/serial.log &
   trap 'monitor quit' EXIT
 }
 
@@ -86,9 +88,7 @@ install_game() {
 
 play_game() {
   choose Play
-  expect ".active == \"$1\" and (.dashboard | not) and ($(status_of "$1" running))"
-  wait_for $STEP_SECONDS guest "swaymsg -s /run/user/sway-ipc.*.sock -t get_tree | jq -e '[.. | objects | select(.type? == \"workspace\" and .name == \"$1\") | .. | .app_id? | strings] | length == 1'"
-  log ok "$1 window is up on its workspace"
+  expect ".active == \"$1\" and (.dashboard | not) and ($(status_of "$1" running)) and .display.shown == \"$1\" and .display.frame == .display.canvas"
   sandbox_globals=$(guest "WAYLAND_DISPLAY=$SOCKETS_DIR/${1%/*}-${1#*/}/wayland-0 wayland-info")
   echo "$sandbox_globals" | grep -q "'wl_compositor'" && ! echo "$sandbox_globals" | grep -q -e zwlr_layer_shell_v1 -e zwlr_screencopy_manager_v1 ||
     { log FAIL "$1 is not confined by its security context" >&2; exit 1; }
@@ -98,6 +98,35 @@ play_game() {
 open_store() {
   choose Store
   expect '.screen == "store"'
+}
+
+change_resolution_in_settings() {
+  choose Settings
+  expect '.screen == "settings"'
+  choose Resolution
+  tap dpright
+  expect '.settings.resolution == 720 and .display.canvas == "1280x720"'
+  tap dpright
+  expect '.settings.resolution == 1080 and .display.canvas == "1920x1080" and .display.filter == "linear"'
+  snapshot settings
+  api POST settings "resolution 0" >/dev/null
+  expect '.settings.resolution == 0 and .display.canvas == .display.area'
+  ! api POST settings "resolution 1" 2>/dev/null || { log FAIL "accepted a resolution outside RESOLUTIONS" >&2; exit 1; }
+  log ok "rejected a resolution outside RESOLUTIONS"
+  tap b
+  expect '.screen == "home"'
+}
+
+switch_gpu_after_games() {
+  second=$(state | jq -r '.display as $display | $display.displays[] | select(.gpu != $display.gpu) | .label')
+  api POST settings "display $second" >/dev/null
+  expect ".display.pending == \"$second\" and any(.notifications[]; startswith(\"Close and restart your games\")) and .display.shown == \"$1\""
+  guest games stop
+  expect ".display.pending == null and .display.display == \"$second\" and .display.area == \"${SECOND_DISPLAY_WIDTH}x$SECOND_DISPLAY_HEIGHT\" and .screen == \"home\""
+  api POST settings "resolution 720" >/dev/null
+  expect '.display.canvas == "1280x720" and .display.filter == "pixel"'
+  api POST settings "display" >/dev/null
+  expect ".settings.display == \"\" and .display.display == \"$second\""
 }
 
 back_to_dashboard() {
@@ -110,8 +139,9 @@ back_to_dashboard() {
 start_vm
 install_from_stick
 wait_for $BOOT_SECONDS booted 1
-expect '.screen == "home" and .dashboard and (.rows | length) == 1'
+expect '.screen == "home" and .dashboard and (.rows | length) == 2 and (.display.displays | length) == 2 and .display.canvas == .display.area and .display.filter == "nearest"'
 snapshot home
+change_resolution_in_settings
 
 api POST stores "$TEST_STORE_URL" >/dev/null
 expect '.stores[0].online and ([.games[].key] | index("alter-ego/nes") != null)'
@@ -120,6 +150,11 @@ open_store
 install_game alter-ego/nes "Alter Ego"
 play_game alter-ego/nes
 snapshot alter-ego
+api POST settings "resolution 1080" >/dev/null
+expect ".display.canvas == \"1920x1080\" and .display.frame == .display.canvas and ($(status_of alter-ego/nes running))"
+snapshot alter-ego-1080
+api POST settings "resolution 0" >/dev/null
+expect ".display.canvas == .display.area and .display.frame == .display.canvas and ($(status_of alter-ego/nes running))"
 wait_for $STEP_SECONDS guest ". /etc/profile; pw-dump | jq -e '[.[] | select(.info.props[\"media.class\"]? == \"Stream/Output/Audio\" and .info.state == \"running\")] | length == 1'"
 log ok "the game plays sound into PipeWire"
 
@@ -170,11 +205,13 @@ expect ".audio.volume == $TEST_VOLUME"
 
 api DELETE stores/1 >/dev/null
 expect '(.stores | length) == 0 and all(.games[]; (.stores | length) == 0)'
-expect "($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed))"
+expect '[.games[] | select(.key == "alter-ego/nes" or .key == "commander-keen/msdos") | .status != ""] | length == 2 and all'
 api POST stores "$TEST_STORE_URL" >/dev/null
 expect '.stores[0].online and all(.games[]; (.stores | length) == 1)'
 
+switch_gpu_after_games commander-keen/msdos
+
 guest reboot
 wait_for $BOOT_SECONDS booted 2
-expect "($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed))"
-log PASS "v$VERSION installed from USB, installed games from the store, played, switched, closed, uninstalled, and kept them across a reboot"
+expect "($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed)) and .settings.resolution == 720"
+log PASS "v$VERSION installed from USB, installed games from the store, played, switched, closed, uninstalled, rescaled, moved to another GPU once games quit, and kept them across a reboot"
