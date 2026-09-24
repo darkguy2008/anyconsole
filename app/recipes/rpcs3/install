@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+FLASH=$XDG_CONFIG_HOME/rpcs3/dev_flash/sys
+STAGING=/game/.install
+
+install_firmware() {
+  [ ! -d "$FLASH" ] || return 0
+  /opt/rpcs3/AppRun --installfw /bios/PS3UPDAT.PUP --headless || [ -d "$FLASH" ]
+}
+
+install_packages() {
+  rm -rf "$STAGING"
+  for package in /game/*.pkg; do
+    XDG_CONFIG_HOME=$STAGING /opt/rpcs3/AppRun --installpkg "$package" --headless || true
+  done
+  for title in "$STAGING"/rpcs3/dev_hdd0/game/*/PARAM.SFO; do mv "${title%/*}"/* /game/; done
+  rm -rf "$STAGING" /game/*.pkg
+  [ -f /game/PARAM.SFO ]
+}
+
+install_firmware
+install_packages

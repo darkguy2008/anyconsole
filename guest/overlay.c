@@ -93,9 +93,9 @@ enum surface_mode { HIDDEN, NOTIFICATIONS_ONLY, FULL };
 
 struct game {
     char slug[NAME_MAX + 1], platform[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX];
-    int installed, commands, context, paused, closing, job_output, installing, states_watch, frames_watch;
+    int installed, commands, context, paused, closing, job_output, installing, states_watch, frames_watch, rewinds, probe_output;
     unsigned stores;
-    pid_t pid, job;
+    pid_t pid, job, freezer, probe;
 };
 
 struct view { enum screen screen; int game, selected; enum action action; int arg; };
@@ -231,13 +231,13 @@ static void expire_notifications(void) {
 
 static const char *key(int index) {
     static char text[GAME_KEY_MAX];
-    snprintf(text, sizeof text, "%s/%s", games[index].slug, games[index].platform);
+    snprintf(text, sizeof text, "%.*s/%.*s", NAME_MAX, games[index].slug, NAME_MAX, games[index].platform);
     return text;
 }
 
 static const char *name(int index) {
     static char text[GAME_KEY_MAX];
-    snprintf(text, sizeof text, "%s-%s", games[index].slug, games[index].platform);
+    snprintf(text, sizeof text, "%.*s-%.*s", NAME_MAX, games[index].slug, NAME_MAX, games[index].platform);
     return text;
 }
 
@@ -602,13 +602,23 @@ static int add_row(int count, enum action action, int arg, const char *label, co
     return count + 1;
 }
 
-static const char *status(struct game *game) {
+static struct window *game_window(int index) {
+    for (int i = 0; i < window_count; i++)
+        if (!strcmp(windows[i].app_id, key(index))) return &windows[i];
+    return NULL;
+}
+
+static const char *status(int index) {
+    struct game *game = &games[index];
     if (game->job) return game->job_text;
+    if (game->pid && !game_window(index)) return "launching";
     if (game->pid) return game->paused ? "paused" : "running";
     return game->installed ? "installed" : "";
 }
 
-static int rewindable(void) { return active >= 0 && !dashboard_open; }
+static int in_game(void) { return active >= 0 && !dashboard_open; }
+
+static int rewindable(void) { return in_game() && games[active].rewinds; }
 
 static int build(struct view *view) {
     int count = 0, order[GAMES_MAX];
@@ -618,7 +628,7 @@ static int build(struct view *view) {
     case HOME:
     case STORE:
         for (int i = 0, total = sorted(order, view->screen == STORE); i < total; i++)
-            count = add_row(count, OPEN_GAME, order[i], games[order[i]].title, "%s  %s", games[order[i]].platform, status(&games[order[i]]));
+            count = add_row(count, OPEN_GAME, order[i], games[order[i]].title, "%s  %s", games[order[i]].platform, status(order[i]));
         if (view->screen == HOME) {
             count = add_row(count, OPEN_STORE, 0, "Store", "");
             count = add_row(count, OPEN_SETTINGS, 0, "Settings", "");
@@ -639,10 +649,8 @@ static int build(struct view *view) {
         }
         break;
     case GUIDE:
-        if (rewindable()) {
-            count = add_row(count, SHOW_DASHBOARD, 0, "Dashboard", "");
-            count = add_row(count, REWIND, 0, "Rewind", "%s", rewind_age());
-        }
+        if (in_game()) count = add_row(count, SHOW_DASHBOARD, 0, "Dashboard", "");
+        if (rewindable()) count = add_row(count, REWIND, 0, "Rewind", "%s", rewind_age());
         if (volume >= 0) snprintf(level, sizeof level, "%d%%", volume);
         count = add_row(count, VOLUME, 0, "Volume", "%s", level);
         count = add_row(count, OPEN_OUTPUTS, 0, "Output", "%s", chosen(outputs, output_count, default_output));
@@ -679,12 +687,6 @@ static void push(enum screen screen, int game) {
     if (guide_shown) {
         if (guide_depth < DEPTH_MAX) guide[guide_depth++] = (struct view){.screen = screen, .game = game};
     } else if (dashboard_depth < DEPTH_MAX) dashboard[dashboard_depth++] = (struct view){.screen = screen, .game = game};
-}
-
-static struct window *game_window(int index) {
-    for (int i = 0; i < window_count; i++)
-        if (!strcmp(windows[i].app_id, key(index))) return &windows[i];
-    return NULL;
 }
 
 static void show_game(int index) {
@@ -770,7 +772,7 @@ static void prepare_rewinds(int index, char *states, char *frames) {
 }
 
 static void request_frame(void) {
-    if (active >= 0 && !games[active].paused && !games[active].closing) send_command(active, "SCREENSHOT");
+    if (rewindable() && !games[active].paused && !games[active].closing) send_command(active, "SCREENSHOT");
 }
 
 static cairo_surface_t *captured_screen(void) {
@@ -881,6 +883,36 @@ static void load_rewind(void) {
     resume(active);
 }
 
+static void freeze(int index, int pause) {
+    struct game *game = &games[index];
+    game->paused = pause;
+    game->freezer = spawn((char *[]){"games", pause ? "pause" : "resume", game->slug, game->platform, NULL}, -1, log_file, log_file);
+    if (game->freezer < 0) game->freezer = 0;
+}
+
+static void probe_rewind(int index) {
+    struct game *game = &games[index];
+    game->probe = spawn_reading((char *[]){"games", "label", game->platform, REWIND_LABEL, NULL}, &game->probe_output);
+    if (game->probe < 0) game->probe = 0;
+}
+
+static void read_probe(int index) {
+    char value[TEXT_MAX];
+    struct game *game = &games[index];
+    ssize_t count = read(game->probe_output, value, sizeof value);
+    game->rewinds = count > 0 && value[0] != '\n';
+    close(game->probe_output);
+    game->probe = 0;
+    changed = 1;
+}
+
+static void finish_close(int index) {
+    struct game *game = &games[index];
+    if (game->freezer) return;
+    if (game->paused) freeze(index, 0);
+    if (!game->freezer && kill(game->pid, SIGTERM) < 0) perror("close");
+}
+
 static void play(int index) {
     char directory[PATH_MAX], states[PATH_MAX], frames[PATH_MAX];
     int commands[2];
@@ -890,6 +922,7 @@ static void play(int index) {
     int output = game_log(index);
     prepare_rewinds(index, states, frames);
     guide[0] = (struct view){.screen = GUIDE, .game = -1, .action = REWIND};
+    game->rewinds = 0;
     guide_depth = 1;
     show_game(index);
     game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, states, frames, NULL}, commands[0], output, output);
@@ -906,12 +939,9 @@ static void play(int index) {
 }
 
 static void close_game(int index) {
-    struct game *game = &games[index];
     show_game(index);
-    if (game->paused) send_command(index, "PAUSE_TOGGLE");
-    if (kill(game->pid, SIGTERM) < 0) perror("close");
-    game->paused = 0;
-    game->closing = 1;
+    games[index].closing = 1;
+    finish_close(index);
 }
 
 static void start_job(int index, int installing, char *const argv[]) {
@@ -1368,7 +1398,7 @@ static char *serialize_state(int count) {
             if (games[i].stores & (1u << store)) json_object_array_add(offers, json_object_new_string(store_label(store)));
         json_object_object_add(game, "key", json_object_new_string(key(i)));
         json_object_object_add(game, "title", json_object_new_string(games[i].title));
-        json_object_object_add(game, "status", json_object_new_string(status(&games[i])));
+        json_object_object_add(game, "status", json_object_new_string(status(i)));
         json_object_object_add(game, "stores", offers);
         json_object_array_add(list, game);
     }
@@ -1406,9 +1436,8 @@ static void settle(void) {
     if (active < 0) dashboard_open = 1;
     for (int i = 0; i < game_count; i++) {
         int pause = i != active || interactive();
-        if (!games[i].pid || games[i].closing || games[i].paused == pause) continue;
-        send_command(i, "PAUSE_TOGGLE");
-        games[i].paused = pause;
+        if (!games[i].pid || games[i].closing || games[i].paused == pause || games[i].freezer) continue;
+        freeze(i, pause);
     }
     enum surface_mode wanted = HIDDEN;
     if (interactive() || launching() || (notification_count && !output_width)) wanted = FULL;
@@ -1441,6 +1470,12 @@ static void reap(void) {
         for (int i = 0; i < game_count; i++) {
             if (games[i].pid == pid) ended(i, failed);
             if (games[i].job == pid) job_done(i, failed);
+            if (games[i].probe == pid) read_probe(i);
+            if (games[i].freezer == pid) {
+                games[i].freezer = 0;
+                if (failed) games[i].paused = !games[i].paused;
+                if (games[i].closing && games[i].pid) finish_close(i);
+            }
             changed = 1;
         }
     }
@@ -1499,6 +1534,8 @@ static void on_toplevel_app_id(void *data, struct zwlr_foreign_toplevel_handle_v
     (void)data;
     for (int i = 0; i < window_count; i++)
         if (windows[i].handle == handle) snprintf(windows[i].app_id, sizeof windows[i].app_id, "%s", app_id);
+    for (int i = 0; i < game_count; i++)
+        if (games[i].pid && game_window(i) && game_window(i)->handle == handle) probe_rewind(i);
     changed = 1;
 }
 

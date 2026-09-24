@@ -20,7 +20,7 @@ SECOND_DISPLAY_HEIGHT=1080
 
 monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
 guest() {
-  password_ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  with_password ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o LogLevel=ERROR -o ConnectTimeout=1 -o ControlMaster=auto -o ControlPath=$OUT/ssh.sock -o ControlPersist=yes \
     -p $SSH_TEST_PORT root@127.0.0.1 "$@"
 }
@@ -170,6 +170,26 @@ rewind_to_older_state() {
   log ok "rewound $1 to an older state"
 }
 
+play_every_other_game() {
+  for directory in "$TEST_STORE"/*/*/; do
+    key=${directory#"$TEST_STORE/"}
+    key=${key%/}
+    holds "$(status_of "$key" "")" >/dev/null || continue
+    title=$(jq -r .title "$TEST_STORE/${key%/*}/manifest.json")
+    open_store
+    install_game "$key" "$title"
+    play_game "$key"
+    snapshot "$(game_name "$key")"
+    back_to_dashboard
+    expect "$(status_of "$key" paused)"
+    choose "$title"
+    choose Close
+    expect "$(status_of "$key" installed)"
+    tap b
+    expect '.screen == "home"'
+  done
+}
+
 back_to_dashboard() {
   tap guide
   expect '.guide and .screen == "guide"'
@@ -256,6 +276,7 @@ api POST stores "$TEST_STORE_URL" >/dev/null
 expect '.stores[0].online and all(.games[]; (.stores | length) == 1)'
 
 switch_gpu_after_games commander-keen/msdos
+play_every_other_game
 
 guest reboot
 wait_for $BOOT_SECONDS booted 2

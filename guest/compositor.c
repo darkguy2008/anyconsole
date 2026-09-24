@@ -39,6 +39,7 @@
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_security_context_v1.h>
+#include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
@@ -877,6 +878,7 @@ int main(int argc, char *argv[]) {
     screencopy = wlr_screencopy_manager_v1_create(display);
     layout = wlr_output_layout_create(display);
     wlr_xdg_output_manager_v1_create(display, layout);
+    wlr_viewporter_create(display);
     relative = wlr_relative_pointer_manager_v1_create(display);
     struct wlr_pointer_constraints_v1 *constraints = wlr_pointer_constraints_v1_create(display);
     seat = wlr_seat_create(display, SEAT_NAME);

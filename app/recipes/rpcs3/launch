@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+CONFIG=$XDG_CONFIG_HOME/rpcs3
+USER_HOME=$CONFIG/dev_hdd0/home/00000001
+
+pad_config() {
+  printf 'Player 1 Input:\n  Handler: Evdev\n  Device: "%s"\n  Config:\n' "$PAD_NAME"
+  sed 's/^/    /' /opt/rpcs3/pad.yml
+}
+
+mkdir -p "$CONFIG/input_configs/global" "$CONFIG/GuiConfigs" "$USER_HOME/exdata"
+ln -sfn /saves "$USER_HOME/savedata"
+find /game -maxdepth 1 \( -iname '*.edat' -o -iname '*.rap' \) -exec ln -sf {} "$USER_HOME/exdata/" \;
+cp --update=none /opt/rpcs3/gui.ini "$CONFIG/GuiConfigs/CurrentSettings.ini"
+pad_config > "$CONFIG/input_configs/global/Default.yml"
+exec xwayland-run -fullscreen -geometry "$CANVAS" -- /opt/rpcs3/AppRun --no-gui --fullscreen --config /opt/rpcs3/config.yml "${1%/*}"

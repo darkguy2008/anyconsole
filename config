@@ -18,5 +18,5 @@ run_qemu() {
     -netdev user,id=net0,$forwards,smb=$PWD/$TEST_STORE -device e1000e,netdev=net0,id=$NIC \
     -audiodev none,id=sound -device ich9-intel-hda -device hda-micro,audiodev=sound -vga std "$@"
 }
-password_ssh() { SSH_ASKPASS="$PWD/build/askpass" SSH_ASKPASS_REQUIRE=force ssh "$@"; }
+with_password() { SSH_ASKPASS="$PWD/build/askpass" SSH_ASKPASS_REQUIRE=force "$@"; }
 sync_host() { rsync -a --delete --exclude .git --exclude-from=.gitignore ./ "$DEPLOY_HOST:$DEPLOY_PATH/"; }

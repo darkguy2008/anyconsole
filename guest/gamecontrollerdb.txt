@@ -1,0 +1,1 @@
+030000004c050000da0c000011010000,Sony PlayStation Classic Controller,a:b2,b:b1,back:b8,dpdown:+a1,dpleft:-a0,dpright:+a0,dpup:-a1,leftshoulder:b6,lefttrigger:b4,rightshoulder:b7,righttrigger:b5,start:b9,x:b3,y:b0,platform:Linux,

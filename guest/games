@@ -3,13 +3,16 @@ set -eu
 . /etc/anyconsole.conf
 MOUNTS=/run/stores
 SAVES=/data/saves
+ENGINES=/data/engines
 RECIPES=/opt/anyconsole/recipes
 PLATFORMS=/run/platforms
-IMAGE=anyconsole
 LAUNCH_LABEL=anyconsole.launch
 GAME_LABEL=anyconsole.game
 RECIPE_LABEL=anyconsole.recipe
 VULKAN_LABEL=anyconsole.vulkan
+BIOS_LABEL=anyconsole.bios
+INSTALL_LABEL=anyconsole.install
+SANDBOX="--init --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp"
 SMB=smb://
 
 platforms() {
@@ -20,9 +23,28 @@ platforms() {
 
 recipe_sum() { find $RECIPES -type f | sort | xargs cat | sha256sum | cut -d' ' -f1; }
 
-build() { docker build -q --network host --label "$RECIPE_LABEL=$2" --target "$1" -t "$IMAGE/$1" $RECIPES >/dev/null; }
+build() { docker build -q --network host --label "$RECIPE_LABEL=$2" --target "$1" -t "$GAME_IMAGE/$1" $RECIPES >/dev/null; }
 
-label() { docker image inspect -f "{{index .Config.Labels \"$2\"}}" "$IMAGE/$1" 2>/dev/null; }
+image_config() { docker image inspect -f '{{json .Config}}' "$GAME_IMAGE/$1" 2>/dev/null || echo '{}'; }
+
+label_of() { printf '%s' "$1" | jq -r --arg name "$2" '.Labels[$name] // empty'; }
+
+label() { label_of "$(image_config "$1")" "$2"; }
+
+prepare() {
+  recipe=$(recipe_sum)
+  image=$(image_config "$1")
+  [ "$(label_of "$image" "$RECIPE_LABEL")" = "$recipe" ] || { build "$1" "$recipe"; image=$(image_config "$1"); }
+}
+
+mounts() {
+  bios=$(label_of "$image" "$BIOS_LABEL")
+  [ -z "$bios" ] || { mkdir -p "$BIOS_DIR/$1"; echo "-v $BIOS_DIR/$1:$bios:ro"; }
+  for volume in $(printf '%s' "$image" | jq -r '(.Volumes // {}) | keys[]'); do
+    mkdir -p "$ENGINES/$1$volume"
+    echo "-v $ENGINES/$1$volume:$volume"
+  done
+}
 
 mount_store() {
   share=${2#"$SMB"} options=ro,soft
@@ -68,12 +90,14 @@ refresh() {
 
 install() {
   echo "preparing $3"
-  build "$3" "$(recipe_sum)"
+  prepare "$3"
   echo "copying"
   rm -rf "$GAMES_DIR/$2/.$3"
   mkdir -p "$GAMES_DIR/$2/.$3"
   cp "$MOUNTS/$1/$2/manifest.json" "$GAMES_DIR/$2/"
   rsync -a "$MOUNTS/$1/$2/$3/rom/" "$GAMES_DIR/$2/.$3/rom/"
+  hook=$(label_of "$image" "$INSTALL_LABEL")
+  [ -z "$hook" ] || { echo "installing"; docker run --rm $SANDBOX $(mounts "$3") -v "$GAMES_DIR/$2/.$3/rom:/game" --entrypoint "$hook" "$GAME_IMAGE/$3" >&2; }
   mv "$GAMES_DIR/$2/.$3" "$GAMES_DIR/$2/$3"
 }
 
@@ -83,7 +107,7 @@ uninstall() {
 }
 
 launch_file() {
-  for extension in $(label "$2" "$LAUNCH_LABEL"); do
+  for extension in $(label_of "$image" "$LAUNCH_LABEL"); do
     file=$(find "$1" -maxdepth 1 -iname "*.$extension" | head -n 1)
     [ -z "$file" ] || { echo "${file##*/}"; return; }
   done
@@ -93,31 +117,40 @@ launch_file() {
 
 run() {
   rom=$GAMES_DIR/$1/$2/rom saves=$SAVES/$1-$2
-  recipe=$(recipe_sum)
-  [ "$(label "$2" "$RECIPE_LABEL")" = "$recipe" ] || build "$2" "$recipe"
-  file=$(launch_file "$rom" "$2")
+  prepare "$2"
+  file=$(launch_file "$rom")
   mkdir -p "$saves"
+  display=$(cat "$DISPLAY_FILE")
   video=
-  ! jq -e .vulkan "$DISPLAY_FILE" >/dev/null || video=$(label "$2" "$VULKAN_LABEL")
-  exec docker run --rm -i --label "$GAME_LABEL=$1/$2" \
-    --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp \
-    --device /dev/dri --device-cgroup-rule 'c 13:* rm' -v "$PAD_NODES:/dev/input:ro" \
+  ! printf '%s' "$display" | jq -e .vulkan >/dev/null || video=$(label_of "$image" "$VULKAN_LABEL")
+  exec docker run --rm -i --label "$GAME_LABEL=$1/$2" $SANDBOX $(mounts "$2") \
+    --device /dev/dri --device-cgroup-rule 'c 13:* rw' -v "$PAD_NODES:/dev/input:ro" \
     -v "$3:/run/wayland" -v "$4:/states" -v "$5:/frames" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
+    -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PAD_NAME="$PAD_NAME" \
     -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
-    -v "$rom:/game:ro" -v "$saves:/saves" "$IMAGE/$2" $video "/game/$file"
+    -v "$rom:/game:ro" -v "$saves:/saves" "$GAME_IMAGE/$2" $video "/game/$file"
 }
 
-stop() { docker ps -q --filter "label=$GAME_LABEL" | xargs -r docker rm -f >/dev/null; }
+containers() { docker ps -q --filter "label=$GAME_LABEL${1:+=$1/$2}"; }
+
+pause() { containers "$1" "$2" | xargs -r docker pause >/dev/null; }
+
+resume() { containers "$1" "$2" | xargs -r docker unpause >/dev/null; }
+
+stop() { containers | xargs -r docker rm -f >/dev/null; }
 
 case "${1:-}" in
-  refresh|install|uninstall|run|stop) command=$1; shift; $command "$@" ;;
+  refresh|install|uninstall|run|pause|resume|stop|label) command=$1; shift; $command "$@" ;;
   *) cat >&2 <<'USAGE'
 usage: games <command>
   refresh                         mount every store in /data/stores and list its games
   install <store> <slug> <platform>  build the platform recipe and copy the game from a store
   uninstall <slug> <platform>     delete an installed game, keeping its saves
   run <slug> <platform> <wayland dir> <states dir> <frames dir>  play an installed game in its sandbox
+  pause <slug> <platform>         freeze a running game
+  resume <slug> <platform>        unfreeze a running game
   stop                            remove every running game container
+  label <platform> <label>        print a label of the platform's image
 USAGE
     exit 1 ;;
 esac
