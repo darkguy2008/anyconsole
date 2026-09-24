@@ -79,6 +79,9 @@
 #define CAROUSEL_ROWS 4
 #define OUTLINE_PER_ROW 0.1
 #define SECONDS_PER_MINUTE 60
+#define BAR_WIDTH_DIVISOR 3
+#define BAR_PER_ROW 0.5
+#define LAUNCH_STEPS 2
 
 enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, INPUTS, SETTINGS };
 static const struct { const char *name, *title; } screens[] = {
@@ -90,10 +93,14 @@ enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE
               OPEN_OUTPUTS, OPEN_INPUTS, SET_DEVICE, RESTART, POWER_OFF, CHOOSE_DISPLAY, CHOOSE_RESOLUTION, REWIND };
 enum command { NONE, UP, DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
 enum surface_mode { HIDDEN, NOTIFICATIONS_ONLY, FULL };
+enum task { INSTALLING, UNINSTALLING, LAUNCHING };
+static const char *const tasks[] = {[INSTALLING] = "installing", [UNINSTALLING] = "uninstalling", [LAUNCHING] = "launching"};
 
 struct game {
-    char slug[NAME_MAX + 1], platform[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX];
-    int installed, commands, context, paused, closing, job_output, installing, states_watch, frames_watch, rewinds, probe_output;
+    char slug[NAME_MAX + 1], platform[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX];
+    int installed, commands, context, paused, closing, job_output, percent, states_watch, frames_watch, rewinds, probe_output;
+    size_t job_length;
+    enum task task;
     unsigned stores;
     pid_t pid, job, freezer, probe;
 };
@@ -585,7 +592,7 @@ static int by_title(const void *left, const void *right) {
 static int sorted(int *order, int store_view) {
     int count = 0;
     for (int i = 0; i < game_count; i++)
-        if (store_view ? games[i].stores != 0 : games[i].installed) order[count++] = i;
+        if (store_view ? games[i].stores != 0 : games[i].installed || games[i].job) order[count++] = i;
     qsort(order, count, sizeof *order, by_title);
     return count;
 }
@@ -609,9 +616,14 @@ static struct window *game_window(int index) {
 }
 
 static const char *status(int index) {
+    static char text[TEXT_MAX];
     struct game *game = &games[index];
-    if (game->job) return game->job_text;
-    if (game->pid && !game_window(index)) return "launching";
+    if (game->job && game->percent < 0) return game->job_text;
+    if (game->job) {
+        snprintf(text, sizeof text, "%s %d%%", game->job_text, game->percent);
+        return text;
+    }
+    if (game->pid && !game_window(index)) return tasks[LAUNCHING];
     if (game->pid) return game->paused ? "paused" : "running";
     return game->installed ? "installed" : "";
 }
@@ -639,7 +651,7 @@ static int build(struct view *view) {
             count = add_row(count, RESUME, 0, "Resume", "");
             count = add_row(count, CLOSE, 0, "Close", "");
         } else if (game->job) {
-            count = add_row(count, NOTHING, 0, game->job_text, "");
+            count = add_row(count, NOTHING, 0, status(view->game), "");
         } else if (game->installed) {
             count = add_row(count, PLAY, 0, "Play", "");
             count = add_row(count, UNINSTALL, 0, "Uninstall", "");
@@ -944,23 +956,41 @@ static void close_game(int index) {
     finish_close(index);
 }
 
-static void start_job(int index, int installing, char *const argv[]) {
+static void start_job(int index, enum task task, char *const argv[]) {
     struct game *game = &games[index];
     game->job = spawn_reading(argv, &game->job_output);
     if (game->job < 0) { game->job = 0; return; }
-    game->installing = installing;
-    snprintf(game->job_text, sizeof game->job_text, installing ? "installing" : "uninstalling");
+    game->task = task;
+    game->percent = -1;
+    game->job_length = 0;
+    snprintf(game->job_text, sizeof game->job_text, "%s", tasks[task]);
+}
+
+static void launch(int index) {
+    start_job(index, LAUNCHING, (char *[]){"games", "prepare", games[index].platform, NULL});
+    if (games[index].job) resume(index);
+}
+
+static void read_step(struct game *game, char *line) {
+    game->percent = -1;
+    sscanf(line, "%*s %d", &game->percent);
+    line[strcspn(line, " ")] = '\0';
+    if (strcmp(line, game->job_text) && game->task != LAUNCHING) notify("%s: %s", game->title, line);
+    memmove(game->job_text, line, strlen(line) + 1);
+    changed = 1;
 }
 
 static void read_job(int index) {
     struct game *game = &games[index];
-    char chunk[TEXT_MAX];
-    ssize_t count = read(game->job_output, chunk, sizeof chunk - 1);
+    char *end;
+    ssize_t count = read(game->job_output, game->job_line + game->job_length, sizeof game->job_line - game->job_length);
     if (count <= 0) return;
-    chunk[count] = '\0';
-    for (char *line = strtok(chunk, "\n"); line; line = strtok(NULL, "\n")) {
-        snprintf(game->job_text, sizeof game->job_text, "%s", line);
-        notify("%s: %s", game->title, line);
+    game->job_length += count;
+    while ((end = memchr(game->job_line, '\n', game->job_length))) {
+        *end = '\0';
+        read_step(game, game->job_line);
+        game->job_length -= end + 1 - game->job_line;
+        memmove(game->job_line, end + 1, game->job_length);
     }
 }
 
@@ -968,8 +998,13 @@ static void job_done(int index, int status) {
     struct game *game = &games[index];
     close(game->job_output);
     game->job = 0;
+    if (game->task == LAUNCHING) {
+        if (status) notify("Could not start %s", game->title);
+        else play(index);
+        return;
+    }
     rescan_installed();
-    if (game->installing) notify(status ? "Install failed: %s" : "Installed %s", game->title);
+    if (game->task == INSTALLING) notify(status ? "Install failed: %s" : "Installed %s", game->title);
     else notify(status ? "Uninstall failed: %s" : "Uninstalled %s", game->title);
 }
 
@@ -983,13 +1018,13 @@ static void act(struct row *row) {
     case OPEN_STORE: push(STORE, -1); refresh(); break;
     case OPEN_SETTINGS: push(SETTINGS, -1); break;
     case OPEN_GAME: push(GAME, row->arg); break;
-    case PLAY: play(view->game); break;
+    case PLAY: launch(view->game); break;
     case RESUME: resume(view->game); break;
     case CLOSE: close_game(view->game); break;
-    case UNINSTALL: start_job(view->game, 0, (char *[]){"games", "uninstall", game->slug, game->platform, NULL}); break;
+    case UNINSTALL: start_job(view->game, UNINSTALLING, (char *[]){"games", "uninstall", game->slug, game->platform, NULL}); break;
     case INSTALL:
         snprintf(store, sizeof store, "%d", row->arg + 1);
-        start_job(view->game, 1, (char *[]){"games", "install", store, game->slug, game->platform, NULL});
+        start_job(view->game, INSTALLING, (char *[]){"games", "install", store, game->slug, game->platform, NULL});
         break;
     case SHOW_DASHBOARD: guide_shown = 0; dashboard_open = 1; dashboard_depth = 1; break;
     case OPEN_OUTPUTS: push(OUTPUTS, -1); break;
@@ -1325,6 +1360,30 @@ static void draw_carousel(cairo_t *cr) {
     }
 }
 
+static void centered(cairo_t *cr, double y, const char *string) {
+    cairo_text_extents_t extents;
+    cairo_text_extents(cr, string, &extents);
+    text(cr, (width - extents.x_advance) / 2, y, string);
+}
+
+static void draw_launch(cairo_t *cr) {
+    struct game *game = &games[active];
+    double line = row_height() * OUTLINE_PER_ROW, margin = row_height() * MARGIN_PER_ROW;
+    double bar_width = (double)width / BAR_WIDTH_DIVISOR, bar_height = row_height() * BAR_PER_ROW;
+    double left = (width - bar_width) / 2, top_edge = (height - bar_height) / 2;
+    double done = game->job ? fmax(game->percent, 0) / PERCENT : LAUNCH_STEPS - 1;
+    cairo_set_source_rgb(cr, 0, 0, 0);
+    cairo_paint(cr);
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_set_line_width(cr, line);
+    cairo_rectangle(cr, left - line, top_edge - line, bar_width + 2 * line, bar_height + 2 * line);
+    cairo_stroke(cr);
+    cairo_rectangle(cr, left, top_edge, bar_width * done / LAUNCH_STEPS, bar_height);
+    cairo_fill(cr);
+    centered(cr, top_edge - 2 * line - margin - row_height(), game->title);
+    centered(cr, top_edge + bar_height + 2 * line + margin, status(active));
+}
+
 static void draw(int top_count) {
     struct buffer *buffer = !buffers[0].busy ? &buffers[0] : !buffers[1].busy ? &buffers[1] : NULL;
     if (!buffer) { draw_pending = 1; return; }
@@ -1337,10 +1396,7 @@ static void draw(int top_count) {
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
     cairo_select_font_face(cr, FONT, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
     cairo_set_font_size(cr, row_height() * FONT_PER_ROW);
-    if (launching()) {
-        cairo_set_source_rgb(cr, 0, 0, 0);
-        cairo_paint(cr);
-    }
+    if (launching()) draw_launch(cr);
     if (dashboard_open) draw_view(cr, &dashboard[dashboard_depth - 1], guide_shown ? build(&dashboard[dashboard_depth - 1]) : top_count, width);
     if (guide_shown) {
         int guide_count = dashboard_open ? build(&guide[guide_depth - 1]) : top_count;
@@ -1433,6 +1489,7 @@ static void write_state(char *serialized) {
 static void settle(void) {
     if (!changed) return;
     changed = 0;
+    if (active >= 0 && !games[active].pid && !games[active].job) active = -1;
     if (active < 0) dashboard_open = 1;
     for (int i = 0; i < game_count; i++) {
         int pause = i != active || interactive();
