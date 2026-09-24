@@ -45,7 +45,6 @@
 #define MARGIN_PER_ROW 0.5
 #define GUIDE_WIDTH_DIVISOR 3
 #define NOTIFICATION_WIDTH_DIVISOR 3
-#define STICK_REACH_DIVISOR 4
 #define NOTIFICATION_SECONDS 4
 #define NOTIFICATIONS_MAX 4
 #define REPEAT_DELAY_MS 400
@@ -64,6 +63,7 @@
 #define GAME_KEY_MAX (2 * NAME_MAX + 2)
 #define WINDOWS_MAX (GAMES_MAX + 1)
 #define RESOLUTIONS_MAX 8
+#define SLEEP_CHOICES_MAX 8
 #define AUTO "Auto"
 #define BYTES_PER_PIXEL 4
 #define BUFFERS 2
@@ -83,14 +83,15 @@
 #define BAR_PER_ROW 0.5
 #define LAUNCH_STEPS 2
 
-enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, INPUTS, SETTINGS };
+enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, MICROPHONES, CONTROLLERS, CONTROLLER, SETTINGS };
 static const struct { const char *name, *title; } screens[] = {
     [HOME] = {"home", "Home"}, [STORE] = {"store", "Store"}, [GAME] = {"game", ""},
-    [GUIDE] = {"guide", "Guide"}, [OUTPUTS] = {"outputs", "Output"}, [INPUTS] = {"inputs", "Input"},
-    [SETTINGS] = {"settings", "Settings"},
+    [GUIDE] = {"guide", "Guide"}, [OUTPUTS] = {"outputs", "Output"}, [MICROPHONES] = {"microphones", "Microphone"},
+    [CONTROLLERS] = {"controllers", "Controllers"}, [CONTROLLER] = {"controller", ""}, [SETTINGS] = {"settings", "Settings"},
 };
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
-              OPEN_OUTPUTS, OPEN_INPUTS, SET_DEVICE, RESTART, POWER_OFF, CHOOSE_DISPLAY, CHOOSE_RESOLUTION, REWIND };
+              OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RESTART, POWER_OFF,
+              CHOOSE_DISPLAY, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND };
 enum command { NONE, UP, DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
 enum surface_mode { HIDDEN, NOTIFICATIONS_ONLY, FULL };
 enum task { INSTALLING, UNINSTALLING, LAUNCHING };
@@ -125,13 +126,11 @@ static int audio_objects[AUDIO_OBJECTS_MAX], audio_object_count;
 static struct view dashboard[DEPTH_MAX] = {{.screen = HOME, .game = -1}}, guide[DEPTH_MAX] = {{.screen = GUIDE, .game = -1}};
 static int dashboard_depth = 1, guide_depth = 1, guide_shown, dashboard_open = 1;
 static struct row rows[ROWS_MAX];
-static struct device outputs[DEVICES_MAX], inputs[DEVICES_MAX];
-static char default_output[TEXT_MAX], default_input[TEXT_MAX];
-static int output_count, input_count, volume = -1;
+static struct device outputs[DEVICES_MAX], microphones[DEVICES_MAX];
+static char default_output[TEXT_MAX], default_microphone[TEXT_MAX], chosen_controller[TEXT_MAX];
+static int output_count, microphone_count, volume = -1;
 static struct input devices[INPUTS_MAX];
 static int device_count;
-static char connected[INPUTS_MAX][NAME_MAX + 1];
-static int connected_count;
 static struct notification notifications[NOTIFICATIONS_MAX];
 static int notification_count;
 static enum command repeating;
@@ -143,8 +142,8 @@ static struct capture capture;
 static int rewind_count, rewind_back;
 static char *written_state;
 static struct window windows[WINDOWS_MAX];
-static int window_count, resolutions[RESOLUTIONS_MAX], resolution_count;
-static json_object *settings, *display_state;
+static int window_count, resolutions[RESOLUTIONS_MAX], resolution_count, sleep_choices[SLEEP_CHOICES_MAX], sleep_choice_count;
+static json_object *settings, *display_state, *controllers_state;
 
 static struct wl_display *display;
 static struct wl_compositor *compositor;
@@ -187,6 +186,19 @@ static pid_t spawn(char *const argv[], int input, int output, int errors) {
 }
 
 static void start(char *const argv[]) { spawn(argv, -1, log_file, log_file); }
+
+static void tell_padd(const char *format, ...) {
+    char line[PIPE_BUF];
+    va_list arguments;
+    va_start(arguments, format);
+    int length = vsnprintf(line, sizeof line - 1, format, arguments);
+    va_end(arguments);
+    if (length >= (int)sizeof line - 1) length = sizeof line - 2;
+    line[length++] = '\n';
+    int fd = open(PAD_FIFO, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0 || write(fd, line, length) < 0) perror(PAD_FIFO);
+    if (fd >= 0) close(fd);
+}
 
 static pid_t spawn_reading(char *const argv[], int *output) {
     int pipe_ends[2];
@@ -441,7 +453,7 @@ static void read_audio(void) {
     volume = level_text && fscanf(level_text, "Volume: %lf", &level) == 1 ? level * PERCENT + 0.5 : -1;
     if (level_text) fclose(level_text);
     if (level_reader > 0) waitpid(level_reader, NULL, 0);
-    output_count = input_count = 0;
+    output_count = microphone_count = 0;
     for (size_t i = 0; json_object_is_type(objects, json_type_array) && i < json_object_array_length(objects); i++) {
         json_object *object = json_object_array_get_idx(objects, i), *metadata, *info;
         for (size_t j = 0; json_object_object_get_ex(object, "metadata", &metadata) && j < json_object_array_length(metadata); j++) {
@@ -449,13 +461,13 @@ static void read_audio(void) {
             if (!strcmp(string_at(entry, "key", NULL), "default.audio.sink"))
                 snprintf(default_output, sizeof default_output, "%s", string_at(entry, "value", "name"));
             if (!strcmp(string_at(entry, "key", NULL), "default.audio.source"))
-                snprintf(default_input, sizeof default_input, "%s", string_at(entry, "value", "name"));
+                snprintf(default_microphone, sizeof default_microphone, "%s", string_at(entry, "value", "name"));
         }
         if (!json_object_object_get_ex(object, "info", &info) || !json_object_object_get_ex(info, "props", &info)) continue;
         int sink = !strcmp(string_at(info, "media.class", NULL), "Audio/Sink");
         if (!sink && strcmp(string_at(info, "media.class", NULL), "Audio/Source")) continue;
-        if ((sink ? output_count : input_count) == DEVICES_MAX) continue;
-        struct device *device = sink ? &outputs[output_count++] : &inputs[input_count++];
+        if ((sink ? output_count : microphone_count) == DEVICES_MAX) continue;
+        struct device *device = sink ? &outputs[output_count++] : &microphones[microphone_count++];
         json_object_object_get_ex(object, "id", &field);
         device->id = json_object_get_int(field);
         snprintf(device->node, sizeof device->node, "%s", string_at(info, "node.name", NULL));
@@ -514,17 +526,16 @@ static const char *chosen(struct device *list, int count, const char *node) {
     return "";
 }
 
-static json_object *displays(void) {
+static json_object *list_at(json_object *object, const char *name) {
     json_object *list;
-    return json_object_object_get_ex(display_state, "displays", &list) ? list : NULL;
+    return json_object_object_get_ex(object, name, &list) ? list : NULL;
 }
 
-static int display_count(void) {
-    json_object *list = displays();
-    return list ? json_object_array_length(list) : 0;
-}
+static int length_of(json_object *list) { return list ? json_object_array_length(list) : 0; }
 
-static const char *display_label(int index) { return string_at(json_object_array_get_idx(displays(), index), "label", NULL); }
+static int display_count(void) { return length_of(list_at(display_state, "displays")); }
+
+static const char *display_label(int index) { return string_at(json_object_array_get_idx(list_at(display_state, "displays"), index), "label", NULL); }
 
 static int int_at(json_object *object, const char *name) {
     json_object *field;
@@ -567,6 +578,27 @@ static void cycle_resolution(int step) {
     start((char *[]){"settings", "resolution", value, NULL});
 }
 
+static int chosen_sleep(void) {
+    json_object *field;
+    return json_object_object_get_ex(settings, "sleep", &field) ? json_object_get_int(field) : sleep_choices[0];
+}
+
+static const char *sleep_value(void) {
+    static char value[TEXT_MAX];
+    if (!chosen_sleep()) return "Never";
+    snprintf(value, sizeof value, "%d min", chosen_sleep());
+    return value;
+}
+
+static void cycle_sleep(int step) {
+    char value[TEXT_MAX];
+    int current = 0;
+    for (int i = 0; i < sleep_choice_count; i++)
+        if (sleep_choices[i] == chosen_sleep()) current = i;
+    snprintf(value, sizeof value, "%d", sleep_choices[cycle(current, sleep_choice_count - 1, step)]);
+    start((char *[]){"settings", "sleep", value, NULL});
+}
+
 static void read_settings(void) {
     json_object_put(settings);
     settings = json_object_from_file(SETTINGS_FILE);
@@ -581,6 +613,33 @@ static void read_display(void) {
     const char *pending = string_at(display_state, "pending", NULL);
     if (*pending && strcmp(pending, previous)) notify("Close and restart your games to render on %s", pending);
     changed = 1;
+}
+
+static void read_controllers(void) {
+    json_object_put(controllers_state);
+    controllers_state = json_object_from_file(CONTROLLERS_FILE);
+    changed = 1;
+}
+
+static int controller_count(void) { return length_of(list_at(controllers_state, "controllers")); }
+
+static json_object *controller_at(int index) { return json_object_array_get_idx(list_at(controllers_state, "controllers"), index); }
+
+static const char *controller_name(void) {
+    for (int i = 0; i < controller_count(); i++)
+        if (!strcasecmp(string_at(controller_at(i), "address", NULL), chosen_controller)) return string_at(controller_at(i), "name", NULL);
+    return chosen_controller;
+}
+
+static const char *controller_status(json_object *controller) {
+    static char text[TEXT_MAX];
+    json_object *battery;
+    const char *link = string_at(controller, "connection", NULL);
+    int length = snprintf(text, sizeof text, "%s", !strcmp(link, "bluetooth") ? "Bluetooth" : !strcmp(link, "wired") ? "Wired" : "Not connected");
+    if (json_object_object_get_ex(controller, "battery", &battery) && battery)
+        length += snprintf(text + length, sizeof text - length, "  %d%%", json_object_get_int(battery));
+    if (int_at(controller, "charging")) snprintf(text + length, sizeof text - length, " charging");
+    return text;
 }
 
 static int by_title(const void *left, const void *right) {
@@ -666,21 +725,33 @@ static int build(struct view *view) {
         if (volume >= 0) snprintf(level, sizeof level, "%d%%", volume);
         count = add_row(count, VOLUME, 0, "Volume", "%s", level);
         count = add_row(count, OPEN_OUTPUTS, 0, "Output", "%s", chosen(outputs, output_count, default_output));
-        count = add_row(count, OPEN_INPUTS, 0, "Input", "%s", chosen(inputs, input_count, default_input));
+        count = add_row(count, OPEN_MICROPHONES, 0, "Microphone", "%s", chosen(microphones, microphone_count, default_microphone));
+        count = add_row(count, OPEN_CONTROLLERS, 0, "Controllers", "");
         count = add_row(count, RESTART, 0, "Restart", "");
         count = add_row(count, POWER_OFF, 0, "Power off", "");
         break;
     case OUTPUTS:
-    case INPUTS:
-        for (int i = 0, total = view->screen == OUTPUTS ? output_count : input_count; i < total; i++) {
-            struct device *device = view->screen == OUTPUTS ? &outputs[i] : &inputs[i];
-            const char *current = view->screen == OUTPUTS ? default_output : default_input;
+    case MICROPHONES:
+        for (int i = 0, total = view->screen == OUTPUTS ? output_count : microphone_count; i < total; i++) {
+            struct device *device = view->screen == OUTPUTS ? &outputs[i] : &microphones[i];
+            const char *current = view->screen == OUTPUTS ? default_output : default_microphone;
             count = add_row(count, SET_DEVICE, device->id, device->name, !strcmp(device->node, current) ? "selected" : "");
         }
+        break;
+    case CONTROLLERS:
+        if (int_at(controllers_state, "bluetooth"))
+            count = add_row(count, PAIR, 0, "Pair new controller", "%s", int_at(controllers_state, "pairing") ? "Searching" : "");
+        for (int i = 0; i < controller_count(); i++)
+            count = add_row(count, int_at(controller_at(i), "paired") ? OPEN_CONTROLLER : NOTHING, i, string_at(controller_at(i), "name", NULL),
+                            "%s", controller_status(controller_at(i)));
+        break;
+    case CONTROLLER:
+        count = add_row(count, FORGET, 0, "Forget", "");
         break;
     case SETTINGS:
         count = add_row(count, CHOOSE_DISPLAY, 0, "Display", "%s", display_value());
         count = add_row(count, CHOOSE_RESOLUTION, 0, "Resolution", "%s", resolution_value());
+        count = add_row(count, CHOOSE_SLEEP, 0, "Controller sleep", "%s", sleep_value());
         break;
     }
     for (int i = 0; i < count; i++)
@@ -689,7 +760,11 @@ static int build(struct view *view) {
     return count;
 }
 
-static const char *title(struct view *view) { return view->screen == GAME ? games[view->game].title : screens[view->screen].title; }
+static const char *title(struct view *view) {
+    if (view->screen == GAME) return games[view->game].title;
+    if (view->screen == CONTROLLER) return controller_name();
+    return screens[view->screen].title;
+}
 
 static struct view *top(void) { return guide_shown ? &guide[guide_depth - 1] : &dashboard[dashboard_depth - 1]; }
 
@@ -971,7 +1046,22 @@ static void launch(int index) {
     if (games[index].job) resume(index);
 }
 
-static void read_step(struct game *game, char *line) {
+static void read_lines(int fd, char *buffer, size_t size, size_t *length, void (*handle_line)(char *, void *), void *context) {
+    ssize_t count = read(fd, buffer + *length, size - *length);
+    if (count <= 0) return;
+    *length += count;
+    char *start = buffer;
+    for (char *end; (end = memchr(start, '\n', buffer + *length - start)); start = end + 1) {
+        *end = '\0';
+        handle_line(start, context);
+    }
+    *length -= start - buffer;
+    memmove(buffer, start, *length);
+    if (*length == size) *length = 0;
+}
+
+static void read_step(char *line, void *context) {
+    struct game *game = context;
     game->percent = -1;
     sscanf(line, "%*s %d", &game->percent);
     line[strcspn(line, " ")] = '\0';
@@ -982,16 +1072,7 @@ static void read_step(struct game *game, char *line) {
 
 static void read_job(int index) {
     struct game *game = &games[index];
-    char *end;
-    ssize_t count = read(game->job_output, game->job_line + game->job_length, sizeof game->job_line - game->job_length);
-    if (count <= 0) return;
-    game->job_length += count;
-    while ((end = memchr(game->job_line, '\n', game->job_length))) {
-        *end = '\0';
-        read_step(game, game->job_line);
-        game->job_length -= end + 1 - game->job_line;
-        memmove(game->job_line, end + 1, game->job_length);
-    }
+    read_lines(game->job_output, game->job_line, sizeof game->job_line, &game->job_length, read_step, game);
 }
 
 static void job_done(int index, int status) {
@@ -1013,7 +1094,7 @@ static void act(struct row *row) {
     struct view *view = top();
     struct game *game = view->game >= 0 ? &games[view->game] : NULL;
     switch (row->action) {
-    case NOTHING: case VOLUME: case CHOOSE_DISPLAY: case CHOOSE_RESOLUTION: break;
+    case NOTHING: case VOLUME: case CHOOSE_DISPLAY: case CHOOSE_RESOLUTION: case CHOOSE_SLEEP: break;
     case REWIND: load_rewind(); break;
     case OPEN_STORE: push(STORE, -1); refresh(); break;
     case OPEN_SETTINGS: push(SETTINGS, -1); break;
@@ -1028,10 +1109,23 @@ static void act(struct row *row) {
         break;
     case SHOW_DASHBOARD: guide_shown = 0; dashboard_open = 1; dashboard_depth = 1; break;
     case OPEN_OUTPUTS: push(OUTPUTS, -1); break;
-    case OPEN_INPUTS: push(INPUTS, -1); break;
+    case OPEN_MICROPHONES: push(MICROPHONES, -1); break;
     case SET_DEVICE:
         snprintf(id, sizeof id, "%d", row->arg);
         start((char *[]){"wpctl", "set-default", id, NULL});
+        guide_depth--;
+        break;
+    case OPEN_CONTROLLERS:
+        push(CONTROLLERS, -1);
+        tell_padd("batteries");
+        break;
+    case PAIR: tell_padd("pair"); break;
+    case OPEN_CONTROLLER:
+        snprintf(chosen_controller, sizeof chosen_controller, "%s", string_at(controller_at(row->arg), "address", NULL));
+        push(CONTROLLER, -1);
+        break;
+    case FORGET:
+        tell_padd("forget %s", chosen_controller);
         guide_depth--;
         break;
     case RESTART: start((char *[]){"reboot", NULL}); break;
@@ -1049,6 +1143,7 @@ static void adjust(enum action action, int step) {
     if (action == VOLUME) change_volume(step < 0 ? "-" : "+");
     if (action == CHOOSE_DISPLAY) cycle_display(step);
     if (action == CHOOSE_RESOLUTION) cycle_resolution(step);
+    if (action == CHOOSE_SLEEP) cycle_sleep(step);
     if (action == REWIND && rewind_back - step >= 0 && rewind_back - step <= rewind_count) rewind_back -= step;
 }
 
@@ -1139,7 +1234,7 @@ static void open_input(const char *node) {
     }
     int minimum = libevdev_get_abs_minimum(device, ABS_X), maximum = libevdev_get_abs_maximum(device, ABS_X);
     devices[device_count++] = (struct input){.device = device, .guide = !strcmp(libevdev_get_name(device), GUIDE_DEVICE),
-                                             .center = (minimum + maximum) / 2, .reach = (maximum - minimum) / STICK_REACH_DIVISOR};
+                                             .center = (minimum + maximum) / 2, .reach = (maximum - minimum) / atoi(STICK_REACH_DIVISOR)};
 }
 
 static void handle_event(struct input *input, struct input_event *event) {
@@ -1419,12 +1514,6 @@ static void draw(int top_count) {
     wl_surface_commit(surface);
 }
 
-static json_object *string_array(char list[][NAME_MAX + 1], int count) {
-    json_object *array = json_object_new_array();
-    for (int i = 0; i < count; i++) json_object_array_add(array, json_object_new_string(strchr(list[i], ' ') + 1));
-    return array;
-}
-
 static char *serialize_state(int count) {
     json_object *state = json_object_new_object(), *list = json_object_new_array(), *audio = json_object_new_object();
     json_object *history = json_object_new_object();
@@ -1469,11 +1558,11 @@ static char *serialize_state(int count) {
     json_object_object_add(state, "stores", list);
     json_object_object_add(audio, "volume", volume < 0 ? NULL : json_object_new_int(volume));
     json_object_object_add(audio, "output", json_object_new_string(chosen(outputs, output_count, default_output)));
-    json_object_object_add(audio, "input", json_object_new_string(chosen(inputs, input_count, default_input)));
+    json_object_object_add(audio, "microphone", json_object_new_string(chosen(microphones, microphone_count, default_microphone)));
     json_object_object_add(state, "audio", audio);
-    json_object_object_add(state, "inputs", string_array(connected, connected_count));
     json_object_object_add(state, "settings", json_object_get(settings));
     json_object_object_add(state, "display", json_object_get(display_state));
+    json_object_object_add(state, "controllers", json_object_get(controllers_state));
     char *serialized = strdup(json_object_to_json_string_ext(state, JSON_C_TO_STRING_PLAIN));
     json_object_put(state);
     return serialized;
@@ -1538,15 +1627,6 @@ static void reap(void) {
     }
 }
 
-static void track_input(const char *entry, int present) {
-    for (int i = 0; i < connected_count; i++) {
-        if (strcmp(connected[i], entry)) continue;
-        if (!present) memcpy(connected[i], connected[--connected_count], sizeof connected[0]);
-        return;
-    }
-    if (present && connected_count < INPUTS_MAX) snprintf(connected[connected_count++], sizeof connected[0], "%s", entry);
-}
-
 static int read_game_change(struct inotify_event *event) {
     for (int i = 0; i < game_count; i++) {
         if (event->wd == games[i].frames_watch) {
@@ -1561,7 +1641,7 @@ static int read_game_change(struct inotify_event *event) {
     return 0;
 }
 
-static void read_changes(int input_watch, int inputs_watch, int runtime_watch, int display_watch) {
+static void read_changes(int input_watch, int runtime_watch, int display_watch, int controllers_watch) {
     char buffer[BUFSIZ] __attribute__((aligned(__alignof__(struct inotify_event))));
     ssize_t count = read(watcher, buffer, sizeof buffer);
     for (char *at = buffer; count > 0 && at < buffer + count;) {
@@ -1570,11 +1650,10 @@ static void read_changes(int input_watch, int inputs_watch, int runtime_watch, i
         if (!event->len || read_game_change(event)) continue;
         if (event->wd == input_watch) open_input(event->name);
         else if (event->wd == runtime_watch && !strcmp(event->name, PIPEWIRE_SOCKET)) start_monitor();
-        else if (event->wd == inputs_watch && strchr(event->name, ' ')) {
-            track_input(event->name, event->mask & IN_CREATE);
-            notify("%s %s", event->mask & IN_CREATE ? "Connected" : "Disconnected", strchr(event->name, ' ') + 1);
-        } else if (event->wd == display_watch && !strcmp(event->name, basename(DISPLAY_FILE))) {
+        else if (event->wd == display_watch && !strcmp(event->name, basename(DISPLAY_FILE))) {
             read_display();
+        } else if (event->wd == controllers_watch && !strcmp(event->name, basename(CONTROLLERS_FILE))) {
+            read_controllers();
         } else if (event->wd != runtime_watch && !strcmp(event->name, basename(SETTINGS_FILE))) {
             read_settings();
         } else if (event->wd != runtime_watch && !strcmp(event->name, basename(STORES_FILE))) {
@@ -1664,15 +1743,33 @@ static void scan_directory(const char *path, void (*found)(const char *)) {
     if (directory) closedir(directory);
 }
 
-static void found_input(const char *entry) {
-    if (strchr(entry, ' ')) track_input(entry, 1);
+static void show_message(char *line, void *context) {
+    (void)context;
+    notify("%s", line);
+}
+
+static void read_messages(int fd) {
+    static char pending[PIPE_BUF];
+    static size_t length;
+    read_lines(fd, pending, sizeof pending, &length, show_message, NULL);
+}
+
+static int numbers(const char *list, int *parsed, int max) {
+    int count = 0;
+    char *end;
+    for (const char *at = list; count < max; at = end) {
+        parsed[count] = strtol(at, &end, 10);
+        if (end == at) break;
+        count++;
+    }
+    return count;
 }
 
 int main(void) {
-    enum { WAYLAND, CHANGES, SIGNALS, REPEAT, NOTIFICATIONS, SAVE, MONITOR, FIXED };
+    enum { WAYLAND, CHANGES, SIGNALS, REPEAT, NOTIFICATIONS, MESSAGES, SAVE, MONITOR, FIXED };
     struct pollfd watched[FIXED + INPUTS_MAX + GAMES_MAX];
     int jobs[GAMES_MAX], polled[INPUTS_MAX];
-    char stores_directory[PATH_MAX], display_directory[PATH_MAX], settings_directory[PATH_MAX], *end;
+    char stores_directory[PATH_MAX], display_directory[PATH_MAX], settings_directory[PATH_MAX], controllers_directory[PATH_MAX];
     sigset_t signals;
     signal(SIGPIPE, SIG_IGN);
     sigemptyset(&signals);
@@ -1689,15 +1786,17 @@ int main(void) {
     directory_of(STORES_FILE, stores_directory);
     directory_of(DISPLAY_FILE, display_directory);
     directory_of(SETTINGS_FILE, settings_directory);
-    for (const char *at = RESOLUTIONS; resolution_count < RESOLUTIONS_MAX && (resolutions[resolution_count] = strtol(at, &end, 10)) > 0; at = end)
-        resolution_count++;
+    directory_of(CONTROLLERS_FILE, controllers_directory);
+    resolution_count = numbers(RESOLUTIONS, resolutions, RESOLUTIONS_MAX);
+    sleep_choice_count = numbers(SLEEP_MINUTES, sleep_choices, SLEEP_CHOICES_MAX);
+    mkfifo(NOTIFY_FIFO, S_IRUSR | S_IWUSR);
     watcher = inotify_init1(IN_CLOEXEC);
     int input_watch = inotify_add_watch(watcher, INPUT_DIR, IN_CREATE);
-    int inputs_watch = inotify_add_watch(watcher, INPUTS_DIR, IN_CREATE | IN_DELETE);
     int runtime_watch = inotify_add_watch(watcher, getenv("XDG_RUNTIME_DIR"), IN_CREATE);
     inotify_add_watch(watcher, stores_directory, IN_CLOSE_WRITE | IN_MOVED_TO);
     inotify_add_watch(watcher, settings_directory, IN_MOVED_TO | IN_MASK_ADD);
     int display_watch = inotify_add_watch(watcher, display_directory, IN_MOVED_TO);
+    int controllers_watch = inotify_add_watch(watcher, controllers_directory, IN_MOVED_TO);
     repeat_timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
     notification_timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
     save_timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
@@ -1707,12 +1806,13 @@ int main(void) {
     watched[SIGNALS] = (struct pollfd){.fd = signalfd(-1, &signals, SFD_CLOEXEC), .events = POLLIN};
     watched[REPEAT] = (struct pollfd){.fd = repeat_timer, .events = POLLIN};
     watched[NOTIFICATIONS] = (struct pollfd){.fd = notification_timer, .events = POLLIN};
+    watched[MESSAGES] = (struct pollfd){.fd = open(NOTIFY_FIFO, O_RDWR | O_NONBLOCK | O_CLOEXEC), .events = POLLIN};
     watched[SAVE] = (struct pollfd){.fd = save_timer, .events = POLLIN};
     scan_directory(INPUT_DIR, open_input);
-    scan_directory(INPUTS_DIR, found_input);
     read_stores();
     read_settings();
     read_display();
+    read_controllers();
     rescan();
     refresh();
     start_monitor();
@@ -1738,13 +1838,14 @@ int main(void) {
         if (wl_display_dispatch_pending(display) < 0) { fprintf(stderr, "overlay: lost the compositor\n"); return 1; }
         uint64_t expirations;
         struct signalfd_siginfo signal_info;
-        if (watched[CHANGES].revents) read_changes(input_watch, inputs_watch, runtime_watch, display_watch);
+        if (watched[CHANGES].revents) read_changes(input_watch, runtime_watch, display_watch, controllers_watch);
         if (watched[SIGNALS].revents && read(watched[SIGNALS].fd, &signal_info, sizeof signal_info) > 0) {
             if (signal_info.ssi_signo == SIGUSR1) refresh();
             else reap();
         }
         if (watched[REPEAT].revents && read(repeat_timer, &expirations, sizeof expirations) > 0) press(repeating);
         if (watched[NOTIFICATIONS].revents && read(notification_timer, &expirations, sizeof expirations) > 0) expire_notifications();
+        if (watched[MESSAGES].revents) read_messages(watched[MESSAGES].fd);
         if (watched[SAVE].revents && read(save_timer, &expirations, sizeof expirations) > 0) request_frame();
         if (watched[MONITOR].revents) read_monitor();
         for (int i = device_polls - 1; i >= 0; i--)

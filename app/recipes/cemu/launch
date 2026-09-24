@@ -14,7 +14,7 @@ print(text.value.decode())'
 
 controller_profile() {
   printf '<?xml version="1.0" encoding="UTF-8"?>\n<emulated_controller>\n<type>Wii U GamePad</type>\n<controller>\n'
-  printf '<api>SDLController</api>\n<uuid>0_%s</uuid>\n<rumble>1</rumble>\n<mappings>\n' "$(joystick_guid)"
+  printf '<api>SDLController</api>\n<uuid>0_%s</uuid>\n<rumble>1</rumble>\n<motion>true</motion>\n<mappings>\n' "$(joystick_guid)"
   for pair in $GAMEPAD_MAPPING; do printf '<entry><mapping>%s</mapping><button>%s</button></entry>\n' "${pair%:*}" "${pair#*:}"; done
   printf '</mappings>\n</controller>\n</emulated_controller>\n'
 }

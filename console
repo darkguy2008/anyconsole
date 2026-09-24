@@ -8,7 +8,7 @@ REBOOT_SECONDS=300
 POLL_SECONDS=2
 build_image() {
   ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/image >/dev/null"
-  rsync -S --progress "$DEPLOY_HOST:$DEPLOY_PATH/$INSTALLER" "$INSTALLER"
+  rsync -S --mkpath --progress "$DEPLOY_HOST:$DEPLOY_PATH/$INSTALLER" "$INSTALLER"
 }
 if [ -n "${CONSOLE_BOX:-}" ]; then
   SSH_ROUTE= SSH_HOST=root@$CONSOLE_BOX API_VIA= API_HOST=$CONSOLE_BOX
@@ -74,13 +74,14 @@ case "${1:-status}" in
 usage: console [box address] <command>
   without an address, commands go to the QEMU test VM
   status     show the running console's OTA state
-  state      show the console's screen, games, stores, audio and inputs
+  state      show the console's screen, games, stores, audio and controllers
   store add smb://[user:password@]host/share/path  add a game store
   store del <n>  remove the nth store listed by state
-  input <line>...  send pad lines ("1 a 1", "1 guide 0") or events ("EV_KEY KEY_LEFTMETA 1")
+  input <line>...  send pad lines ("1 a 1", "1 guide 0"), events ("EV_KEY KEY_LEFTMETA 1"), "pair" or "forget <address>"
   volume <percent>  set the output volume
   set display [label]  show the console on this display from state (none = Auto)
   set resolution <height>  render games and menus at this 16:9 height (0 = Auto)
+  set sleep <minutes>  disconnect idle Bluetooth controllers after this long (0 = never)
   update     make it sync and stage the published release
   reboot     reboot it
   poweroff   power it off

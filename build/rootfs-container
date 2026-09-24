@@ -3,7 +3,7 @@ set -eux
 
 ROOTFS=/rootfs
 LIBDIR=/usr/lib/x86_64-linux-gnu
-BINARIES="/usr/bin/wayland-info /usr/bin/grim /bin/busybox /usr/bin/mountpoint /usr/sbin/modprobe /bin/padd /bin/splash /bin/overlay /bin/compositor /sbin/sfdisk /sbin/mke2fs /sbin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd /usr/bin/udevadm /usr/sbin/mount.cifs /usr/bin/jq"
+BINARIES="/usr/bin/wayland-info /usr/bin/grim /bin/busybox /usr/bin/mountpoint /usr/sbin/modprobe /bin/padd /bin/splash /bin/overlay /bin/compositor /sbin/sfdisk /sbin/mke2fs /sbin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd /usr/bin/udevadm /usr/sbin/mount.cifs /usr/bin/jq /usr/libexec/bluetooth/bluetoothd /usr/bin/dbus-daemon"
 GBM_BACKEND=$LIBDIR/gbm/dri_gbm.so
 EGL_VENDORS=/usr/share/glvnd/egl_vendor.d
 VULKAN_DRIVERS=/usr/share/vulkan/icd.d
@@ -13,7 +13,7 @@ AUDIO="/usr/bin/pipewire /usr/bin/pipewire-pulse /usr/bin/wireplumber /usr/bin/w
 AUDIO_PLUGINS="$LIBDIR/pipewire-0.3 $LIBDIR/spa-0.2 $LIBDIR/wireplumber-0.5"
 DOCKER="/usr/bin/dockerd /usr/bin/docker /usr/bin/containerd /usr/bin/containerd-shim-runc-v2 /usr/bin/runc /usr/libexec/docker/docker-init"
 DOCKER_PLUGINS=/usr/libexec/docker/cli-plugins
-DATA="/usr/lib/udev/hwdb.bin /usr/share/pipewire /usr/share/wireplumber /usr/share/alsa /usr/share/alsa-card-profile /usr/lib/udev/rules.d /etc/fonts /usr/share/fonts/opentype/inter/Inter-Regular.otf /etc/ssl/certs/ca-certificates.crt"
+DATA="/usr/lib/udev/hwdb.bin /usr/share/pipewire /usr/share/wireplumber /usr/share/alsa /usr/share/alsa-card-profile /usr/lib/udev/rules.d /etc/fonts /usr/share/fonts/opentype/inter/Inter-Regular.otf /etc/ssl/certs/ca-certificates.crt /usr/share/dbus-1/system.conf /usr/share/dbus-1/system.d/bluetooth.conf"
 WLR_PROTOCOLS_URL=https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/raw/master/unstable
 WLR_PROTOCOLS="wlr-layer-shell-unstable-v1 wlr-foreign-toplevel-management-unstable-v1 wlr-screencopy-unstable-v1"
 PROTOCOLS=$(pkg-config --variable=pkgdatadir wayland-protocols)
@@ -24,7 +24,7 @@ CFLAGS="-O2 -Wall -Wextra -Werror -I/tmp"
 make_skeleton() {
   mkdir -p $ROOTFS/etc $ROOTFS/proc $ROOTFS/sys $ROOTFS/dev $ROOTFS/run $ROOTFS/tmp \
     $ROOTFS/mnt $ROOTFS/data $ROOTFS/boot/efi $ROOTFS/usr/share/terminfo/l $ROOTFS/usr/lib $ROOTFS/var/lib \
-    $ROOTFS/www/cgi-bin $ROOTFS/opt $ROOTFS/usr/share/anyconsole $ROOTFS/etc/docker $ROOTFS/etc/pipewire/pipewire.conf.d $ROOTFS/etc/wireplumber/wireplumber.conf.d
+    $ROOTFS/www/cgi-bin $ROOTFS/opt $ROOTFS/usr/share/anyconsole $ROOTFS/etc/docker $ROOTFS/etc/bluetooth $ROOTFS/etc/pipewire/pipewire.conf.d $ROOTFS/etc/wireplumber/wireplumber.conf.d
   ln -s /run $ROOTFS/var/run
 }
 
@@ -45,7 +45,7 @@ dlopened() {
   } | sort -u | while read -r library; do [ ! -e "$LIBDIR/$library" ] || echo "$LIBDIR/$library"; done
 }
 
-build_padd() { gcc $CFLAGS -o /bin/padd /src/guest/padd.c $(sdl2-config --cflags --libs) $(pkg-config --cflags --libs libevdev); }
+build_padd() { gcc $CFLAGS -o /bin/padd /src/guest/padd.c $(sdl2-config --cflags --libs) $(pkg-config --cflags --libs libevdev libsystemd libudev json-c); }
 
 generate_protocol() {
   wayland-scanner client-header "$1" "/tmp/$(basename "$1" .xml).h"
@@ -109,16 +109,17 @@ install_busybox() {
 
 configure_network() {
   ln -s /data/dhcpcd $ROOTFS/var/lib/dhcpcd
+  ln -s /data/bluetooth $ROOTFS/var/lib/bluetooth
   cp -a /usr/lib/dhcpcd $ROOTFS/usr/lib/
   cp /etc/dhcpcd.conf /src/guest/dhcpcd.exit-hook $ROOTFS/etc/
 }
 
 configure_users() {
   ln -s /data/dropbear $ROOTFS/etc/dropbear
-  printf 'root:x:0:0:root:/root:/bin/sh\ndhcpcd:x:100:65534::/:/bin/false\n' > $ROOTFS/etc/passwd
+  printf 'root:x:0:0:root:/root:/bin/sh\ndhcpcd:x:100:65534::/:/bin/false\nmessagebus:x:101:101::/:/bin/false\n' > $ROOTFS/etc/passwd
   printf 'root:%s:::::::\n' "$(busybox mkpasswd -m sha512 "$CONSOLE_PASSWORD")" > $ROOTFS/etc/shadow
   chmod 600 $ROOTFS/etc/shadow
-  printf 'root:x:0:\nnogroup:x:65534:\n' > $ROOTFS/etc/group
+  printf 'root:x:0:\nmessagebus:x:101:\nnogroup:x:65534:\n' > $ROOTFS/etc/group
 }
 
 configure_locale() {
@@ -131,6 +132,7 @@ install_system() {
   cp /src/guest/config $ROOTFS/etc/anyconsole.conf
   cp /src/guest/otad /src/guest/installer /src/guest/mkdisk /src/guest/games /src/guest/settings $ROOTFS/bin/
   cp /src/guest/daemon.json $ROOTFS/etc/docker/
+  cp /src/guest/bluez-input.conf $ROOTFS/etc/bluetooth/input.conf
   cp /src/guest/gamecontrollerdb.txt "$ROOTFS$CONTROLLER_MAPPINGS"
   cp /src/guest/pipewire.conf $ROOTFS/etc/pipewire/pipewire.conf.d/anyconsole.conf
   cp /src/guest/wireplumber.conf $ROOTFS/etc/wireplumber/wireplumber.conf.d/anyconsole.conf

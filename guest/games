@@ -138,7 +138,7 @@ run() {
   exec docker run --rm -i --label "$GAME_LABEL=$1/$2" $SANDBOX $(platform_access "$2") \
     --device /dev/dri --device-cgroup-rule 'c 13:* rw' -v "$PAD_NODES:/dev/input:ro" \
     -v "$3:/run/wayland" -v "$4:/states" -v "$5:/frames" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
-    -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PAD_NAME="$PAD_NAME" \
+    -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PAD_NAME="$PAD_NAME" -e MOTION_NAME="$MOTION_NAME" \
     -e GAME_CONFIG="$(jq -c --arg platform "$2" '.[$platform] // {}' "$GAMES_DIR/$1/manifest.json")" \
     -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
     -v "$rom:/game:ro" -v "$saves:/saves" "$GAME_IMAGE/$2" $video "/game/$file"

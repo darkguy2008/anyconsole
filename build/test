@@ -17,6 +17,11 @@ STARTED=$(date +%s)
 TEST_VOLUME=10
 SECOND_DISPLAY_WIDTH=1920
 SECOND_DISPLAY_HEIGHT=1080
+FAKEPAD_IMAGE=anyconsole-fakepad
+FAKEPAD_DIR=/tmp/fakepad
+FAKEPAD_NAME="PS4 Controller"
+LOW_BATTERY=10
+STRONG_RUMBLE_EFFECT=4
 
 monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
 guest() {
@@ -215,6 +220,64 @@ play_every_other_game() {
   done
 }
 
+build_fakepad() {
+  guest "mkdir -p $FAKEPAD_DIR"
+  for file in Dockerfile ds4.py; do guest "cat > $FAKEPAD_DIR/$file" < "build/fakepad/$file"; done
+  guest "docker build -q --network host -t $FAKEPAD_IMAGE $FAKEPAD_DIR"
+}
+fakepad_logs() { guest "docker logs fakepad-$1 2>&1"; }
+fakepad_created() { fakepad_logs "$1" | grep -qx created; }
+fakepad_rumbled() { fakepad_logs bluetooth | grep -q '^rumble '; }
+plug_fakepad() {
+  guest "docker run -d --rm --name fakepad-$1 --network host --device /dev/uhid $FAKEPAD_IMAGE $1" >/dev/null
+  wait_for $STEP_SECONDS fakepad_created "$1"
+}
+fakepad() { bus=$1; shift; guest "docker exec fakepad-$bus sh -c 'echo $* > /tmp/control'"; }
+has_fakepad() { echo ".controllers.controllers | any(.name == \"$FAKEPAD_NAME\" and .connection == \"$1\" and .battery != null)"; }
+
+hotplug_wired_controller() {
+  plug_fakepad usb
+  expect "($(has_fakepad wired)) and (.controllers.bluetooth | not) and any(.notifications[]; . == \"Connected $FAKEPAD_NAME\")"
+  tap guide
+  expect '.guide and .screen == "guide"'
+  choose Controllers
+  expect ".screen == \"controllers\" and ([.rows[].label] | index(\"Pair new controller\") == null) and any(.rows[]; .label == \"$FAKEPAD_NAME\" and (.value | startswith(\"Wired\")))"
+  snapshot controllers
+  tap b
+  tap guide
+  expect '.guide | not'
+  fakepad usb unplug
+  expect "(.controllers.controllers | length) == 0 and any(.notifications[]; . == \"Disconnected $FAKEPAD_NAME\")"
+}
+
+play_wireless_controller() {
+  plug_fakepad bluetooth
+  expect "$(has_fakepad bluetooth)"
+  fakepad bluetooth press
+  expect '.guide and .screen == "guide" and ([.rows[].label] | index("Microphone") != null)'
+  fakepad bluetooth release
+  fakepad bluetooth press
+  fakepad bluetooth release
+  expect '.guide | not'
+  guest "echo $STRONG_RUMBLE_EFFECT | docker run --rm -i --device $PAD_NODES/event0:/dev/input/event0 --entrypoint fftest $FAKEPAD_IMAGE /dev/input/event0" >/dev/null
+  wait_for $STEP_SECONDS fakepad_rumbled
+  log ok "rumble played on the virtual pad reached the physical pad"
+  fakepad bluetooth battery $LOW_BATTERY
+  expect "any(.notifications[]; . == \"$FAKEPAD_NAME battery low\")"
+  fakepad bluetooth unplug
+  expect '(.controllers.controllers | length) == 0'
+}
+
+hotplug_controllers() {
+  build_fakepad
+  hotplug_wired_controller
+  play_wireless_controller
+  api POST settings "sleep 30" >/dev/null
+  expect '.settings.sleep == 30'
+  ! api POST settings "sleep 7" 2>/dev/null || { log FAIL "accepted a sleep outside SLEEP_MINUTES" >&2; exit 1; }
+  log ok "rejected a sleep outside SLEEP_MINUTES"
+}
+
 back_to_dashboard() {
   tap guide
   expect '.guide and .screen == "guide"'
@@ -230,6 +293,7 @@ snapshot home
 wait_for $STEP_SECONDS guest ". /etc/profile; WAYLAND_DISPLAY=wayland-0 grim /tmp/home.png && [ -s /tmp/home.png ]"
 log ok "grim captures the idle screen"
 change_resolution_in_settings
+hotplug_controllers
 
 api POST stores "$TEST_STORE_URL" >/dev/null
 expect '.stores[0].online and ([.games[].key] | index("alter-ego/nes") != null)'

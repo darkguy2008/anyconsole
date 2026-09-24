@@ -7,5 +7,7 @@ ttyS0::respawn:-/bin/sh
 ::respawn:/bin/sh -c '. /etc/anyconsole.conf; exec /bin/httpd -f -p $API_PORT -h /www'
 ::respawn:/bin/sh -c '. /etc/anyconsole.conf; exec dockerd --config-file /etc/docker/daemon.json >>$LOG_DIR/dockerd.log 2>&1'
 ::respawn:/bin/sh -c '. /etc/profile; . /etc/anyconsole.conf; exec pipewire >>$LOG_DIR/pipewire.log 2>&1'
+::respawn:/bin/sh -c '. /etc/anyconsole.conf; exec dbus-daemon --system --nofork --nopidfile >>$LOG_DIR/dbus.log 2>&1'
+::respawn:/bin/sh -c '. /etc/anyconsole.conf; exec bluetoothd --nodetach >>$LOG_DIR/bluetoothd.log 2>&1'
 ::ctrlaltdel:/bin/reboot
 ::shutdown:/bin/umount -a -r
