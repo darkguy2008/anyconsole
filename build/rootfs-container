@@ -11,7 +11,7 @@ SOFTWARE_VULKAN_DRIVER=lvp_icd.json
 UDEV="/usr/bin/udevadm $LIBDIR/systemd/libsystemd-shared-*.so"
 AUDIO="/usr/bin/pipewire /usr/bin/pipewire-pulse /usr/bin/wireplumber /usr/bin/wpctl /usr/bin/pw-dump"
 AUDIO_PLUGINS="$LIBDIR/pipewire-0.3 $LIBDIR/spa-0.2 $LIBDIR/wireplumber-0.5"
-DOCKER="/usr/bin/dockerd /usr/bin/docker /usr/bin/containerd /usr/bin/containerd-shim-runc-v2 /usr/bin/runc"
+DOCKER="/usr/bin/dockerd /usr/bin/docker /usr/bin/containerd /usr/bin/containerd-shim-runc-v2 /usr/bin/runc /usr/libexec/docker/docker-init"
 DOCKER_PLUGINS=/usr/libexec/docker/cli-plugins
 DATA="/usr/lib/udev/hwdb.bin /usr/share/pipewire /usr/share/wireplumber /usr/share/alsa /usr/share/alsa-card-profile /usr/lib/udev/rules.d /etc/fonts /usr/share/fonts/opentype/inter/Inter-Regular.otf /etc/ssl/certs/ca-certificates.crt"
 WLR_PROTOCOLS_URL=https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/raw/master/unstable
@@ -131,6 +131,7 @@ install_system() {
   cp /src/guest/config $ROOTFS/etc/anyconsole.conf
   cp /src/guest/otad /src/guest/installer /src/guest/mkdisk /src/guest/games /src/guest/settings $ROOTFS/bin/
   cp /src/guest/daemon.json $ROOTFS/etc/docker/
+  cp /src/guest/gamecontrollerdb.txt "$ROOTFS$CONTROLLER_MAPPINGS"
   cp /src/guest/pipewire.conf $ROOTFS/etc/pipewire/pipewire.conf.d/anyconsole.conf
   cp /src/guest/wireplumber.conf $ROOTFS/etc/wireplumber/wireplumber.conf.d/anyconsole.conf
   cp /src/guest/api $ROOTFS/www/cgi-bin/

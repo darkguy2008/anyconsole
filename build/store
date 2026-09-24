@@ -3,7 +3,9 @@ set -eu
 cd "$(dirname "$0")/.."
 . config
 DOWNLOADS=build/out/cache/downloads
-NES_HOMEBREW=https://web.archive.org/web/2020id_/https://shiru.untergrund.net/files/nes
+SHIRU=https://web.archive.org/web/2020id_/https://shiru.untergrund.net/files
+INUFUTO=https://web.archive.org/web/2024id_/http://inufuto.web.fc2.com
+GITHUB=https://github.com
 DOS_SHAREWARE=https://www.commander-keen.com/downloads
 
 fetch() { curl -fsSL -R -z "$DOWNLOADS/$1" -o "$DOWNLOADS/$1" "$2" || [ -f "$DOWNLOADS/$1" ]; }
@@ -14,15 +16,28 @@ add_game() {
   cp "$4" "$TEST_STORE/$1/$3/rom/$2.${4##*.}"
 }
 
-add_nes_homebrew() {
-  fetch "$2.zip" "$NES_HOMEBREW/$2.zip"
-  rm -rf "/tmp/$2" && mkdir "/tmp/$2" && unzip -q "$DOWNLOADS/$2.zip" -d "/tmp/$2"
-  add_game "$1" "$3" nes "$(find "/tmp/$2" -iname '*.nes' | head -1)"
+add_download() {
+  file=${4##*/}
+  fetch "$file" "$4"
+  add_game "$1" "$2" "$3" "$DOWNLOADS/$file"
+}
+
+add_zipped() {
+  file=${4##*/}
+  fetch "$file" "$4"
+  rm -rf "/tmp/$file" && mkdir "/tmp/$file" && unzip -q "$DOWNLOADS/$file" -d "/tmp/$file"
+  add_game "$1" "$2" "$3" "$(find "/tmp/$file" -iname "$5" | head -1)"
 }
 
 mkdir -p "$DOWNLOADS"
 rm -rf "$TEST_STORE"
-add_nes_homebrew alter-ego alter_ego "Alter Ego"
-add_nes_homebrew lan-master lan_master "LAN Master"
-fetch keen1.zip "$DOS_SHAREWARE/keen1.zip"
-add_game commander-keen "Commander Keen" msdos "$DOWNLOADS/keen1.zip"
+add_zipped alter-ego "Alter Ego" nes "$SHIRU/nes/alter_ego.zip" '*.nes'
+add_zipped lan-master "LAN Master" nes "$SHIRU/nes/lan_master.zip" '*.nes'
+add_download commander-keen "Commander Keen" msdos "$DOS_SHAREWARE/keen1.zip"
+add_zipped christmas-craze "Christmas Craze" snes "$SHIRU/snes/christmas_craze.zip" '*.smc'
+add_download libbet "Libbet and the Magic Floor" gb "$GITHUB/pinobatch/libbet/releases/download/v0.08/libbet.gb"
+add_zipped the-hat-chooses-the-wizard "The Hat Chooses the Wizard" gba "$GITHUB/agbrs/agb/releases/download/v0.25.0/examples.zip" 'the-hat-chooses-the-wizard.gba'
+add_download legendary-spear "Legendary Spear" atari2600 "$GITHUB/DChristianson/legendary-spear/releases/download/v1.1/LegendarySpear_NTSC.bin"
+add_download kumi-daiko-beatoff "Kumi-Daiko Beatoff 64" n64 "$GITHUB/ptimonen/n64-riistahillo/releases/download/1.0/Kumi-Daiko-Beatoff-64.n64"
+add_zipped cracky "Cracky" wsc "$INUFUTO/16bit/wsc/cracky_bin.zip" '*.wsc'
+add_download gravity-wave "Gravity Wave" dreamcast "$GITHUB/richstokes/dreamcast-homebrew/releases/download/continuous/gravity-wave.cdi"

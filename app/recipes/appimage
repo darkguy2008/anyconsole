@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+curl -fsSL -o /app.AppImage "$(cat /url)"
+chmod +x /app.AppImage
+cd /
+/app.AppImage --appimage-extract >/dev/null
+mv "$(readlink -f /squashfs-root)" "$1"

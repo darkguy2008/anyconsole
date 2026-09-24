@@ -3,6 +3,7 @@ set -eu
 cd "$(dirname "$0")"
 . config
 INDEX=rel/index
+ROOTFS_LOG=build/out/rootfs.log
 
 push_to_host() {
   [ "${1:-}" = force ] || echo $(( $(cat VERSION) + 1 )) > VERSION
@@ -14,7 +15,7 @@ build_release() {
   date -u > app/changelog
   printf '#!/bin/sh\necho "feature %s online"\n' "$1" > "app/feature-$1"
   chmod +x "app/feature-$1"
-  sh build/rootfs >/dev/null 2>&1
+  sh build/rootfs > "$ROOTFS_LOG" 2>&1 || { tail -n 40 "$ROOTFS_LOG" >&2; exit 1; }
 }
 
 serve_releases() {

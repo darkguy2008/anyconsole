@@ -23,11 +23,12 @@
 #define NODE_MODE (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
 #define SEATS 4
 #define CAPTURED_MAX 32
+#define PHYSICAL_PADS_MAX 16
 #define NO_JOYSTICK (-1)
-#define PAD_NAME "Sony Interactive Entertainment DualSense Wireless Controller"
 #define KEYBOARD_NAME "anyconsole keyboard"
 #define PAD_VENDOR 0x054c
 #define PAD_PRODUCT 0x0ce6
+#define PAD_VERSION 0x8111
 #define AXIS_MAX 255
 #define AXIS_CENTER (AXIS_MAX / 2 + 1)
 #define WORD_MAX 31
@@ -55,18 +56,21 @@ static const struct control controls[] = {
     HAT("dpup", ABS_HAT0Y, -1), HAT("dpdown", ABS_HAT0Y, 1), HAT("dpleft", ABS_HAT0X, -1), HAT("dpright", ABS_HAT0X, 1),
 };
 
-struct captured {
+enum source { COMMANDS, HOTPLUG, FIXED_SOURCES, CAPTURED = FIXED_SOURCES, PHYSICAL_PAD };
+#define WATCHED_MAX (FIXED_SOURCES + CAPTURED_MAX + PHYSICAL_PADS_MAX)
+
+struct watch {
+    enum source source;
     struct libevdev *device;
     char node[NAME_MAX + 1];
+    SDL_JoystickID pad;
 };
-
-enum { HOTPLUG, FIRST_CAPTURED };
 
 static struct libevdev_uinput *pad[SEATS], *guide, *keyboard;
 static const struct control *swallowed[SEATS];
 static int held[SEATS][SDL_arraysize(controls)];
-static struct pollfd watched[FIRST_CAPTURED + CAPTURED_MAX];
-static struct captured captured[FIRST_CAPTURED + CAPTURED_MAX];
+static struct pollfd watched[WATCHED_MAX];
+static struct watch watches[WATCHED_MAX];
 static int watched_count;
 
 static void emit(struct libevdev_uinput *device, unsigned type, unsigned code, int value) {
@@ -74,26 +78,35 @@ static void emit(struct libevdev_uinput *device, unsigned type, unsigned code, i
     libevdev_uinput_write_event(device, EV_SYN, SYN_REPORT, 0);
 }
 
-static void expose(int fd, int seat, int create) {
-    char sysname[UINPUT_MAX_NAME_SIZE], pattern[PATH_MAX], path[PATH_MAX];
+static void publish(const char *path, const char *dev_file) {
     unsigned major, minor;
+    FILE *dev = fopen(dev_file, "r");
+    int read = dev && fscanf(dev, "%u:%u", &major, &minor) == 2;
+    if (dev) fclose(dev);
+    if (!read) perror(dev_file);
+    else if (mknod(path, S_IFCHR | NODE_MODE, makedev(major, minor)) < 0) perror(path);
+}
+
+static void expose(int fd, int seat, int create) {
+    char sysname[UINPUT_MAX_NAME_SIZE], pattern[PATH_MAX], path[PATH_MAX], dev_file[PATH_MAX];
     glob_t found;
     if (ioctl(fd, UI_GET_SYSNAME(sizeof sysname), sysname) < 0) { perror("uinput sysname"); return; }
-    snprintf(pattern, sizeof pattern, VIRTUAL_DEVICES "input/%s/*/dev", sysname);
+    snprintf(pattern, sizeof pattern, VIRTUAL_DEVICES "input/%s/*", sysname);
     if (glob(pattern, 0, NULL, &found)) { fprintf(stderr, "%s: no device nodes\n", sysname); return; }
     for (size_t i = 0; i < found.gl_pathc; i++) {
-        char *node = found.gl_pathv[i];
-        *strrchr(node, '/') = '\0';
-        node = strrchr(node, '/') + 1;
-        if (!strncmp(node, "event", strlen("event"))) snprintf(path, sizeof path, INPUT_NODES "/%s", node);
-        else if (!strncmp(node, "js", strlen("js")) && seat != NO_JOYSTICK) snprintf(path, sizeof path, PAD_NODES "/js%d", seat);
-        else continue;
-        if (!create) { unlink(path); continue; }
-        strcat(found.gl_pathv[i], "/dev");
-        FILE *dev = fopen(found.gl_pathv[i], "r");
-        if (!dev || fscanf(dev, "%u:%u", &major, &minor) != 2) { perror(found.gl_pathv[i]); continue; }
-        fclose(dev);
-        if (mknod(path, S_IFCHR | NODE_MODE, makedev(major, minor)) < 0) perror(path);
+        const char *node = strrchr(found.gl_pathv[i], '/') + 1;
+        int event = !strncmp(node, "event", strlen("event"));
+        if (!event && strncmp(node, "js", strlen("js"))) continue;
+        snprintf(dev_file, sizeof dev_file, "%s/dev", found.gl_pathv[i]);
+        if (event) {
+            snprintf(path, sizeof path, INPUT_NODES "/%s", node);
+            if (create) publish(path, dev_file);
+            else unlink(path);
+        }
+        if (seat == NO_JOYSTICK) continue;
+        snprintf(path, sizeof path, PAD_NODES "/%s%d", event ? "event" : "js", seat);
+        if (create) publish(path, dev_file);
+        else unlink(path);
     }
     globfree(&found);
 }
@@ -146,6 +159,7 @@ static void plug(int seat) {
     libevdev_set_id_bustype(device, BUS_USB);
     libevdev_set_id_vendor(device, PAD_VENDOR);
     libevdev_set_id_product(device, PAD_PRODUCT);
+    libevdev_set_id_version(device, PAD_VERSION);
     for (const struct control *c = controls; c < controls + SDL_arraysize(controls); c++) {
         if (c->type == EV_KEY) { libevdev_enable_event_code(device, EV_KEY, c->code, NULL); continue; }
         if (c->button) libevdev_enable_event_code(device, EV_KEY, c->button, NULL);
@@ -244,59 +258,77 @@ static void inject(const char *line) {
     forward(EV_SYN, SYN_REPORT, 0);
 }
 
-static int read_commands(void *unused) {
-    (void)unused;
-    FILE *commands = fopen(PAD_FIFO, "r+");
-    if (!commands) { perror(PAD_FIFO); exit(1); }
-    char line[BUFSIZ];
-    while (fgets(line, sizeof line, commands)) {
-        if (!strncmp(line, "EV_", strlen("EV_"))) { inject(line); continue; }
-        SDL_Event event = {.user = {.type = SDL_USEREVENT, .data1 = strdup(line)}};
-        SDL_PushEvent(&event);
+static void read_commands(int fd) {
+    static char pending[BUFSIZ];
+    static size_t length;
+    ssize_t count = read(fd, pending + length, sizeof pending - length);
+    if (count <= 0) return;
+    length += count;
+    char *start = pending, line[sizeof pending + 1];
+    for (char *end; (end = memchr(start, '\n', pending + length - start)); start = end + 1) {
+        snprintf(line, sizeof line, "%.*s", (int)(end - start + 1), start);
+        if (!strncmp(line, "EV_", strlen("EV_"))) inject(line);
+        else command(line);
     }
-    exit(1);
+    length -= start - pending;
+    memmove(pending, start, length);
+    if (length == sizeof pending) length = 0;
+}
+
+static void drain(int fd) {
+    char buffer[BUFSIZ];
+    while (read(fd, buffer, sizeof buffer) > 0) {}
+}
+
+static struct watch *watch(int fd, enum source source) {
+    if (fd < 0 || watched_count == WATCHED_MAX) { fprintf(stderr, "padd: cannot watch source %d\n", source); return NULL; }
+    watched[watched_count] = (struct pollfd){.fd = fd, .events = POLLIN};
+    watches[watched_count] = (struct watch){.source = source};
+    return &watches[watched_count++];
+}
+
+static void unwatch(int index) {
+    close(watched[index].fd);
+    watched_count--;
+    watched[index] = watched[watched_count];
+    watches[index] = watches[watched_count];
 }
 
 static void capture(const char *node) {
     char path[PATH_MAX];
-    struct libevdev *device;
+    struct libevdev *device = NULL;
     snprintf(path, sizeof path, DEVICES "/%s", node);
-    if (strncmp(node, "event", strlen("event")) || is_virtual(path) || watched_count == (int)SDL_arraysize(watched)) return;
+    if (strncmp(node, "event", strlen("event")) || is_virtual(path)) return;
     int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) { perror(path); return; }
-    if (libevdev_new_from_fd(fd, &device) < 0) { close(fd); return; }
-    if (!libevdev_has_event_code(device, EV_KEY, KEY_A) && !libevdev_has_event_code(device, EV_REL, REL_X)) {
+    if (libevdev_new_from_fd(fd, &device) < 0 ||
+        (!libevdev_has_event_code(device, EV_KEY, KEY_A) && !libevdev_has_event_code(device, EV_REL, REL_X))) {
         libevdev_free(device);
         close(fd);
         return;
     }
+    struct watch *captured = watch(fd, CAPTURED);
+    if (!captured) { libevdev_free(device); close(fd); return; }
     libevdev_grab(device, LIBEVDEV_GRAB);
-    watched[watched_count] = (struct pollfd){.fd = fd, .events = POLLIN};
-    captured[watched_count].device = device;
-    snprintf(captured[watched_count].node, sizeof captured[0].node, "%s", node);
-    watched_count++;
+    captured->device = device;
+    snprintf(captured->node, sizeof captured->node, "%s", node);
     announce(node, libevdev_get_name(device), 1);
 }
 
-static void release(int index) {
-    announce(captured[index].node, libevdev_get_name(captured[index].device), 0);
-    libevdev_free(captured[index].device);
-    close(watched[index].fd);
-    watched_count--;
-    watched[index] = watched[watched_count];
-    captured[index] = captured[watched_count];
-}
-
 static void pass_through(int index) {
+    struct libevdev *device = watches[index].device;
     struct input_event event;
     int status;
-    while ((status = libevdev_next_event(captured[index].device, LIBEVDEV_READ_FLAG_NORMAL, &event)) >= 0) {
+    while ((status = libevdev_next_event(device, LIBEVDEV_READ_FLAG_NORMAL, &event)) >= 0) {
         forward(event.type, event.code, event.value);
         if (status == LIBEVDEV_READ_STATUS_SYNC)
-            while (libevdev_next_event(captured[index].device, LIBEVDEV_READ_FLAG_SYNC, &event) == LIBEVDEV_READ_STATUS_SYNC)
+            while (libevdev_next_event(device, LIBEVDEV_READ_FLAG_SYNC, &event) == LIBEVDEV_READ_STATUS_SYNC)
                 forward(event.type, event.code, event.value);
     }
-    if (status != -EAGAIN) release(index);
+    if (status == -EAGAIN) return;
+    announce(watches[index].node, libevdev_get_name(device), 0);
+    libevdev_free(device);
+    unwatch(index);
 }
 
 static void read_hotplug(int fd) {
@@ -304,25 +336,8 @@ static void read_hotplug(int fd) {
     ssize_t count = read(fd, buffer, sizeof buffer);
     for (char *at = buffer; count > 0 && at < buffer + count;) {
         struct inotify_event *event = (struct inotify_event *)at;
-        if (event->len) capture(event->name);
+        if (event->len && event->mask & IN_CREATE) capture(event->name);
         at += sizeof *event + event->len;
-    }
-}
-
-static int capture_all(void *unused) {
-    (void)unused;
-    int hotplug = inotify_init1(IN_CLOEXEC);
-    if (hotplug < 0 || inotify_add_watch(hotplug, DEVICES, IN_CREATE) < 0) { perror(DEVICES); exit(1); }
-    watched[HOTPLUG] = (struct pollfd){.fd = hotplug, .events = POLLIN};
-    watched_count = FIRST_CAPTURED;
-    DIR *devices = opendir(DEVICES);
-    for (struct dirent *entry; devices && (entry = readdir(devices));) capture(entry->d_name);
-    if (devices) closedir(devices);
-    for (;;) {
-        if (poll(watched, watched_count, -1) < 0) continue;
-        if (watched[HOTPLUG].revents) read_hotplug(hotplug);
-        for (int i = watched_count - 1; i >= FIRST_CAPTURED; i--)
-            if (watched[i].revents) pass_through(i);
     }
 }
 
@@ -340,6 +355,8 @@ static void attach(int index) {
     SDL_GameController *controller = SDL_GameControllerOpen(index);
     if (!controller) { fprintf(stderr, "%s: %s\n", SDL_JoystickNameForIndex(index), SDL_GetError()); return; }
     announce_controller(controller, 1);
+    struct watch *physical = watch(open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC), PHYSICAL_PAD);
+    if (physical) physical->pad = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller));
 }
 
 static void detach(SDL_JoystickID instance) {
@@ -347,31 +364,50 @@ static void detach(SDL_JoystickID instance) {
     if (!controller) return;
     announce_controller(controller, 0);
     SDL_GameControllerClose(controller);
+    for (int i = 0; i < watched_count; i++)
+        if (watches[i].source == PHYSICAL_PAD && watches[i].pad == instance) { unwatch(i); return; }
+}
+
+static void handle(SDL_Event *event) {
+    switch (event->type) {
+    case SDL_CONTROLLERDEVICEADDED: attach(event->cdevice.which); break;
+    case SDL_CONTROLLERDEVICEREMOVED: detach(event->cdevice.which); break;
+    case SDL_CONTROLLERBUTTONDOWN:
+    case SDL_CONTROLLERBUTTONUP:
+        drive(0, SDL_GameControllerGetStringForButton(event->cbutton.button), event->cbutton.state == SDL_PRESSED);
+        break;
+    case SDL_CONTROLLERAXISMOTION:
+        drive(0, SDL_GameControllerGetStringForAxis(event->caxis.axis),
+              scaled(event->caxis.value, event->caxis.axis >= SDL_CONTROLLER_AXIS_TRIGGERLEFT ? 0 : SDL_JOYSTICK_AXIS_MIN));
+        break;
+    }
 }
 
 int main(void) {
     mkfifo(PAD_FIFO, S_IRUSR | S_IWUSR);
     setenv("SDL_JOYSTICK_DISABLE_UDEV", "1", 1);
+    SDL_SetHint(SDL_HINT_GAMECONTROLLERCONFIG_FILE, CONTROLLER_MAPPINGS);
     if (SDL_Init(SDL_INIT_GAMECONTROLLER) < 0) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     guide = create_guide();
     keyboard = create_keyboard();
     plug(0);
-    SDL_CreateThread(read_commands, "commands", NULL);
-    SDL_CreateThread(capture_all, "capture", NULL);
-    for (SDL_Event event; SDL_WaitEvent(&event);) {
-        switch (event.type) {
-        case SDL_USEREVENT: command(event.user.data1); free(event.user.data1); break;
-        case SDL_CONTROLLERDEVICEADDED: attach(event.cdevice.which); break;
-        case SDL_CONTROLLERDEVICEREMOVED: detach(event.cdevice.which); break;
-        case SDL_CONTROLLERBUTTONDOWN:
-        case SDL_CONTROLLERBUTTONUP:
-            drive(0, SDL_GameControllerGetStringForButton(event.cbutton.button), event.cbutton.state == SDL_PRESSED);
-            break;
-        case SDL_CONTROLLERAXISMOTION:
-            drive(0, SDL_GameControllerGetStringForAxis(event.caxis.axis),
-                  scaled(event.caxis.value, event.caxis.axis >= SDL_CONTROLLER_AXIS_TRIGGERLEFT ? 0 : SDL_JOYSTICK_AXIS_MIN));
-            break;
+    int hotplug = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (!watch(open(PAD_FIFO, O_RDWR | O_NONBLOCK | O_CLOEXEC), COMMANDS) || !watch(hotplug, HOTPLUG) ||
+        inotify_add_watch(hotplug, DEVICES, IN_CREATE | IN_ATTRIB | IN_DELETE) < 0) { perror("padd"); return 1; }
+    DIR *devices = opendir(DEVICES);
+    for (struct dirent *entry; devices && (entry = readdir(devices));) capture(entry->d_name);
+    if (devices) closedir(devices);
+    for (;;) {
+        for (SDL_Event event; SDL_PollEvent(&event);) handle(&event);
+        if (poll(watched, watched_count, -1) < 0) continue;
+        for (int i = watched_count - 1; i >= 0; i--) {
+            if (!watched[i].revents) continue;
+            switch (watches[i].source) {
+            case COMMANDS: read_commands(watched[i].fd); break;
+            case HOTPLUG: read_hotplug(watched[i].fd); break;
+            case CAPTURED: pass_through(i); break;
+            case PHYSICAL_PAD: drain(watched[i].fd); break;
+            }
         }
     }
-    return 1;
 }

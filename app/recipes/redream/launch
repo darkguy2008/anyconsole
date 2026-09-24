@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+cp -u /opt/redream/redream /engine/
+find /bios -maxdepth 1 -type f -exec ln -sf {} /engine/ \;
+exec xwayland-run -fullscreen -geometry "$CANVAS" -- /engine/redream --width="${CANVAS%x*}" --height="${CANVAS#*x}" "$@"

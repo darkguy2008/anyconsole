@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+GAMEPAD_MAPPING="1:1 2:0 3:3 4:2 5:9 6:10 7:42 8:43 9:6 10:4 11:11 12:12 13:13 14:14 15:7 16:8 17:45 18:39 19:44 20:38 21:47 22:41 23:46 24:40"
+CEMU=$XDG_CONFIG_HOME/Cemu
+MLC=/saves/mlc01
+
+joystick_guid() {
+  python3 -c 'import ctypes, sdl2
+sdl2.SDL_Init(sdl2.SDL_INIT_JOYSTICK)
+text = ctypes.create_string_buffer(33)
+sdl2.SDL_JoystickGetGUIDString(sdl2.SDL_JoystickGetDeviceGUID(0), text, len(text))
+print(text.value.decode())'
+}
+
+controller_profile() {
+  printf '<?xml version="1.0" encoding="UTF-8"?>\n<emulated_controller>\n<type>Wii U GamePad</type>\n<controller>\n'
+  printf '<api>SDLController</api>\n<uuid>0_%s</uuid>\n<rumble>1</rumble>\n<mappings>\n' "$(joystick_guid)"
+  for pair in $GAMEPAD_MAPPING; do printf '<entry><mapping>%s</mapping><button>%s</button></entry>\n' "${pair%:*}" "${pair#*:}"; done
+  printf '</mappings>\n</controller>\n</emulated_controller>\n'
+}
+
+mkdir -p "$CEMU/controllerProfiles"
+[ -d "$MLC" ] || if [ -d /bios/mlc01 ]; then cp -R /bios/mlc01 "$MLC"; else mkdir -p "$MLC"; fi
+ln -sf /bios/keys.txt "$CEMU/keys.txt"
+cp /opt/cemu/settings.xml "$CEMU/settings.xml"
+controller_profile > "$CEMU/controllerProfiles/controller0.xml"
+exec xwayland-run -fullscreen -geometry "$CANVAS" -- /opt/cemu/AppRun -f -g "$1" -m "$MLC"

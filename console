@@ -4,11 +4,27 @@ cd "$(dirname "$0")"
 . config
 . guest/config
 INSTALLER=build/out/installer.img
+REBOOT_SECONDS=300
+POLL_SECONDS=2
 build_image() {
   ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/image >/dev/null"
   rsync -S --progress "$DEPLOY_HOST:$DEPLOY_PATH/$INSTALLER" "$INSTALLER"
 }
-api() { printf '%s' "${3:-}" | ssh "$DEPLOY_HOST" curl -fsS -X "$1" --data-binary @- "localhost:$API_PORT/cgi-bin/api/$2"; echo; }
+if [ -n "${CONSOLE_BOX:-}" ]; then
+  SSH_ROUTE= SSH_HOST=root@$CONSOLE_BOX API_VIA= API_HOST=$CONSOLE_BOX
+else
+  SSH_ROUTE="-J $DEPLOY_HOST -p $SSH_PORT" SSH_HOST=root@127.0.0.1 API_VIA="ssh $DEPLOY_HOST" API_HOST=localhost
+fi
+api() { printf '%s' "${3:-}" | $API_VIA curl -fsS ${API_TIMEOUT:+-m $API_TIMEOUT} -X "$1" --data-binary @- "$API_HOST:$API_PORT/cgi-bin/api/$2"; echo; }
+
+wait_for_version() {
+  for attempt in $(seq $((REBOOT_SECONDS / POLL_SECONDS))); do
+    API_TIMEOUT=$POLL_SECONDS api GET status 2>/dev/null | jq -e ".version == $1" >/dev/null && { echo "running v$1"; return; }
+    sleep $POLL_SECONDS
+  done
+  echo "the console did not come back on v$1 within ${REBOOT_SECONDS}s" >&2
+  exit 1
+}
 
 case "${1:-status}" in
   status) api GET status ;;
@@ -25,8 +41,10 @@ case "${1:-status}" in
   update|reboot|poweroff) api POST "$1" ;;
   push)
     ./deploy
-    api POST update
-    api POST reboot ;;
+    version=$(cat VERSION)
+    api POST update | jq -e ".inactive_staged == $version" >/dev/null || { echo "the console did not stage v$version" >&2; exit 1; }
+    api POST reboot >/dev/null
+    wait_for_version "$version" ;;
   image)
     sync_host
     build_image ;;
@@ -49,10 +67,12 @@ case "${1:-status}" in
     ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/test" ;;
   start) ssh "$DEPLOY_HOST" "setsid $DEPLOY_PATH/build/run >/dev/null 2>&1 &" ;;
   link) ssh "$DEPLOY_HOST" "echo set_link $NIC $2 | socat - UNIX-CONNECT:$DEPLOY_PATH/build/out/monitor.sock" >/dev/null ;;
-  ssh) shift; password_ssh -J "$DEPLOY_HOST" -p "$SSH_PORT" root@127.0.0.1 "$@" ;;
+  ssh) shift; with_password ssh $SSH_ROUTE "$SSH_HOST" "$@" ;;
+  bios) with_password rsync -a -e "ssh $SSH_ROUTE" "$2/" "$SSH_HOST:$BIOS_DIR/" ;;
   log) ssh "$DEPLOY_HOST" "tail -n ${2:-40} $DEPLOY_PATH/build/out/boot.log" ;;
-  *) cat >&2 <<'USAGE'
-usage: console <command>
+  help) cat >&2 <<'USAGE'
+usage: console [box address] <command>
+  without an address, commands go to the QEMU test VM
   status     show the running console's OTA state
   state      show the console's screen, games, stores, audio and inputs
   store add smb://[user:password@]host/share/path  add a game store
@@ -71,7 +91,13 @@ usage: console <command>
   start      boot the QEMU test VM on the build host
   link on|off  connect or unplug the VM's network cable
   ssh [cmd]  shell into the running console
+  bios <folder>  copy <folder>/<platform>/<files> into the console's BIOS store
   log [n]    tail the VM's serial boot log
 USAGE
     exit 1 ;;
+  *)
+    [ -z "${CONSOLE_BOX:-}" ] && [ $# -gt 1 ] || exec "$0" help
+    box=$1
+    shift
+    CONSOLE_BOX=$box exec "$0" "$@" ;;
 esac

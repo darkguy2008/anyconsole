@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<content>
+	<Graphic>
+		<api>1</api>
+		<VSync>1</VSync>
+	</Graphic>
+	<Audio>
+		<api>3</api>
+		<TVDevice>default</TVDevice>
+	</Audio>
+</content>
