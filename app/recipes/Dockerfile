@@ -164,7 +164,7 @@ ENV SDL_JOYSTICK_HIDAPI=0 SDL_JOYSTICK_DISABLE_UDEV=1 SDL_JOYSTICK_ALLOW_BACKGRO
 VOLUME /engine
 
 FROM debian:trixie-slim AS fetch
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates jq libxml2-utils && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates jq libxml2-utils 7zip && rm -rf /var/lib/apt/lists/*
 COPY appimage /usr/local/bin/
 
 FROM fetch AS redream-release
@@ -215,3 +215,42 @@ RUN ln -s /opt/rpcs3/usr/share/rpcs3 /usr/share/rpcs3
 COPY rpcs3/ /opt/rpcs3/
 ENV XDG_CONFIG_HOME=/engine/config XDG_CACHE_HOME=/engine/cache QT_QPA_PLATFORM=xcb
 ENTRYPOINT ["/opt/rpcs3/launch"]
+
+FROM fetch AS softgpu-release
+ADD https://api.github.com/repos/JHRobotics/softgpu/releases/latest /release.json
+RUN jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' /release.json > /url
+
+FROM fetch AS patcher9x-release
+ADD https://api.github.com/repos/JHRobotics/patcher9x/releases/latest /release.json
+RUN jq -r '.assets[] | select(.name | endswith("-linux-amd64.tar.gz")) | .browser_download_url' /release.json > /url
+
+FROM fetch AS win98-download
+COPY --from=softgpu-release /url /softgpu.url
+COPY --from=patcher9x-release /url /patcher9x.url
+ADD https://files.emulace.cz/ac97_362.zip /ac97.zip
+ADD --checksum=sha256:76e3ed7029a6f5ec8c8bdc160a072b77135d4c7a1128589f4f94508c477e10eb https://archive.org/download/SYMC8XX-bios-driver/win896.zip /lsi.zip
+RUN curl -fsSL -o /softgpu.zip "$(cat /softgpu.url)" \
+ && curl -fsSL "$(cat /patcher9x.url)" | tar xz -C /usr/local/bin \
+ && 7z e -o/base/drivers /softgpu.zip 'driver/sse3-w98/*' -x!'driver/sse3-w98/mesa25' >/dev/null \
+ && 7z e -o/base/build/DX9 /softgpu.zip 'redist/dx9_2004/*' >/dev/null \
+ && 7z e -o/base/drivers /ac97.zip 'WDM/*' >/dev/null \
+ && 7z e -o/base/drivers /lsi.zip 'sym_hi.*' >/dev/null
+
+FROM debian:trixie-slim AS win98-programs
+RUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-i686 && rm -rf /var/lib/apt/lists/*
+COPY win98/launcher.c win98/autologon.c /
+ARG WIN32_FLAGS="-Os -s -Wall -Wextra -Werror -nostdlib -mwindows -Wl,-e,_start -Wl,--subsystem,windows:4.0 -Wl,--no-insert-timestamp"
+RUN mkdir /anycon \
+ && i686-w64-mingw32-gcc $WIN32_FLAGS -o /anycon/LAUNCHER.EXE /launcher.c -lkernel32 -luser32 \
+ && i686-w64-mingw32-gcc $WIN32_FLAGS -o /anycon/AUTOLOGON.EXE /autologon.c -lkernel32
+
+# win98 Windows 98
+FROM gpu AS win98
+RUN apt-get update && apt-get install -y --no-install-recommends qemu-system-x86 qemu-system-gui qemu-utils mtools dosfstools fdisk syslinux-common 7zip jq python3-evdev && rm -rf /var/lib/apt/lists/*
+LABEL anyconsole.launch="img iso" anyconsole.bios="/bios" anyconsole.install="/opt/win98/install" anyconsole.devices="/dev/kvm"
+COPY --from=win98-download /usr/local/bin/patcher9x /usr/local/bin/
+COPY --from=win98-download /base /opt/win98/base
+COPY --from=win98-programs /anycon /opt/win98/base/anycon
+COPY win98/ /opt/win98/
+VOLUME /engine
+ENTRYPOINT ["/opt/win98/launch"]

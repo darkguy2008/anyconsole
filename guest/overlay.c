@@ -1669,15 +1669,16 @@ static void found_input(const char *entry) {
 }
 
 int main(void) {
-    enum { WAYLAND, CHANGES, CHILDREN, REPEAT, NOTIFICATIONS, SAVE, MONITOR, FIXED };
+    enum { WAYLAND, CHANGES, SIGNALS, REPEAT, NOTIFICATIONS, SAVE, MONITOR, FIXED };
     struct pollfd watched[FIXED + INPUTS_MAX + GAMES_MAX];
     int jobs[GAMES_MAX], polled[INPUTS_MAX];
     char stores_directory[PATH_MAX], display_directory[PATH_MAX], settings_directory[PATH_MAX], *end;
-    sigset_t children;
+    sigset_t signals;
     signal(SIGPIPE, SIG_IGN);
-    sigemptyset(&children);
-    sigaddset(&children, SIGCHLD);
-    sigprocmask(SIG_BLOCK, &children, NULL);
+    sigemptyset(&signals);
+    sigaddset(&signals, SIGCHLD);
+    sigaddset(&signals, SIGUSR1);
+    sigprocmask(SIG_BLOCK, &signals, NULL);
     log_file = open(LOG_DIR "/games.log", O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, S_IRUSR | S_IWUSR);
     display = wl_display_connect(NULL);
     monitor_parser = json_tokener_new();
@@ -1703,7 +1704,7 @@ int main(void) {
     timerfd_settime(save_timer, 0, &(struct itimerspec){.it_value = {.tv_sec = SAVE_SECONDS}, .it_interval = {.tv_sec = SAVE_SECONDS}}, NULL);
     watched[WAYLAND] = (struct pollfd){.fd = wl_display_get_fd(display), .events = POLLIN};
     watched[CHANGES] = (struct pollfd){.fd = watcher, .events = POLLIN};
-    watched[CHILDREN] = (struct pollfd){.fd = signalfd(-1, &children, SFD_CLOEXEC), .events = POLLIN};
+    watched[SIGNALS] = (struct pollfd){.fd = signalfd(-1, &signals, SFD_CLOEXEC), .events = POLLIN};
     watched[REPEAT] = (struct pollfd){.fd = repeat_timer, .events = POLLIN};
     watched[NOTIFICATIONS] = (struct pollfd){.fd = notification_timer, .events = POLLIN};
     watched[SAVE] = (struct pollfd){.fd = save_timer, .events = POLLIN};
@@ -1738,7 +1739,10 @@ int main(void) {
         uint64_t expirations;
         struct signalfd_siginfo signal_info;
         if (watched[CHANGES].revents) read_changes(input_watch, inputs_watch, runtime_watch, display_watch);
-        if (watched[CHILDREN].revents && read(watched[CHILDREN].fd, &signal_info, sizeof signal_info) > 0) reap();
+        if (watched[SIGNALS].revents && read(watched[SIGNALS].fd, &signal_info, sizeof signal_info) > 0) {
+            if (signal_info.ssi_signo == SIGUSR1) refresh();
+            else reap();
+        }
         if (watched[REPEAT].revents && read(repeat_timer, &expirations, sizeof expirations) > 0) press(repeating);
         if (watched[NOTIFICATIONS].revents && read(notification_timer, &expirations, sizeof expirations) > 0) expire_notifications();
         if (watched[SAVE].revents && read(save_timer, &expirations, sizeof expirations) > 0) request_frame();

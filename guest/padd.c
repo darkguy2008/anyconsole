@@ -26,6 +26,8 @@
 #define PHYSICAL_PADS_MAX 16
 #define NO_JOYSTICK (-1)
 #define KEYBOARD_NAME "anyconsole keyboard"
+#define PAD_NODE "event"
+#define TOUCHPAD_NODE "touch"
 #define PAD_VENDOR 0x054c
 #define PAD_PRODUCT 0x0ce6
 #define PAD_VERSION 0x8111
@@ -66,7 +68,7 @@ struct watch {
     SDL_JoystickID pad;
 };
 
-static struct libevdev_uinput *pad[SEATS], *guide, *keyboard;
+static struct libevdev_uinput *pad[SEATS], *touchpad[SEATS], *guide, *keyboard;
 static const struct control *swallowed[SEATS];
 static int held[SEATS][SDL_arraysize(controls)];
 static struct pollfd watched[WATCHED_MAX];
@@ -87,7 +89,7 @@ static void publish(const char *path, const char *dev_file) {
     else if (mknod(path, S_IFCHR | NODE_MODE, makedev(major, minor)) < 0) perror(path);
 }
 
-static void expose(int fd, int seat, int create) {
+static void expose(int fd, int seat, const char *pad_node, int create) {
     char sysname[UINPUT_MAX_NAME_SIZE], pattern[PATH_MAX], path[PATH_MAX], dev_file[PATH_MAX];
     glob_t found;
     if (ioctl(fd, UI_GET_SYSNAME(sizeof sysname), sysname) < 0) { perror("uinput sysname"); return; }
@@ -104,7 +106,7 @@ static void expose(int fd, int seat, int create) {
             else unlink(path);
         }
         if (seat == NO_JOYSTICK) continue;
-        snprintf(path, sizeof path, PAD_NODES "/%s%d", event ? "event" : "js", seat);
+        snprintf(path, sizeof path, PAD_NODES "/%s%d", event ? pad_node : "js", seat);
         if (create) publish(path, dev_file);
         else unlink(path);
     }
@@ -127,12 +129,12 @@ static int is_virtual(const char *path) {
     return realpath(link, resolved) && !strncmp(resolved, VIRTUAL_DEVICES, strlen(VIRTUAL_DEVICES));
 }
 
-static struct libevdev_uinput *create(struct libevdev *device, int seat) {
+static struct libevdev_uinput *create(struct libevdev *device, int seat, const char *pad_node) {
     struct libevdev_uinput *created;
     int error = libevdev_uinput_create_from_device(device, LIBEVDEV_UINPUT_OPEN_MANAGED, &created);
     if (error) { fprintf(stderr, "%s: %s\n", libevdev_get_name(device), strerror(-error)); exit(1); }
     libevdev_free(device);
-    expose(libevdev_uinput_get_fd(created), seat, 1);
+    expose(libevdev_uinput_get_fd(created), seat, pad_node, 1);
     return created;
 }
 
@@ -140,7 +142,7 @@ static struct libevdev_uinput *create_guide(void) {
     struct libevdev *device = libevdev_new();
     libevdev_set_name(device, GUIDE_DEVICE);
     libevdev_enable_event_code(device, EV_KEY, BTN_MODE, NULL);
-    return create(device, NO_JOYSTICK);
+    return create(device, NO_JOYSTICK, NULL);
 }
 
 static struct libevdev_uinput *create_keyboard(void) {
@@ -149,7 +151,18 @@ static struct libevdev_uinput *create_keyboard(void) {
     for (unsigned code = KEY_ESC; code < BTN_MISC; code++) libevdev_enable_event_code(device, EV_KEY, code, NULL);
     for (unsigned code = BTN_MOUSE; code < BTN_JOYSTICK; code++) libevdev_enable_event_code(device, EV_KEY, code, NULL);
     for (unsigned code = 0; code <= REL_MAX; code++) libevdev_enable_event_code(device, EV_REL, code, NULL);
-    return create(device, NO_JOYSTICK);
+    return create(device, NO_JOYSTICK, NULL);
+}
+
+static struct libevdev_uinput *create_touchpad(int seat) {
+    struct libevdev *device = libevdev_new();
+    struct input_absinfo axis = {.maximum = SDL_JOYSTICK_AXIS_MAX};
+    libevdev_set_name(device, PAD_NAME " Touchpad");
+    libevdev_enable_property(device, INPUT_PROP_DIRECT);
+    libevdev_enable_event_code(device, EV_KEY, BTN_TOUCH, NULL);
+    libevdev_enable_event_code(device, EV_ABS, ABS_X, &axis);
+    libevdev_enable_event_code(device, EV_ABS, ABS_Y, &axis);
+    return create(device, seat, TOUCHPAD_NODE);
 }
 
 static void plug(int seat) {
@@ -168,14 +181,17 @@ static void plug(int seat) {
         libevdev_enable_event_code(device, EV_ABS, c->code, &abs);
     }
     memset(held[seat], 0, sizeof held[seat]);
-    pad[seat] = create(device, seat);
+    pad[seat] = create(device, seat, PAD_NODE);
+    touchpad[seat] = create_touchpad(seat);
 }
 
 static void unplug(int seat) {
     if (!pad[seat]) return;
-    expose(libevdev_uinput_get_fd(pad[seat]), seat, 0);
+    expose(libevdev_uinput_get_fd(pad[seat]), seat, PAD_NODE, 0);
+    expose(libevdev_uinput_get_fd(touchpad[seat]), seat, TOUCHPAD_NODE, 0);
     libevdev_uinput_destroy(pad[seat]);
-    pad[seat] = NULL;
+    libevdev_uinput_destroy(touchpad[seat]);
+    pad[seat] = touchpad[seat] = NULL;
 }
 
 static int hat(int seat, unsigned short code) {
@@ -222,6 +238,16 @@ static void drive(int seat, const char *name, int value) {
         return;
     }
     fprintf(stderr, "unknown control %s\n", name);
+}
+
+static void touch(struct libevdev_uinput *device, SDL_ControllerTouchpadEvent *event) {
+    int down = event->type != SDL_CONTROLLERTOUCHPADUP;
+    if (event->finger) return;
+    if (down) {
+        libevdev_uinput_write_event(device, EV_ABS, ABS_X, event->x * SDL_JOYSTICK_AXIS_MAX);
+        libevdev_uinput_write_event(device, EV_ABS, ABS_Y, event->y * SDL_JOYSTICK_AXIS_MAX);
+    }
+    emit(device, EV_KEY, BTN_TOUCH, down);
 }
 
 static int seat_of(const char *word) {
@@ -379,6 +405,11 @@ static void handle(SDL_Event *event) {
     case SDL_CONTROLLERAXISMOTION:
         drive(0, SDL_GameControllerGetStringForAxis(event->caxis.axis),
               scaled(event->caxis.value, event->caxis.axis >= SDL_CONTROLLER_AXIS_TRIGGERLEFT ? 0 : SDL_JOYSTICK_AXIS_MIN));
+        break;
+    case SDL_CONTROLLERTOUCHPADDOWN:
+    case SDL_CONTROLLERTOUCHPADMOTION:
+    case SDL_CONTROLLERTOUCHPADUP:
+        if (touchpad[0]) touch(touchpad[0], &event->ctouchpad);
         break;
     }
 }

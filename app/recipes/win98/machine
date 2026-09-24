@@ -1,0 +1,160 @@
+#!/usr/bin/python3
+import json
+import select
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+import evdev
+from evdev import ecodes
+
+QMP_SOCKET = "/tmp/qmp.sock"
+SERIAL_SOCKET = "/tmp/serial.sock"
+QUIT = b"q"
+CONNECT_SECONDS = 10
+SHUTDOWN_SECONDS = 60
+RECEIVE_BYTES = 65536
+PAD = "/dev/input/event0"
+TOUCHPAD = "/dev/input/touch0"
+POINTER_MAX = 0x7FFF
+FRAME_SECONDS = 1 / 60
+SCREEN_CROSSING_SECONDS = 1.5
+STICK_DEADZONE = 0.2
+STICK = (ecodes.ABS_X, ecodes.ABS_Y)
+AXES = ("x", "y")
+POINTER_BUTTONS = {ecodes.BTN_SOUTH: "left", ecodes.BTN_EAST: "right"}
+KEYS = {ecodes.BTN_START: "ret", ecodes.BTN_SELECT: "esc"}
+ARROWS = {ecodes.ABS_HAT0X: ("left", "right"), ecodes.ABS_HAT0Y: ("up", "down")}
+TOUCHPAD_CLICK = ecodes.BTN_TRIGGER_HAPPY1
+TOUCHPAD_MIDDLE = 0.5
+
+
+class Quit(Exception):
+    pass
+
+
+def quit_on_signal(number, frame):
+    raise Quit
+
+
+def listen(path):
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(path)
+    server.listen(1)
+    server.settimeout(CONNECT_SECONDS)
+    return server
+
+
+class Machine:
+    def __init__(self, arguments):
+        qmp, serial = listen(QMP_SOCKET), listen(SERIAL_SOCKET)
+        self.qemu = subprocess.Popen(["qemu-system-i386", *arguments, "-qmp", f"unix:{QMP_SOCKET}", "-serial", f"unix:{SERIAL_SOCKET}"])
+        self.qmp = qmp.accept()[0]
+        self.serial = serial.accept()[0]
+        self.send("qmp_capabilities", {})
+
+    def send(self, command, arguments):
+        self.qmp.sendall(json.dumps({"execute": command, "arguments": arguments}).encode())
+
+    def running(self):
+        try:
+            return bool(self.qmp.recv(RECEIVE_BYTES))
+        except ConnectionResetError:
+            return False
+
+    def input(self, *events):
+        self.send("input-send-event", {"events": list(events)})
+
+    def power_off(self):
+        self.serial.sendall(QUIT)
+        try:
+            return self.qemu.wait(SHUTDOWN_SECONDS)
+        except subprocess.TimeoutExpired:
+            self.qemu.kill()
+            sys.exit("Windows did not shut down in time")
+
+
+class Pointer:
+    def __init__(self, machine, pad, touchpad):
+        self.machine = machine
+        self.stick_ranges = {code: pad.absinfo(code) for code in STICK}
+        self.touch_ranges = {code: touchpad.absinfo(code) for code in STICK}
+        self.position = [POINTER_MAX / 2] * len(AXES)
+        self.velocity = [0.0] * len(AXES)
+        self.clicked = None
+
+    def moving(self):
+        return any(self.velocity)
+
+    def move(self):
+        self.machine.input(*({"type": "abs", "data": {"axis": axis, "value": round(value)}} for axis, value in zip(AXES, self.position)))
+
+    def button(self, name, down):
+        self.machine.input({"type": "btn", "data": {"down": down, "button": name}})
+
+    def key(self, name, down):
+        self.machine.input({"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": name}}})
+
+    def deflection(self, code, value):
+        axis = self.stick_ranges[code]
+        half = (axis.max - axis.min) / 2
+        offset = (value - axis.min - half) / half
+        return offset if abs(offset) > STICK_DEADZONE else 0.0
+
+    def handle_pad(self, event):
+        if event.type == ecodes.EV_KEY and event.code in POINTER_BUTTONS:
+            self.button(POINTER_BUTTONS[event.code], bool(event.value))
+        elif event.type == ecodes.EV_KEY and event.code in KEYS:
+            self.key(KEYS[event.code], bool(event.value))
+        elif event.type == ecodes.EV_KEY and event.code == TOUCHPAD_CLICK:
+            if event.value:
+                self.clicked = "left" if self.position[0] < TOUCHPAD_MIDDLE * POINTER_MAX else "right"
+            self.button(self.clicked, bool(event.value))
+        elif event.type == ecodes.EV_ABS and event.code in STICK:
+            self.velocity[STICK.index(event.code)] = self.deflection(event.code, event.value) * POINTER_MAX * FRAME_SECONDS / SCREEN_CROSSING_SECONDS
+        elif event.type == ecodes.EV_ABS and event.code in ARROWS:
+            for direction, name in zip((-1, 1), ARROWS[event.code]):
+                self.key(name, event.value == direction)
+
+    def handle_touchpad(self, event):
+        if event.type == ecodes.EV_SYN:
+            self.move()
+        elif event.type == ecodes.EV_ABS and event.code in STICK:
+            axis = self.touch_ranges[event.code]
+            self.position[STICK.index(event.code)] = (event.value - axis.min) / (axis.max - axis.min) * POINTER_MAX
+
+    def step(self):
+        self.position = [min(max(position + velocity, 0), POINTER_MAX) for position, velocity in zip(self.position, self.velocity)]
+        self.move()
+
+
+def play(arguments):
+    machine = Machine(arguments)
+    pad = evdev.InputDevice(PAD)
+    touchpad = evdev.InputDevice(TOUCHPAD)
+    pointer = Pointer(machine, pad, touchpad)
+    frame_due = 0.0
+    signal.signal(signal.SIGTERM, quit_on_signal)
+    try:
+        while True:
+            timeout = max(frame_due - time.monotonic(), 0) if pointer.moving() else None
+            readable = select.select([machine.qmp, pad, touchpad], [], [], timeout)[0]
+            if machine.qmp in readable and not machine.running():
+                return machine.qemu.wait()
+            if pad in readable:
+                for event in pad.read():
+                    pointer.handle_pad(event)
+            if touchpad in readable:
+                for event in touchpad.read():
+                    pointer.handle_touchpad(event)
+            if pointer.moving() and time.monotonic() >= frame_due:
+                pointer.step()
+                frame_due = time.monotonic() + FRAME_SECONDS
+    except Quit:
+        return machine.power_off()
+
+
+if __name__ == "__main__":
+    sys.exit(play(sys.argv[1:]))

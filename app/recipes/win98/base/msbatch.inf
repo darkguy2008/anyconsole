@@ -1,0 +1,66 @@
+[BatchSetup]
+Version=3.0 (32-bit)
+
+[Version]
+Signature="$CHICAGO$"
+
+[Setup]
+Express=1
+EBD=0
+System=0
+CCP=0
+Display=0
+ChangeDir=0
+TimeZone="Greenwich"
+ShowEula=0
+OptionalComponents=0
+InstallType=3
+InstallDir="C:\WINDOWS"
+ProductType=1
+ProductKey=""
+Uninstall=0
+NoDirWarn=1
+NoPrompt2Boot=1
+CleanBoot=1
+
+[NameAndOrg]
+Name="anyconsole"
+Org="anyconsole"
+Display=0
+
+[Network]
+Display=0
+ComputerName="ANYCONSOLE"
+Workgroup="WORKGROUP"
+
+[System]
+DisplChar=32,1024,768
+Locale=L0409
+SelectedKeyboard=KEYBOARD_00000409
+
+[Install]
+AddReg=anyconsole
+DelReg=anyconsole.del
+UpdateInis=anyconsole.ini
+
+[anyconsole]
+HKLM,"Software\Microsoft\Windows\CurrentVersion","ProductId",,"12345-OEM-1234567-12345"
+HKLM,"Software\Microsoft\Windows\CurrentVersion","OtherDevicePath",,"C:\WIN98"
+HKLM,"Software\Microsoft\Windows\CurrentVersion\Run","anyconsole",,"C:\ANYCON\LAUNCHER.EXE"
+HKLM,"Software\Microsoft\Windows\CurrentVersion\RunServicesOnce","anyconsole",,"C:\ANYCON\AUTOLOGON.EXE"
+HKLM,"Software\Microsoft\Windows\CurrentVersion\Winlogon","AutoAdminLogon",,"1"
+HKLM,"Software\Microsoft\Windows\CurrentVersion\Winlogon","DefaultUserName",,"anyconsole"
+HKLM,"Software\Microsoft\Windows\CurrentVersion\Winlogon","DefaultPassword",,""
+HKLM,"Network\Logon","PrimaryProvider",,"Windows Logon"
+HKLM,"System\CurrentControlSet\Services\Class\Monitor","SilentInstall",,"1"
+HKCU,"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders","Personal",,"D:\My Documents"
+HKCU,"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders","Desktop",,"D:\Desktop"
+HKCU,"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders","Personal",,"D:\My Documents"
+HKCU,"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders","Desktop",,"D:\Desktop"
+
+[anyconsole.del]
+HKLM,"Software\Microsoft\Windows\CurrentVersion\Run","Welcome"
+
+[anyconsole.ini]
+%10%\system.ini,Password Lists,,"ANYCONSOLE=C:\WINDOWS\ANYCONSO.PWL"
+%31%\msdos.sys,Options,,"AutoScan=0"

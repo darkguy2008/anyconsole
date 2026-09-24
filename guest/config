@@ -1,5 +1,5 @@
 MODULES="e1000e r8169 af_packet vfat nls_cp437 nls_utf8 virtio_pci evdev uinput joydev usbhid hid-generic overlay cifs"
-MODULE_TREES="kernel/sound"
+MODULE_TREES="kernel/sound kernel/arch/x86/kvm"
 API_PORT=8080
 
 PAD_FIFO=/run/pad
