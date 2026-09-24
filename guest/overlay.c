@@ -26,6 +26,7 @@
 #include <wayland-client.h>
 #include "anyconsole.h"
 #include "security-context-v1.h"
+#include "wlr-foreign-toplevel-management-unstable-v1.h"
 #include "wlr-layer-shell-unstable-v1.h"
 
 #define INPUT_DIR "/dev/input"
@@ -34,8 +35,6 @@
 #define WAYLAND_SOCKET "wayland-0"
 #define PIPEWIRE_SOCKET "pipewire-0"
 #define SANDBOX_ENGINE "docker"
-#define SWAY_IPC_MAGIC "i3-ipc"
-#define SWAY_RUN_COMMAND 0
 #define FONT "Inter"
 #define ROWS_PER_SCREEN 16
 #define FONT_PER_ROW 0.6
@@ -59,17 +58,20 @@
 #define ROWS_MAX (GAMES_MAX + 1)
 #define TEXT_MAX 256
 #define GAME_KEY_MAX (2 * NAME_MAX + 2)
-#define WORKSPACE_COMMAND "workspace \"%s\""
+#define WINDOWS_MAX (GAMES_MAX + 1)
+#define RESOLUTIONS_MAX 8
+#define AUTO "Auto"
 #define BYTES_PER_PIXEL 4
 #define BUFFERS 2
 
-enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, INPUTS };
+enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, INPUTS, SETTINGS };
 static const struct { const char *name, *title; } screens[] = {
     [HOME] = {"home", "Home"}, [STORE] = {"store", "Store"}, [GAME] = {"game", ""},
     [GUIDE] = {"guide", "Guide"}, [OUTPUTS] = {"outputs", "Output"}, [INPUTS] = {"inputs", "Input"},
+    [SETTINGS] = {"settings", "Settings"},
 };
-enum action { NOTHING, OPEN_STORE, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
-              OPEN_OUTPUTS, OPEN_INPUTS, SET_DEVICE, RESTART, POWER_OFF };
+enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
+              OPEN_OUTPUTS, OPEN_INPUTS, SET_DEVICE, RESTART, POWER_OFF, CHOOSE_DISPLAY, CHOOSE_RESOLUTION };
 enum command { NONE, UP, DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
 enum surface_mode { HIDDEN, NOTIFICATIONS_ONLY, FULL };
 
@@ -85,6 +87,7 @@ struct row { char label[TEXT_MAX], value[TEXT_MAX]; enum action action; int arg;
 struct device { int id; char name[TEXT_MAX], node[TEXT_MAX]; };
 struct input { struct libevdev *device; int guide, x, y, center, reach; };
 struct notification { char text[TEXT_MAX]; struct timespec expires; };
+struct window { struct zwlr_foreign_toplevel_handle_v1 *handle; char app_id[TEXT_MAX]; };
 struct buffer { struct wl_buffer *buffer; void *pixels; int busy; };
 
 static struct game games[GAMES_MAX];
@@ -108,14 +111,19 @@ static int connected_count;
 static struct notification notifications[NOTIFICATIONS_MAX];
 static int notification_count;
 static enum command repeating;
-static int repeat_timer, notification_timer, log_file, sway, changed = 1;
+static int repeat_timer, notification_timer, log_file, changed = 1;
 static char *written_state;
+static struct window windows[WINDOWS_MAX];
+static int window_count, resolutions[RESOLUTIONS_MAX], resolution_count;
+static json_object *settings, *display_state;
 
 static struct wl_display *display;
 static struct wl_compositor *compositor;
 static struct wl_shm *shm;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wp_security_context_manager_v1 *security;
+static struct zwlr_foreign_toplevel_manager_v1 *toplevels;
+static struct wl_seat *seat;
 static struct wl_surface *surface;
 static struct zwlr_layer_surface_v1 *layer;
 static enum surface_mode mode;
@@ -167,13 +175,6 @@ static json_object *read_json(char *const argv[]) {
     close(output);
     waitpid(pid, NULL, 0);
     return parsed;
-}
-
-static void sway_command(const char *command) {
-    struct { char magic[sizeof SWAY_IPC_MAGIC - 1]; uint32_t length, type; } __attribute__((packed)) header = {
-        .length = strlen(command), .type = SWAY_RUN_COMMAND};
-    memcpy(header.magic, SWAY_IPC_MAGIC, sizeof header.magic);
-    if (write(sway, &header, sizeof header) < 0 || write(sway, command, header.length) < 0) perror("sway ipc");
 }
 
 static void notify(const char *format, ...) {
@@ -297,7 +298,8 @@ static const char *string_at(json_object *object, const char *first, const char 
     json_object *field;
     if (!json_object_object_get_ex(object, first, &field)) return "";
     if (second && !json_object_object_get_ex(field, second, &field)) return "";
-    return json_object_get_string(field);
+    const char *text = json_object_get_string(field);
+    return text ? text : "";
 }
 
 static void read_audio(void) {
@@ -382,6 +384,73 @@ static const char *chosen(struct device *list, int count, const char *node) {
     return "";
 }
 
+static json_object *displays(void) {
+    json_object *list;
+    return json_object_object_get_ex(display_state, "displays", &list) ? list : NULL;
+}
+
+static int display_count(void) {
+    json_object *list = displays();
+    return list ? json_object_array_length(list) : 0;
+}
+
+static const char *display_label(int index) { return string_at(json_object_array_get_idx(displays(), index), "label", NULL); }
+
+static int chosen_resolution(void) {
+    json_object *field;
+    return json_object_object_get_ex(settings, "resolution", &field) ? json_object_get_int(field) : 0;
+}
+
+static const char *display_value(void) {
+    static char value[TEXT_MAX];
+    const char *pinned = string_at(settings, "display", NULL);
+    snprintf(value, sizeof value, AUTO " (%s)", string_at(display_state, "display", NULL));
+    return *pinned ? pinned : value;
+}
+
+static const char *resolution_value(void) {
+    static char value[TEXT_MAX];
+    if (chosen_resolution()) snprintf(value, sizeof value, "%dp", chosen_resolution());
+    else snprintf(value, sizeof value, AUTO " (%s)", string_at(display_state, "canvas", NULL));
+    return value;
+}
+
+static int cycle(int current, int count, int step) { return (current + step + count + 1) % (count + 1); }
+
+static void cycle_display(int step) {
+    int current = 0, count = display_count();
+    for (int i = 0; i < count; i++)
+        if (!strcmp(display_label(i), string_at(settings, "display", NULL))) current = i + 1;
+    int next = cycle(current, count, step);
+    start((char *[]){"settings", "display", next ? (char *)display_label(next - 1) : "", NULL});
+}
+
+static void cycle_resolution(int step) {
+    char value[TEXT_MAX];
+    int current = 0;
+    for (int i = 0; i < resolution_count; i++)
+        if (resolutions[i] == chosen_resolution()) current = i + 1;
+    int next = cycle(current, resolution_count, step);
+    snprintf(value, sizeof value, "%d", next ? resolutions[next - 1] : 0);
+    start((char *[]){"settings", "resolution", value, NULL});
+}
+
+static void read_settings(void) {
+    json_object_put(settings);
+    settings = json_object_from_file(SETTINGS_FILE);
+    changed = 1;
+}
+
+static void read_display(void) {
+    char previous[TEXT_MAX];
+    snprintf(previous, sizeof previous, "%s", string_at(display_state, "pending", NULL));
+    json_object_put(display_state);
+    display_state = json_object_from_file(DISPLAY_FILE);
+    const char *pending = string_at(display_state, "pending", NULL);
+    if (*pending && strcmp(pending, previous)) notify("Close and restart your games to render on %s", pending);
+    changed = 1;
+}
+
 static int by_title(const void *left, const void *right) {
     const struct game *a = &games[*(const int *)left], *b = &games[*(const int *)right];
     int order = strcasecmp(a->title, b->title);
@@ -423,7 +492,10 @@ static int build(struct view *view) {
     case STORE:
         for (int i = 0, total = sorted(order, view->screen == STORE); i < total; i++)
             count = add_row(count, OPEN_GAME, order[i], games[order[i]].title, "%s  %s", games[order[i]].platform, status(&games[order[i]]));
-        if (view->screen == HOME) count = add_row(count, OPEN_STORE, 0, "Store", "");
+        if (view->screen == HOME) {
+            count = add_row(count, OPEN_STORE, 0, "Store", "");
+            count = add_row(count, OPEN_SETTINGS, 0, "Settings", "");
+        }
         break;
     case GAME:
         if (game->pid) {
@@ -456,6 +528,10 @@ static int build(struct view *view) {
             count = add_row(count, SET_DEVICE, device->id, device->name, !strcmp(device->node, current) ? "selected" : "");
         }
         break;
+    case SETTINGS:
+        count = add_row(count, CHOOSE_DISPLAY, 0, "Display", "%s", display_value());
+        count = add_row(count, CHOOSE_RESOLUTION, 0, "Resolution", "%s", resolution_value());
+        break;
     }
     if (view->selected >= count) view->selected = count ? count - 1 : 0;
     return count;
@@ -473,10 +549,9 @@ static void push(enum screen screen, int game) {
     } else if (dashboard_depth < DEPTH_MAX) dashboard[dashboard_depth++] = (struct view){screen, game, 0};
 }
 
-static void switch_workspace(int index) {
-    char command[sizeof WORKSPACE_COMMAND + GAME_KEY_MAX];
-    snprintf(command, sizeof command, WORKSPACE_COMMAND, key(index));
-    sway_command(command);
+static void show_game(int index) {
+    for (int i = 0; i < window_count; i++)
+        if (!strcmp(windows[i].app_id, key(index))) zwlr_foreign_toplevel_handle_v1_activate(windows[i].handle, seat);
 }
 
 static int listen_socket(int index, char *directory, size_t size) {
@@ -518,7 +593,7 @@ static void send_command(int index, const char *command) {
 }
 
 static void resume(int index) {
-    switch_workspace(index);
+    show_game(index);
     active = index;
     dashboard_open = 0;
     guide_depth = 0;
@@ -545,7 +620,7 @@ static void play(int index) {
     if (!listen_socket(index, directory, sizeof directory)) { notify("Could not start %s", game->title); return; }
     if (pipe2(commands, O_CLOEXEC) < 0) { perror("pipe"); close(game->context); return; }
     int output = game_log(index);
-    switch_workspace(index);
+    show_game(index);
     game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, NULL}, commands[0], output, output);
     close(output);
     close(commands[0]);
@@ -561,7 +636,7 @@ static void play(int index) {
 
 static void close_game(int index) {
     struct game *game = &games[index];
-    switch_workspace(index);
+    show_game(index);
     if (game->paused) send_command(index, "PAUSE_TOGGLE");
     if (kill(game->pid, SIGTERM) < 0) perror("close");
     game->paused = 0;
@@ -602,8 +677,9 @@ static void act(struct row *row) {
     struct view *view = top();
     struct game *game = view->game >= 0 ? &games[view->game] : NULL;
     switch (row->action) {
-    case NOTHING: case VOLUME: break;
+    case NOTHING: case VOLUME: case CHOOSE_DISPLAY: case CHOOSE_RESOLUTION: break;
     case OPEN_STORE: push(STORE, -1); refresh(); break;
+    case OPEN_SETTINGS: push(SETTINGS, -1); break;
     case OPEN_GAME: push(GAME, row->arg); break;
     case PLAY: play(view->game); break;
     case RESUME: resume(view->game); break;
@@ -632,6 +708,12 @@ static void change_volume(const char *direction) {
     start((char *[]){"wpctl", "set-volume", "-l", VOLUME_LIMIT, "@DEFAULT_AUDIO_SINK@", step, NULL});
 }
 
+static void adjust(enum action action, int step) {
+    if (action == VOLUME) change_volume(step < 0 ? "-" : "+");
+    if (action == CHOOSE_DISPLAY) cycle_display(step);
+    if (action == CHOOSE_RESOLUTION) cycle_resolution(step);
+}
+
 static void press(enum command command) {
     if (command == GUIDE_BUTTON) {
         guide[0] = (struct view){GUIDE, -1, 0};
@@ -646,7 +728,7 @@ static void press(enum command command) {
     switch (command) {
     case UP: if (view->selected > 0) view->selected--; break;
     case DOWN: if (view->selected < count - 1) view->selected++; break;
-    case LEFT: case RIGHT: if (row && row->action == VOLUME) change_volume(command == LEFT ? "-" : "+"); break;
+    case LEFT: case RIGHT: if (row) adjust(row->action, command == LEFT ? -1 : 1); break;
     case CONFIRM: if (row) act(row); break;
     case BACK:
         if (guide_depth) guide_depth--;
@@ -750,9 +832,10 @@ static void on_buffer_release(void *data, struct wl_buffer *wl_buffer) {
 static const struct wl_buffer_listener buffer_listener = {.release = on_buffer_release};
 
 static void free_buffers(void) {
-    for (int i = 0; i < BUFFERS && buffers[i].buffer; i++) {
+    if (!buffers[0].buffer) return;
+    munmap(buffers[0].pixels, (size_t)width * height * BYTES_PER_PIXEL * BUFFERS);
+    for (int i = 0; i < BUFFERS; i++) {
         wl_buffer_destroy(buffers[i].buffer);
-        munmap(buffers[i].pixels, (size_t)width * height * BYTES_PER_PIXEL);
         buffers[i] = (struct buffer){0};
     }
 }
@@ -763,8 +846,9 @@ static void allocate_buffers(void) {
     int fd = memfd_create("overlay", MFD_CLOEXEC);
     ftruncate(fd, size * BUFFERS);
     struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, size * BUFFERS);
+    char *pixels = mmap(NULL, size * BUFFERS, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     for (int i = 0; i < BUFFERS; i++) {
-        buffers[i].pixels = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, size * i);
+        buffers[i].pixels = pixels + size * i;
         buffers[i].buffer = wl_shm_pool_create_buffer(pool, size * i, width, height, stride, WL_SHM_FORMAT_ARGB8888);
         wl_buffer_add_listener(buffers[i].buffer, &buffer_listener, &buffers[i]);
     }
@@ -937,6 +1021,8 @@ static char *serialize_state(int count) {
     json_object_object_add(audio, "input", json_object_new_string(chosen(inputs, input_count, default_input)));
     json_object_object_add(state, "audio", audio);
     json_object_object_add(state, "inputs", string_array(connected, connected_count));
+    json_object_object_add(state, "settings", json_object_get(settings));
+    json_object_object_add(state, "display", json_object_get(display_state));
     char *serialized = strdup(json_object_to_json_string_ext(state, JSON_C_TO_STRING_PLAIN));
     json_object_put(state);
     return serialized;
@@ -1004,7 +1090,7 @@ static void track_input(const char *entry, int present) {
     if (present && connected_count < INPUTS_MAX) snprintf(connected[connected_count++], sizeof connected[0], "%s", entry);
 }
 
-static void read_changes(int watcher, int input_watch, int inputs_watch, int runtime_watch) {
+static void read_changes(int watcher, int input_watch, int inputs_watch, int runtime_watch, int display_watch) {
     char buffer[BUFSIZ] __attribute__((aligned(__alignof__(struct inotify_event))));
     ssize_t count = read(watcher, buffer, sizeof buffer);
     for (char *at = buffer; count > 0 && at < buffer + count;) {
@@ -1016,7 +1102,11 @@ static void read_changes(int watcher, int input_watch, int inputs_watch, int run
         else if (event->wd == inputs_watch && strchr(event->name, ' ')) {
             track_input(event->name, event->mask & IN_CREATE);
             notify("%s %s", event->mask & IN_CREATE ? "Connected" : "Disconnected", strchr(event->name, ' ') + 1);
-        } else if (event->wd != runtime_watch && !strcmp(event->name, strrchr(STORES_FILE, '/') + 1)) {
+        } else if (event->wd == display_watch && !strcmp(event->name, basename(DISPLAY_FILE))) {
+            read_display();
+        } else if (event->wd != runtime_watch && !strcmp(event->name, basename(SETTINGS_FILE))) {
+            read_settings();
+        } else if (event->wd != runtime_watch && !strcmp(event->name, basename(STORES_FILE))) {
             read_stores();
             refresh();
             changed = 1;
@@ -1024,10 +1114,41 @@ static void read_changes(int watcher, int input_watch, int inputs_watch, int run
     }
 }
 
-static void read_sway(void) {
-    char discarded[BUFSIZ];
-    if (read(sway, discarded, sizeof discarded) <= 0) { fprintf(stderr, "overlay: lost sway ipc\n"); exit(1); }
+static void on_toplevel_title(void *data, struct zwlr_foreign_toplevel_handle_v1 *handle, const char *title) { (void)data, (void)handle, (void)title; }
+
+static void on_toplevel_app_id(void *data, struct zwlr_foreign_toplevel_handle_v1 *handle, const char *app_id) {
+    (void)data;
+    for (int i = 0; i < window_count; i++)
+        if (windows[i].handle == handle) snprintf(windows[i].app_id, sizeof windows[i].app_id, "%s", app_id);
 }
+
+static void on_toplevel_output(void *data, struct zwlr_foreign_toplevel_handle_v1 *handle, struct wl_output *output) { (void)data, (void)handle, (void)output; }
+
+static void on_toplevel_state(void *data, struct zwlr_foreign_toplevel_handle_v1 *handle, struct wl_array *state) { (void)data, (void)handle, (void)state; }
+
+static void on_toplevel_done(void *data, struct zwlr_foreign_toplevel_handle_v1 *handle) { (void)data, (void)handle; }
+
+static void on_toplevel_closed(void *data, struct zwlr_foreign_toplevel_handle_v1 *handle) {
+    (void)data;
+    zwlr_foreign_toplevel_handle_v1_destroy(handle);
+    for (int i = 0; i < window_count; i++)
+        if (windows[i].handle == handle) windows[i--] = windows[--window_count];
+}
+
+static const struct zwlr_foreign_toplevel_handle_v1_listener toplevel_listener = {
+    .title = on_toplevel_title, .app_id = on_toplevel_app_id, .output_enter = on_toplevel_output, .output_leave = on_toplevel_output,
+    .state = on_toplevel_state, .done = on_toplevel_done, .closed = on_toplevel_closed};
+
+static void on_toplevel(void *data, struct zwlr_foreign_toplevel_manager_v1 *manager, struct zwlr_foreign_toplevel_handle_v1 *handle) {
+    (void)data, (void)manager;
+    if (window_count == WINDOWS_MAX) { zwlr_foreign_toplevel_handle_v1_destroy(handle); return; }
+    windows[window_count++] = (struct window){.handle = handle};
+    zwlr_foreign_toplevel_handle_v1_add_listener(handle, &toplevel_listener, NULL);
+}
+
+static void on_toplevels_finished(void *data, struct zwlr_foreign_toplevel_manager_v1 *manager) { (void)data, (void)manager; }
+
+static const struct zwlr_foreign_toplevel_manager_v1_listener toplevels_listener = {.toplevel = on_toplevel, .finished = on_toplevels_finished};
 
 static void on_global(void *data, struct wl_registry *registry, uint32_t id, const char *interface, uint32_t version) {
     (void)data, (void)version;
@@ -1039,19 +1160,19 @@ static void on_global(void *data, struct wl_registry *registry, uint32_t id, con
         layer_shell = wl_registry_bind(registry, id, &zwlr_layer_shell_v1_interface, 1);
     else if (!strcmp(interface, wp_security_context_manager_v1_interface.name))
         security = wl_registry_bind(registry, id, &wp_security_context_manager_v1_interface, 1);
+    else if (!strcmp(interface, wl_seat_interface.name))
+        seat = wl_registry_bind(registry, id, &wl_seat_interface, 1);
+    else if (!strcmp(interface, zwlr_foreign_toplevel_manager_v1_interface.name)) {
+        toplevels = wl_registry_bind(registry, id, &zwlr_foreign_toplevel_manager_v1_interface, 1);
+        zwlr_foreign_toplevel_manager_v1_add_listener(toplevels, &toplevels_listener, NULL);
+    }
 }
 
 static void on_global_remove(void *data, struct wl_registry *registry, uint32_t id) { (void)data, (void)registry, (void)id; }
 
 static const struct wl_registry_listener registry_listener = {.global = on_global, .global_remove = on_global_remove};
 
-static int connect_sway(void) {
-    struct sockaddr_un address = {.sun_family = AF_UNIX};
-    snprintf(address.sun_path, sizeof address.sun_path, "%s", getenv("SWAYSOCK"));
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd >= 0 && connect(fd, (struct sockaddr *)&address, sizeof address) < 0) { close(fd); return -1; }
-    return fd;
-}
+static void directory_of(const char *path, char *directory) { snprintf(directory, PATH_MAX, "%.*s", (int)(strrchr(path, '/') - path), path); }
 
 static void scan_directory(const char *path, void (*found)(const char *)) {
     DIR *directory = opendir(path);
@@ -1064,10 +1185,10 @@ static void found_input(const char *entry) {
 }
 
 int main(void) {
-    enum { WAYLAND, CHANGES, CHILDREN, REPEAT, NOTIFICATIONS, SWAY, MONITOR, FIXED };
+    enum { WAYLAND, CHANGES, CHILDREN, REPEAT, NOTIFICATIONS, MONITOR, FIXED };
     struct pollfd watched[FIXED + INPUTS_MAX + GAMES_MAX];
-    int jobs[GAMES_MAX], polled[INPUTS_MAX], stores_directory_length = strrchr(STORES_FILE, '/') - STORES_FILE;
-    char stores_directory[PATH_MAX];
+    int jobs[GAMES_MAX], polled[INPUTS_MAX];
+    char stores_directory[PATH_MAX], display_directory[PATH_MAX], settings_directory[PATH_MAX], *end;
     sigset_t children;
     signal(SIGPIPE, SIG_IGN);
     sigemptyset(&children);
@@ -1075,17 +1196,22 @@ int main(void) {
     sigprocmask(SIG_BLOCK, &children, NULL);
     log_file = open(LOG_DIR "/games.log", O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, S_IRUSR | S_IWUSR);
     display = wl_display_connect(NULL);
-    sway = connect_sway();
     monitor_parser = json_tokener_new();
-    if (!display || log_file < 0 || sway < 0) { fprintf(stderr, "overlay: no wayland display, sway ipc or log\n"); return 1; }
+    if (!display || log_file < 0) { fprintf(stderr, "overlay: no wayland display or log\n"); return 1; }
     wl_registry_add_listener(wl_display_get_registry(display), &registry_listener, NULL);
     wl_display_roundtrip(display);
-    if (!compositor || !shm || !layer_shell || !security) { fprintf(stderr, "overlay: compositor lacks a required protocol\n"); return 1; }
-    snprintf(stores_directory, sizeof stores_directory, "%.*s", stores_directory_length, STORES_FILE);
+    if (!compositor || !shm || !layer_shell || !security || !seat || !toplevels) { fprintf(stderr, "overlay: compositor lacks a required protocol\n"); return 1; }
+    directory_of(STORES_FILE, stores_directory);
+    directory_of(DISPLAY_FILE, display_directory);
+    directory_of(SETTINGS_FILE, settings_directory);
+    for (const char *at = RESOLUTIONS; resolution_count < RESOLUTIONS_MAX && (resolutions[resolution_count] = strtol(at, &end, 10)) > 0; at = end)
+        resolution_count++;
     int watcher = inotify_init1(IN_CLOEXEC), input_watch = inotify_add_watch(watcher, INPUT_DIR, IN_CREATE);
     int inputs_watch = inotify_add_watch(watcher, INPUTS_DIR, IN_CREATE | IN_DELETE);
     int runtime_watch = inotify_add_watch(watcher, getenv("XDG_RUNTIME_DIR"), IN_CREATE);
     inotify_add_watch(watcher, stores_directory, IN_CLOSE_WRITE | IN_MOVED_TO);
+    inotify_add_watch(watcher, settings_directory, IN_MOVED_TO | IN_MASK_ADD);
+    int display_watch = inotify_add_watch(watcher, display_directory, IN_MOVED_TO);
     repeat_timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
     notification_timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
     watched[WAYLAND] = (struct pollfd){.fd = wl_display_get_fd(display), .events = POLLIN};
@@ -1093,10 +1219,11 @@ int main(void) {
     watched[CHILDREN] = (struct pollfd){.fd = signalfd(-1, &children, SFD_CLOEXEC), .events = POLLIN};
     watched[REPEAT] = (struct pollfd){.fd = repeat_timer, .events = POLLIN};
     watched[NOTIFICATIONS] = (struct pollfd){.fd = notification_timer, .events = POLLIN};
-    watched[SWAY] = (struct pollfd){.fd = sway, .events = POLLIN};
     scan_directory(INPUT_DIR, open_input);
     scan_directory(INPUTS_DIR, found_input);
     read_stores();
+    read_settings();
+    read_display();
     rescan();
     refresh();
     start_monitor();
@@ -1122,11 +1249,10 @@ int main(void) {
         if (wl_display_dispatch_pending(display) < 0) { fprintf(stderr, "overlay: lost the compositor\n"); return 1; }
         uint64_t expirations;
         struct signalfd_siginfo signal_info;
-        if (watched[CHANGES].revents) read_changes(watcher, input_watch, inputs_watch, runtime_watch);
+        if (watched[CHANGES].revents) read_changes(watcher, input_watch, inputs_watch, runtime_watch, display_watch);
         if (watched[CHILDREN].revents && read(watched[CHILDREN].fd, &signal_info, sizeof signal_info) > 0) reap();
         if (watched[REPEAT].revents && read(repeat_timer, &expirations, sizeof expirations) > 0) press(repeating);
         if (watched[NOTIFICATIONS].revents && read(notification_timer, &expirations, sizeof expirations) > 0) expire_notifications();
-        if (watched[SWAY].revents) read_sway();
         if (watched[MONITOR].revents) read_monitor();
         for (int i = device_polls - 1; i >= 0; i--)
             if (watched[FIXED + i].revents) read_input(polled[i], 0);

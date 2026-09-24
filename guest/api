@@ -29,6 +29,7 @@ case "$REQUEST_METHOD $PATH_INFO" in
   "POST /poweroff") reply 200 "$(status)"; exec 1>&-; poweroff ;;
   "POST /stores") { body; echo; } >> "$STORES_FILE" && reply 200 '{}' ;;
   "DELETE /stores/"*) remove_store "${PATH_INFO#/stores/}" && reply 200 '{}' || reply 404 '{"error":"no such store"}' ;;
+  "POST /settings") { body; echo; } | { read -r name value; settings "$name" "$value"; } && reply 200 '{}' || reply 400 '{"error":"no such setting or value"}' ;;
   "POST /input") { body; echo; } > "$PAD_FIFO" && reply 200 '{}' ;;
   "POST /volume") wpctl set-volume -l "$VOLUME_LIMIT" @DEFAULT_AUDIO_SINK@ "$(body)%" && reply 200 '{}' || reply 409 '{"error":"no audio output"}' ;;
   *) reply 404 '{"error":"no such endpoint"}' ;;

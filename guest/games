@@ -8,6 +8,8 @@ PLATFORMS=/run/platforms
 IMAGE=anyconsole
 LAUNCH_LABEL=anyconsole.launch
 GAME_LABEL=anyconsole.game
+RECIPE_LABEL=anyconsole.recipe
+VULKAN_LABEL=anyconsole.vulkan
 SMB=smb://
 
 platforms() {
@@ -16,7 +18,11 @@ platforms() {
   cat $PLATFORMS
 }
 
-build() { docker build -q --network host --target "$1" -t "$IMAGE/$1" $RECIPES >/dev/null; }
+recipe_sum() { find $RECIPES -type f | sort | xargs cat | sha256sum | cut -d' ' -f1; }
+
+build() { docker build -q --network host --label "$RECIPE_LABEL=$2" --target "$1" -t "$IMAGE/$1" $RECIPES >/dev/null; }
+
+label() { docker image inspect -f "{{index .Config.Labels \"$2\"}}" "$IMAGE/$1" 2>/dev/null; }
 
 mount_store() {
   share=${2#"$SMB"} options=ro,soft
@@ -62,7 +68,7 @@ refresh() {
 
 install() {
   echo "preparing $3"
-  build "$3"
+  build "$3" "$(recipe_sum)"
   echo "copying"
   rm -rf "$GAMES_DIR/$2/.$3"
   mkdir -p "$GAMES_DIR/$2/.$3"
@@ -77,7 +83,7 @@ uninstall() {
 }
 
 launch_file() {
-  for extension in $(docker image inspect -f "{{index .Config.Labels \"$LAUNCH_LABEL\"}}" "$IMAGE/$2"); do
+  for extension in $(label "$2" "$LAUNCH_LABEL"); do
     file=$(find "$1" -maxdepth 1 -iname "*.$extension" | head -n 1)
     [ -z "$file" ] || { echo "${file##*/}"; return; }
   done
@@ -87,15 +93,18 @@ launch_file() {
 
 run() {
   rom=$GAMES_DIR/$1/$2/rom saves=$SAVES/$1-$2
-  docker image inspect "$IMAGE/$2" >/dev/null 2>&1 || build "$2"
+  recipe=$(recipe_sum)
+  [ "$(label "$2" "$RECIPE_LABEL")" = "$recipe" ] || build "$2" "$recipe"
   file=$(launch_file "$rom" "$2")
   mkdir -p "$saves"
+  video=
+  ! jq -e .vulkan "$DISPLAY_FILE" >/dev/null || video=$(label "$2" "$VULKAN_LABEL")
   exec docker run --rm -i --label "$GAME_LABEL=$1/$2" \
     --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp \
     --device /dev/dri --device-cgroup-rule 'c 13:* rm' -v "$PAD_NODES:/dev/input:ro" \
     -v "$3:/run/wayland" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
     -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
-    -v "$rom:/game:ro" -v "$saves:/saves" "$IMAGE/$2" "/game/$file"
+    -v "$rom:/game:ro" -v "$saves:/saves" "$IMAGE/$2" $video "/game/$file"
 }
 
 stop() { docker ps -q --filter "label=$GAME_LABEL" | xargs -r docker rm -f >/dev/null; }

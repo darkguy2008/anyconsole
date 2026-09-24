@@ -3,4 +3,4 @@
 . /etc/anyconsole.conf
 export LIBSEAT_BACKEND=builtin
 exec >>"$LOG_DIR/kiosk.log" 2>&1
-exec unshare -m --propagation private sh -c "mount --bind $INPUT_NODES /dev/input && exec sway --config /opt/anyconsole/sway.conf"
+exec unshare -m --propagation private sh -c "mount --bind $INPUT_NODES /dev/input && exec compositor /opt/anyconsole/session"
