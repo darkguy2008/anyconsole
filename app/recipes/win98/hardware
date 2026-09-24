@@ -1,0 +1,22 @@
+BASE=/engine/base.img
+ROM_DISK=/game/rom.img
+DISK_SIZE=8G
+SECTOR_BYTES=512
+PARTITION_START=2048
+PARTITION=@@$((PARTITION_START * SECTOR_BYTES))
+MEMORY=1024
+HARDWARE="-machine pc,accel=kvm,hpet=off -cpu host,level=13 -m $MEMORY -vga std -device lsi -usb -device usb-tablet -nic none -rtc base=utc -global PIIX4_PM.disable_s3=1"
+export MTOOLS_SKIP_CHECK=1
+
+make_disk() {
+  truncate -s "$DISK_SIZE" "$1"
+  echo "start=$PARTITION_START, type=c, bootable" | sfdisk -q "$1"
+  mkfs.fat -F 32 -h "$PARTITION_START" --offset "$PARTITION_START" "$1" >/dev/null
+}
+
+scsi_disk() { echo "-drive file=$2,if=none,id=disk$1,format=${3:-raw} -device scsi-hd,drive=disk$1,scsi-id=$1"; }
+
+make_data_disk() {
+  make_disk "$1"
+  mmd -i "$1$PARTITION" "::/My Documents" ::/Desktop
+}

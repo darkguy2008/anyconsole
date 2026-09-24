@@ -1,0 +1,87 @@
+#!/bin/sh
+set -eu
+. /opt/win98/hardware
+INPUTS=/opt/win98/base
+BUILD=/engine/build
+STAMP=/engine/base.stamp
+LOCK=/engine/base.lock
+BOOT_FLOPPY="[BOOT]/Boot-1.44M.img"
+CD_BOOT_MENU=JO.SYS
+SETUP_SWITCHES="/IS /ID /IE /IM /IV /IW /NM /PJ"
+SETUP_SECONDS=3600
+RESTART_SECONDS=600
+
+fail() { echo "$*" >&2; exit 1; }
+
+windows_iso() {
+  iso=$(find /bios -maxdepth 1 -iname '*.iso' | head -n 1)
+  [ -n "$iso" ] || fail "no Windows 98 ISO in the win98 BIOS folder"
+  echo "$iso"
+}
+
+inputs_stamp() {
+  { find "$INPUTS" /opt/win98/windows /opt/win98/hardware -type f -exec sha256sum {} + | sort
+    stat -c '%n %s %Y' "$1"; } | sha256sum
+}
+
+extract_cd() {
+  rm -rf "$BUILD"
+  mkdir -p "$BUILD"
+  7z x -ssc- -o"$BUILD" "$1" win98 "$BOOT_FLOPPY" >/dev/null
+  source=$(find "$BUILD" -maxdepth 1 -type d -iname win98)
+  patcher9x -auto -no-backup "$source" >&2
+  setup=$(grep -l -a -F DOSSETUP.BIN "$source"/*.[Ee][Xx][Ee] | head -n 1)
+  [ -n "$setup" ] || fail "no Windows 98 setup program in $1"
+}
+
+stage_windows() {
+  make_disk "$BASE.new"
+  dd if=/usr/lib/syslinux/mbr/mbr.bin of="$BASE.new" conv=notrunc status=none
+  mcopy -s -i "$BASE.new$PARTITION" "$source" "$INPUTS/anycon" ::/
+  mcopy -i "$BASE.new$PARTITION" "$INPUTS"/drivers/* "::/${source##*/}/"
+  mcopy -t -i "$BASE.new$PARTITION" "$INPUTS/msbatch.inf" "::/${source##*/}/MSBATCH.INF"
+}
+
+make_boot_floppy() {
+  cp "$BUILD/$BOOT_FLOPPY" "$BUILD/floppy.img"
+  mdel -i "$BUILD/floppy.img" "::/$CD_BOOT_MENU"
+  printf 'DEVICE=HIMEM.SYS\n' > "$BUILD/config.sys"
+  printf 'C:\\WIN98\\SMARTDRV.EXE /Q\nC:\nCD \\WIN98\n%s MSBATCH.INF %s\n' "${setup##*/}" "$SETUP_SWITCHES" > "$BUILD/autoexec.bat"
+  mcopy -t -o -i "$BUILD/floppy.img" "$BUILD/config.sys" ::/CONFIG.SYS
+  mcopy -t -o -i "$BUILD/floppy.img" "$BUILD/autoexec.bat" ::/AUTOEXEC.BAT
+}
+
+make_build_disks() {
+  make_data_disk "$BUILD/data.img"
+  make_disk "$BUILD/hooks.img"
+  mcopy -s -i "$BUILD/hooks.img$PARTITION" "$INPUTS/build/DX9" ::/
+  mcopy -t -i "$BUILD/hooks.img$PARTITION" "$INPUTS/build/start.bat" ::/START.BAT
+}
+
+boot_until_off() {
+  seconds=$1
+  shift
+  timeout "$seconds" qemu-system-i386 "$@" $HARDWARE -display none -serial null -audiodev none,id=sound -device sb16,audiodev=sound -device AC97,audiodev=sound \
+    $(scsi_disk 0 "$BASE.new") $(scsi_disk 1 "$BUILD/data.img") $(scsi_disk 2 "$BUILD/hooks.img") || fail "Windows did not power off within $seconds seconds"
+}
+
+build_base() {
+  extract_cd "$1"
+  stage_windows
+  make_boot_floppy
+  make_build_disks
+  boot_until_off "$SETUP_SECONDS" -drive "file=$BUILD/floppy.img,format=raw,if=floppy" -boot once=a
+  boot_until_off "$RESTART_SECONDS"
+  mv "$BASE.new" "$BASE"
+  inputs_stamp "$1" > "$STAMP"
+  rm -rf "$BUILD"
+}
+
+install_windows() {
+  exec 9> "$LOCK"
+  flock 9
+  iso=$(windows_iso)
+  [ -f "$BASE" ] && [ "$(cat "$STAMP")" = "$(inputs_stamp "$iso")" ] || build_base "$iso"
+}
+
+install_windows

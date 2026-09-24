@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+. /opt/win98/hardware
+
+rom_files() { find /game -mindepth 1 -maxdepth 1 ! -iname '*.iso' ! -name "${ROM_DISK##*/}*" "$@"; }
+
+pack_rom() {
+  [ -n "$(rom_files -print -quit)" ] || return 0
+  make_disk "$ROM_DISK.new"
+  rom_files -print0 | xargs -0 sh -c 'mcopy -s -i "$0" "$@" ::/' "$ROM_DISK.new$PARTITION"
+  rom_files -exec rm -rf {} +
+  mv "$ROM_DISK.new" "$ROM_DISK"
+}
+
+/opt/win98/windows
+pack_rom

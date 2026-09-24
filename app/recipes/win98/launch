@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+. /opt/win98/hardware
+DATA=/saves/data.img
+THROWAWAY_DIR=/tmp
+
+throwaway() {
+  overlay=$THROWAWAY_DIR/${1##*/}.qcow2
+  qemu-img create -q -f qcow2 -b "$1" -F raw "$overlay"
+  echo "$overlay"
+}
+
+[ -f "$BASE" ] || { echo "Windows 98 is not installed; reinstall this game to install it" >&2; exit 1; }
+[ -f "$DATA" ] || make_data_disk "$DATA"
+set -- $(scsi_disk 0 "$(throwaway "$BASE")" qcow2) $(scsi_disk 1 "$DATA")
+[ ! -f "$ROM_DISK" ] || set -- "$@" $(scsi_disk 2 "$(throwaway "$ROM_DISK")" qcow2)
+for cd in /game/*.[Ii][Ss][Oo]; do
+  [ ! -f "$cd" ] || set -- "$@" -drive "file=$cd,media=cdrom"
+done
+exec /opt/win98/machine $HARDWARE "$@" -display sdl,gl=on -audiodev "pa,id=sound,server=$PULSE_SERVER" \
+  -device "$(printf '%s' "$GAME_CONFIG" | jq -r '.sound // "sb16"'),audiodev=sound"

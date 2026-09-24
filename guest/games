@@ -12,6 +12,7 @@ RECIPE_LABEL=anyconsole.recipe
 VULKAN_LABEL=anyconsole.vulkan
 BIOS_LABEL=anyconsole.bios
 INSTALL_LABEL=anyconsole.install
+DEVICES_LABEL=anyconsole.devices
 SANDBOX="--init --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp"
 SMB=smb://
 
@@ -44,9 +45,10 @@ prepare() {
   [ "$(label_of "$image" "$RECIPE_LABEL")" = "$recipe" ] || { build "$1" "$recipe"; image=$(image_config "$1"); }
 }
 
-mounts() {
+platform_access() {
   bios=$(label_of "$image" "$BIOS_LABEL")
   [ -z "$bios" ] || { mkdir -p "$BIOS_DIR/$1"; echo "-v $BIOS_DIR/$1:$bios:ro"; }
+  for device in $(label_of "$image" "$DEVICES_LABEL"); do echo "--device $device"; done
   for volume in $(printf '%s' "$image" | jq -r '(.Volumes // {}) | keys[]'); do
     mkdir -p "$ENGINES/$1$volume"
     echo "-v $ENGINES/$1$volume:$volume"
@@ -107,7 +109,7 @@ install() {
   cp "$MOUNTS/$1/$2/manifest.json" "$GAMES_DIR/$2/"
   copy "$MOUNTS/$1/$2/$3/rom/" "$GAMES_DIR/$2/.$3/rom/"
   hook=$(label_of "$image" "$INSTALL_LABEL")
-  [ -z "$hook" ] || { echo "installing"; docker run --rm $SANDBOX $(mounts "$3") -v "$GAMES_DIR/$2/.$3/rom:/game" --entrypoint "$hook" "$GAME_IMAGE/$3" >&2; }
+  [ -z "$hook" ] || { echo "installing"; docker run --rm $SANDBOX $(platform_access "$3") -v "$GAMES_DIR/$2/.$3/rom:/game" --entrypoint "$hook" "$GAME_IMAGE/$3" >&2; }
   mv "$GAMES_DIR/$2/.$3" "$GAMES_DIR/$2/$3"
 }
 
@@ -133,10 +135,11 @@ run() {
   display=$(cat "$DISPLAY_FILE")
   video=
   ! printf '%s' "$display" | jq -e .vulkan >/dev/null || video=$(label_of "$image" "$VULKAN_LABEL")
-  exec docker run --rm -i --label "$GAME_LABEL=$1/$2" $SANDBOX $(mounts "$2") \
+  exec docker run --rm -i --label "$GAME_LABEL=$1/$2" $SANDBOX $(platform_access "$2") \
     --device /dev/dri --device-cgroup-rule 'c 13:* rw' -v "$PAD_NODES:/dev/input:ro" \
     -v "$3:/run/wayland" -v "$4:/states" -v "$5:/frames" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
     -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PAD_NAME="$PAD_NAME" \
+    -e GAME_CONFIG="$(jq -c --arg platform "$2" '.[$platform] // {}' "$GAMES_DIR/$1/manifest.json")" \
     -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
     -v "$rom:/game:ro" -v "$saves:/saves" "$GAME_IMAGE/$2" $video "/game/$file"
 }

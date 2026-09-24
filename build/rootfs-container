@@ -110,7 +110,7 @@ install_busybox() {
 configure_network() {
   ln -s /data/dhcpcd $ROOTFS/var/lib/dhcpcd
   cp -a /usr/lib/dhcpcd $ROOTFS/usr/lib/
-  cp /etc/dhcpcd.conf $ROOTFS/etc/
+  cp /etc/dhcpcd.conf /src/guest/dhcpcd.exit-hook $ROOTFS/etc/
 }
 
 configure_users() {
