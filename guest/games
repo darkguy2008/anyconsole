@@ -102,7 +102,7 @@ run() {
   exec docker run --rm -i --label "$GAME_LABEL=$1/$2" \
     --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp \
     --device /dev/dri --device-cgroup-rule 'c 13:* rm' -v "$PAD_NODES:/dev/input:ro" \
-    -v "$3:/run/wayland" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
+    -v "$3:/run/wayland" -v "$4:/states" -v "$5:/frames" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
     -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
     -v "$rom:/game:ro" -v "$saves:/saves" "$IMAGE/$2" $video "/game/$file"
 }
@@ -116,7 +116,7 @@ usage: games <command>
   refresh                         mount every store in /data/stores and list its games
   install <store> <slug> <platform>  build the platform recipe and copy the game from a store
   uninstall <slug> <platform>     delete an installed game, keeping its saves
-  run <slug> <platform> <wayland dir>  play an installed game in its sandbox
+  run <slug> <platform> <wayland dir> <states dir> <frames dir>  play an installed game in its sandbox
   stop                            remove every running game container
 USAGE
     exit 1 ;;

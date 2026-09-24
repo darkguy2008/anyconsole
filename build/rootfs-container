@@ -3,7 +3,7 @@ set -eux
 
 ROOTFS=/rootfs
 LIBDIR=/usr/lib/x86_64-linux-gnu
-BINARIES="/usr/bin/wayland-info /bin/busybox /usr/bin/mountpoint /usr/sbin/modprobe /bin/padd /bin/splash /bin/overlay /bin/compositor /sbin/sfdisk /sbin/mke2fs /sbin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd /usr/bin/udevadm /usr/sbin/mount.cifs /usr/bin/jq"
+BINARIES="/usr/bin/wayland-info /usr/bin/grim /bin/busybox /usr/bin/mountpoint /usr/sbin/modprobe /bin/padd /bin/splash /bin/overlay /bin/compositor /sbin/sfdisk /sbin/mke2fs /sbin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd /usr/bin/udevadm /usr/sbin/mount.cifs /usr/bin/jq"
 GBM_BACKEND=$LIBDIR/gbm/dri_gbm.so
 EGL_VENDORS=/usr/share/glvnd/egl_vendor.d
 VULKAN_DRIVERS=/usr/share/vulkan/icd.d
@@ -15,7 +15,7 @@ DOCKER="/usr/bin/dockerd /usr/bin/docker /usr/bin/containerd /usr/bin/containerd
 DOCKER_PLUGINS=/usr/libexec/docker/cli-plugins
 DATA="/usr/lib/udev/hwdb.bin /usr/share/pipewire /usr/share/wireplumber /usr/share/alsa /usr/share/alsa-card-profile /usr/lib/udev/rules.d /etc/fonts /usr/share/fonts/opentype/inter/Inter-Regular.otf /etc/ssl/certs/ca-certificates.crt"
 WLR_PROTOCOLS_URL=https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/raw/master/unstable
-WLR_PROTOCOLS="wlr-layer-shell-unstable-v1 wlr-foreign-toplevel-management-unstable-v1"
+WLR_PROTOCOLS="wlr-layer-shell-unstable-v1 wlr-foreign-toplevel-management-unstable-v1 wlr-screencopy-unstable-v1"
 PROTOCOLS=$(pkg-config --variable=pkgdatadir wayland-protocols)
 CFLAGS="-O2 -Wall -Wextra -Werror -I/tmp"
 . /src/config
@@ -67,8 +67,9 @@ build_overlay() {
   generate_protocol "$DOWNLOAD_CACHE/wlr-layer-shell-unstable-v1.xml"
   generate_protocol "$DOWNLOAD_CACHE/wlr-foreign-toplevel-management-unstable-v1.xml"
   generate_protocol "$PROTOCOLS/staging/security-context/security-context-v1.xml"
+  generate_protocol "$DOWNLOAD_CACHE/wlr-screencopy-unstable-v1.xml"
   gcc $CFLAGS -o /bin/overlay /src/guest/overlay.c /tmp/wlr-layer-shell-unstable-v1.c /tmp/wlr-foreign-toplevel-management-unstable-v1.c \
-    /tmp/security-context-v1.c /tmp/xdg-shell.c $(pkg-config --cflags --libs cairo json-c libevdev wayland-client)
+    /tmp/security-context-v1.c /tmp/wlr-screencopy-unstable-v1.c /tmp/xdg-shell.c $(pkg-config --cflags --libs cairo pixman-1 json-c libevdev wayland-client) -lm
 }
 
 build_compositor() {

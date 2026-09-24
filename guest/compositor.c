@@ -32,11 +32,14 @@
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_pointer_constraints_v1.h>
+#include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_security_context_v1.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 #include <xf86drm.h>
@@ -103,7 +106,7 @@ struct display {
     struct gpu *gpu;
     unsigned connected;
     struct wl_list link;
-    struct wl_listener frame, destroy;
+    struct wl_listener frame, needs_frame, destroy;
 };
 
 struct window {
@@ -128,6 +131,8 @@ static struct wlr_seat *seat;
 static struct wlr_layer_shell_v1 *layer_shell;
 static struct wlr_security_context_manager_v1 *security;
 static struct wlr_foreign_toplevel_manager_v1 *foreign;
+static struct wlr_screencopy_manager_v1 *screencopy;
+static struct wlr_output_layout *layout;
 static struct wlr_relative_pointer_manager_v1 *relative;
 static struct xkb_keymap *keymap;
 static struct gpu gpus[GPUS_MAX], *render_gpu;
@@ -313,6 +318,12 @@ static void write_state(void) {
         snprintf(canvas, sizeof canvas, "%dx%d", canvas_width, canvas_height);
         snprintf(box_size, sizeof box_size, "%dx%d", box.width, box.height);
         json_object_object_add(state, "filter", json_object_new_string(filters[choose_filter(box)]));
+        json_object *placement = json_object_new_object();
+        json_object_object_add(placement, "x", json_object_new_int(box.x));
+        json_object_object_add(placement, "y", json_object_new_int(box.y));
+        json_object_object_add(placement, "width", json_object_new_int(box.width));
+        json_object_object_add(placement, "height", json_object_new_int(box.height));
+        json_object_object_add(state, "area_box", placement);
     }
     json_object_object_add(state, "displays", list);
     json_object_object_add(state, "display", active ? json_object_new_string(label(active->output)) : NULL);
@@ -362,8 +373,11 @@ static void activate(struct display *wanted) {
         if (entry == wanted && mode) wlr_output_state_set_mode(&state, mode);
         if (!wlr_output_commit_state(entry->output, &state)) fprintf(stderr, "compositor: could not configure %s\n", entry->output->name);
         wlr_output_state_finish(&state);
-        if (entry == wanted) wlr_output_create_global(entry->output, display);
-        else wlr_output_destroy_global(entry->output);
+        if (entry == wanted) wlr_output_layout_add_auto(layout, entry->output);
+        else {
+            wlr_output_layout_remove(layout, entry->output);
+            wlr_output_destroy_global(entry->output);
+        }
     }
     active = wanted;
     redraw();
@@ -528,7 +542,7 @@ static void paint(struct wlr_output_state *state) {
 static void on_frame(struct wl_listener *listener, void *data) {
     (void)data;
     struct display *entry = wl_container_of(listener, entry, frame);
-    if (entry != active || !dirty) return;
+    if (entry != active || (!dirty && !entry->output->needs_frame)) return;
     struct wlr_output_state state;
     dirty = 0;
     wlr_output_state_init(&state);
@@ -541,10 +555,17 @@ static void on_frame(struct wl_listener *listener, void *data) {
     if (overlay) wlr_surface_send_frame_done(overlay->surface, &now);
 }
 
+static void on_needs_frame(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct display *entry = wl_container_of(listener, entry, needs_frame);
+    wlr_output_schedule_frame(entry->output);
+}
+
 static void on_display_destroy(struct wl_listener *listener, void *data) {
     (void)data;
     struct display *entry = wl_container_of(listener, entry, destroy);
     wl_list_remove(&entry->frame.link);
+    wl_list_remove(&entry->needs_frame.link);
     wl_list_remove(&entry->destroy.link);
     wl_list_remove(&entry->link);
     if (active == entry) active = NULL;
@@ -563,6 +584,7 @@ static void on_new_output(struct wl_listener *listener, void *data) {
     for (int i = 0; i < gpu_count; i++)
         if (gpus[i].backend == output->backend) entry->gpu = &gpus[i];
     listen(&entry->frame, &output->events.frame, on_frame);
+    listen(&entry->needs_frame, &output->events.needs_frame, on_needs_frame);
     listen(&entry->destroy, &output->events.destroy, on_display_destroy);
     wl_list_insert(&displays, &entry->link);
     if (started) choose_display();
@@ -784,7 +806,7 @@ static void on_new_constraint(struct wl_listener *listener, void *data) {
 static bool visible_to(const struct wl_client *client, const struct wl_global *global, void *data) {
     (void)data;
     return !wlr_security_context_manager_v1_lookup_client(security, client) ||
-           (global != layer_shell->global && global != security->global && global != foreign->global);
+           (global != layer_shell->global && global != security->global && global != foreign->global && global != screencopy->global);
 }
 
 static void load_settings(void) {
@@ -852,6 +874,9 @@ int main(int argc, char *argv[]) {
     layer_shell = wlr_layer_shell_v1_create(display, LAYER_SHELL_VERSION);
     security = wlr_security_context_manager_v1_create(display);
     foreign = wlr_foreign_toplevel_manager_v1_create(display);
+    screencopy = wlr_screencopy_manager_v1_create(display);
+    layout = wlr_output_layout_create(display);
+    wlr_xdg_output_manager_v1_create(display, layout);
     relative = wlr_relative_pointer_manager_v1_create(display);
     struct wlr_pointer_constraints_v1 *constraints = wlr_pointer_constraints_v1_create(display);
     seat = wlr_seat_create(display, SEAT_NAME);

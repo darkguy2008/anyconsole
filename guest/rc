@@ -18,7 +18,7 @@ for status in /sys/class/drm/card*-*/status; do
   break
 done
 mkdir -p /data/root /data/ota /data/dhcpcd /data/dropbear /data/saves /run/stores "$GAMES_DIR" "$LOG_DIR" \
-  "$PAD_NODES" "$INPUT_NODES" "$INPUTS_DIR" "$CATALOG_DIR" "$SOCKETS_DIR" "${DISPLAY_FILE%/*}"
+  "$PAD_NODES" "$INPUT_NODES" "$INPUTS_DIR" "$CATALOG_DIR" "$SOCKETS_DIR" "$REWIND_DIR" "${DISPLAY_FILE%/*}"
 mkdir -m 700 -p "$XDG_RUNTIME_DIR"
 mount -t cgroup2 cgroup2 /sys/fs/cgroup
 otad mark-good
