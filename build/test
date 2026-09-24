@@ -43,6 +43,7 @@ holds() { state | jq -e "$1"; }
 expect() { wait_for $STEP_SECONDS holds "$1"; log ok "$1"; }
 game_name() { echo "${1%/*}-${1#*/}"; }
 status_of() { echo ".games[] | select(.key == \"$1\") | .status == \"$2\""; }
+row_value() { echo ".rows[] | select(.label == \"$1\") | .value"; }
 send() { api POST input "$(printf '%s\n' "$@")" >/dev/null; }
 tap() { send "1 $1 1" "1 $1 0"; }
 key() { send "EV_KEY $1 1" "EV_KEY $1 0"; }
@@ -82,12 +83,36 @@ install_from_stick() {
   monitor "sendkey ret"
 }
 
-install_game() {
-  choose "$2"
+start_install() {
+  choose "$1"
   expect '.screen == "game"'
   choose "Install from"
+}
+
+finish_install() {
   wait_for $INSTALL_SECONDS holds "$(status_of "$1" installed)"
   log ok "installed $1"
+}
+
+install_game() {
+  start_install "$2"
+  finish_install "$1"
+}
+
+install_watching_home() {
+  row=$(row_value "$2")
+  start_install "$2"
+  expect ".games[] | select(.key == \"$1\") | .status | test(\"^building [0-9]+%$\")"
+  tap b
+  expect '.screen == "store"'
+  tap b
+  expect ".screen == \"home\" and ($row | test(\"^${1#*/}  (building|copying) [0-9]+%$\"))"
+  shown=$(state | jq -r "$row")
+  wait_for $INSTALL_SECONDS holds "$row != \"$shown\""
+  log ok "the home list moved on from \"$shown\" while $1 installed"
+  finish_install "$1"
+  choose "$2"
+  expect '.screen == "game"'
 }
 
 play_game() {
@@ -210,7 +235,7 @@ api POST stores "$TEST_STORE_URL" >/dev/null
 expect '.stores[0].online and ([.games[].key] | index("alter-ego/nes") != null)'
 
 open_store
-install_game alter-ego/nes "Alter Ego"
+install_watching_home alter-ego/nes "Alter Ego"
 play_game alter-ego/nes
 snapshot alter-ego
 api POST settings "resolution 1080" >/dev/null

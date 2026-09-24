@@ -23,7 +23,14 @@ platforms() {
 
 recipe_sum() { find $RECIPES -type f | sort | xargs cat | sha256sum | cut -d' ' -f1; }
 
-build() { docker build -q --network host --label "$RECIPE_LABEL=$2" --target "$1" -t "$GAME_IMAGE/$1" $RECIPES >/dev/null; }
+build() (
+  set -o pipefail
+  docker build --progress=rawjson --network host --label "$RECIPE_LABEL=$2" --target "$1" -t "$GAME_IMAGE/$1" $RECIPES 2>&1 >/dev/null |
+    jq -nR --unbuffered -r 'foreach (inputs | fromjson? // ("\(.)\n" | stderr | empty) | .vertexes[]? | select(.name | startswith("[internal]") | not)) as $vertex
+      ({done: {}, percent: -1}; .done[$vertex.digest] = $vertex.completed | .shown = .percent
+        | .percent = ([.percent, ((.done | map_values(values) | length) * 100 / (.done | length) | floor)] | max);
+      select(.percent > .shown) | "building \(.percent)")'
+)
 
 image_config() { docker image inspect -f '{{json .Config}}' "$GAME_IMAGE/$1" 2>/dev/null || echo '{}'; }
 
@@ -88,14 +95,17 @@ refresh() {
   prune $store
 }
 
+copy() (
+  set -o pipefail
+  rsync -a --no-inc-recursive --info=progress2 "$1" "$2" | awk -v RS='\r' '$2 != shown { shown = $2; print "copying", $2 + 0; fflush() }'
+)
+
 install() {
-  echo "preparing $3"
   prepare "$3"
-  echo "copying"
   rm -rf "$GAMES_DIR/$2/.$3"
   mkdir -p "$GAMES_DIR/$2/.$3"
   cp "$MOUNTS/$1/$2/manifest.json" "$GAMES_DIR/$2/"
-  rsync -a "$MOUNTS/$1/$2/$3/rom/" "$GAMES_DIR/$2/.$3/rom/"
+  copy "$MOUNTS/$1/$2/$3/rom/" "$GAMES_DIR/$2/.$3/rom/"
   hook=$(label_of "$image" "$INSTALL_LABEL")
   [ -z "$hook" ] || { echo "installing"; docker run --rm $SANDBOX $(mounts "$3") -v "$GAMES_DIR/$2/.$3/rom:/game" --entrypoint "$hook" "$GAME_IMAGE/$3" >&2; }
   mv "$GAMES_DIR/$2/.$3" "$GAMES_DIR/$2/$3"
@@ -117,7 +127,7 @@ launch_file() {
 
 run() {
   rom=$GAMES_DIR/$1/$2/rom saves=$SAVES/$1-$2
-  prepare "$2"
+  image=$(image_config "$2")
   file=$(launch_file "$rom")
   mkdir -p "$saves"
   display=$(cat "$DISPLAY_FILE")
@@ -140,11 +150,12 @@ resume() { containers "$1" "$2" | xargs -r docker unpause >/dev/null; }
 stop() { containers | xargs -r docker rm -f >/dev/null; }
 
 case "${1:-}" in
-  refresh|install|uninstall|run|pause|resume|stop|label) command=$1; shift; $command "$@" ;;
+  refresh|prepare|install|uninstall|run|pause|resume|stop|label) command=$1; shift; $command "$@" ;;
   *) cat >&2 <<'USAGE'
 usage: games <command>
   refresh                         mount every store in /data/stores and list its games
-  install <store> <slug> <platform>  build the platform recipe and copy the game from a store
+  prepare <platform>              build the platform recipe unless it is current, printing "building <percent>"
+  install <store> <slug> <platform>  build the platform recipe and copy the game from a store, printing "<step> [percent]"
   uninstall <slug> <platform>     delete an installed game, keeping its saves
   run <slug> <platform> <wayland dir> <states dir> <frames dir>  play an installed game in its sandbox
   pause <slug> <platform>         freeze a running game
