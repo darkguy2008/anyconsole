@@ -10,7 +10,7 @@ AVAILABLE_SINCE=${AVAILABLE_SINCE:-0}
 SLOT=$([ "$(awk '$2 == "/" { print $1 }' /proc/mounts)" = "$(findfs LABEL=root-a)" ] && echo a || echo b)
 INACTIVE=$([ "$SLOT" = a ] && echo b || echo a)
 
-announce() { echo "ota: $*" > /dev/ttyS0; }
+announce() { echo "ota: $*" > /dev/kmsg; }
 
 lock() { exec 9>$STATE_DIR/lock; flock -n 9; }
 
