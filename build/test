@@ -41,17 +41,21 @@ wait_for() {
 }
 holds() { state | jq -e "$1"; }
 expect() { wait_for $STEP_SECONDS holds "$1"; log ok "$1"; }
+game_name() { echo "${1%/*}-${1#*/}"; }
 status_of() { echo ".games[] | select(.key == \"$1\") | .status == \"$2\""; }
 send() { api POST input "$(printf '%s\n' "$@")" >/dev/null; }
 tap() { send "1 $1 1" "1 $1 0"; }
 key() { send "EV_KEY $1 1" "EV_KEY $1 0"; }
-choose() {
+highlight() {
   target=$(state | jq "[.rows[].label] | index(\"$1\")")
   [ "$target" != null ] || { log FAIL "no row $1" >&2; diagnose; exit 1; }
   while selected=$(state | jq .selected); [ "$selected" != "$target" ]; do
     if [ "$selected" -lt "$target" ]; then tap dpdown; else tap dpup; fi
     wait_for $STEP_SECONDS holds ".selected != $selected"
   done
+}
+choose() {
+  highlight "$1"
   tap a
 }
 snapshot() { monitor "screendump $OUT/$1.png -f png"; wait_for $STEP_SECONDS test -s "$OUT/$1.png"; }
@@ -88,8 +92,9 @@ install_game() {
 
 play_game() {
   choose Play
+  snapshot "${1%/*}-launch"
   expect ".active == \"$1\" and (.dashboard | not) and ($(status_of "$1" running)) and .display.shown == \"$1\" and .display.frame == .display.canvas"
-  sandbox_globals=$(guest "WAYLAND_DISPLAY=$SOCKETS_DIR/${1%/*}-${1#*/}/wayland-0 wayland-info")
+  sandbox_globals=$(guest "WAYLAND_DISPLAY=$SOCKETS_DIR/$(game_name "$1")/wayland-0 wayland-info")
   echo "$sandbox_globals" | grep -q "'wl_compositor'" && ! echo "$sandbox_globals" | grep -q -e zwlr_layer_shell_v1 -e zwlr_screencopy_manager_v1 ||
     { log FAIL "$1 is not confined by its security context" >&2; exit 1; }
   log ok "$1 sees no privileged wayland protocols"
@@ -129,6 +134,42 @@ switch_gpu_after_games() {
   expect ".settings.display == \"\" and .display.display == \"$second\""
 }
 
+remember_guide_position() {
+  tap guide
+  expect '.guide and .screen == "guide" and .rows[.selected].label == "Rewind"'
+  highlight Volume
+  tap guide
+  expect '.guide | not'
+  tap guide
+  expect '.guide and .rows[.selected].label == "Volume"'
+  tap guide
+  expect '.guide | not'
+}
+
+rewind_to_older_state() {
+  expect '.rewind.states >= 2'
+  wait_for $STEP_SECONDS guest "[ \$(ls $REWIND_DIR/$(game_name "$1")/states/*.screen.png | wc -l) -ge 2 ]"
+  log ok "the saved $1 states have screen captures"
+  tap guide
+  expect ".guide and .rows[1].label == \"Rewind\" and .rows[.selected].label == \"Rewind\" and .rewind.back == 0 and ($(status_of "$1" paused))"
+  tap dpleft
+  expect '.rewind.back == 1 and .rows[.selected].value != "Now"'
+  tap guide
+  expect "(.guide | not) and ($(status_of "$1" running))"
+  tap guide
+  expect '.guide and .rewind.back == 0 and .rows[.selected].label == "Rewind" and .rows[.selected].value == "Now"'
+  snapshot rewind-now
+  tap dpleft
+  tap dpleft
+  expect '.rewind.back == 2'
+  snapshot rewind
+  states=$(state | jq .rewind.states)
+  tap a
+  expect "(.guide | not) and .rewind.states == $((states - 1)) and .rewind.back == 0 and ($(status_of "$1" running))"
+  wait_for $STEP_SECONDS guest "grep -q 'Loading state' $LOG_DIR/$(game_name "$1").log"
+  log ok "rewound $1 to an older state"
+}
+
 back_to_dashboard() {
   tap guide
   expect '.guide and .screen == "guide"'
@@ -141,6 +182,8 @@ install_from_stick
 wait_for $BOOT_SECONDS booted 1
 expect '.screen == "home" and .dashboard and (.rows | length) == 2 and (.display.displays | length) == 2 and .display.canvas == .display.area and .display.filter == "nearest"'
 snapshot home
+wait_for $STEP_SECONDS guest ". /etc/profile; WAYLAND_DISPLAY=wayland-0 grim /tmp/home.png && [ -s /tmp/home.png ]"
+log ok "grim captures the idle screen"
 change_resolution_in_settings
 
 api POST stores "$TEST_STORE_URL" >/dev/null
@@ -157,6 +200,7 @@ api POST settings "resolution 0" >/dev/null
 expect ".display.canvas == .display.area and .display.frame == .display.canvas and ($(status_of alter-ego/nes running))"
 wait_for $STEP_SECONDS guest ". /etc/profile; pw-dump | jq -e '[.[] | select(.info.props[\"media.class\"]? == \"Stream/Output/Audio\" and .info.state == \"running\")] | length == 1'"
 log ok "the game plays sound into PipeWire"
+remember_guide_position
 
 tap guide
 expect ".guide and .screen == \"guide\" and ($(status_of alter-ego/nes paused)) and .audio.output != \"\""
@@ -194,8 +238,10 @@ tap b
 open_store
 install_game commander-keen/msdos "Commander Keen"
 play_game commander-keen/msdos
+expect '.rewind.states >= 1'
 key KEY_ENTER
 snapshot keen
+rewind_to_older_state commander-keen/msdos
 key KEY_LEFTMETA
 expect ".guide and ($(status_of commander-keen/msdos paused))"
 tap guide
