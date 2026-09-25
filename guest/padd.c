@@ -1095,8 +1095,11 @@ static void attach(int index) {
     const char *path = SDL_JoystickPathForIndex(index);
     if (path && is_virtual(path)) return;
     if (pad_count == PHYSICAL_PADS_MAX) { fprintf(stderr, "padd: too many pads\n"); return; }
+    int player_index = 0;
+    while (SDL_GameControllerFromPlayerIndex(player_index)) player_index++;
     SDL_GameController *game_controller = SDL_GameControllerOpen(index);
     if (!game_controller) { fprintf(stderr, "%s: %s\n", SDL_JoystickNameForIndex(index), SDL_GetError()); return; }
+    SDL_GameControllerSetPlayerIndex(game_controller, player_index);
     struct pad *controller_pad = &pads[pad_count++];
     *controller_pad = (struct pad){.controller = game_controller, .instance = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(game_controller)),
                                    .battery = NO_BATTERY, .level = SDL_JoystickCurrentPowerLevel(SDL_GameControllerGetJoystick(game_controller))};
