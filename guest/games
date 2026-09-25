@@ -13,6 +13,7 @@ VULKAN_LABEL=anyconsole.vulkan
 BIOS_LABEL=anyconsole.bios
 INSTALL_LABEL=anyconsole.install
 DEVICES_LABEL=anyconsole.devices
+TOUCHPAD_LABEL=anyconsole.touchpad
 SANDBOX="--init --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp"
 SMB=smb://
 
@@ -44,6 +45,8 @@ prepare() {
   image=$(image_config "$1")
   [ "$(label_of "$image" "$RECIPE_LABEL")" = "$recipe" ] || { build "$1" "$recipe"; image=$(image_config "$1"); }
 }
+
+route_touchpad() { echo "touchpad ${1:-pointer}" > "$PAD_FIFO"; }
 
 platform_access() {
   bios=$(label_of "$image" "$BIOS_LABEL")
@@ -134,6 +137,7 @@ run() {
   mkdir -p "$saves"
   display=$(cat "$DISPLAY_FILE")
   video=
+  route_touchpad "$(label_of "$image" "$TOUCHPAD_LABEL")"
   ! printf '%s' "$display" | jq -e .vulkan >/dev/null || video=$(label_of "$image" "$VULKAN_LABEL")
   exec docker run --rm -i --label "$GAME_LABEL=$1/$2" $SANDBOX $(platform_access "$2") \
     --device /dev/dri --device-cgroup-rule 'c 13:* rw' -v "$PAD_NODES:/dev/input:ro" \
@@ -148,7 +152,10 @@ containers() { docker ps -q --filter "label=$GAME_LABEL${1:+=$1/$2}"; }
 
 pause() { containers "$1" "$2" | xargs -r docker pause >/dev/null; }
 
-resume() { containers "$1" "$2" | xargs -r docker unpause >/dev/null; }
+resume() {
+  containers "$1" "$2" | xargs -r docker unpause >/dev/null
+  route_touchpad "$(label "$2" "$TOUCHPAD_LABEL")"
+}
 
 stop() { containers | xargs -r docker rm -f >/dev/null; }
 

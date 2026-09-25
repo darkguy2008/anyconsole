@@ -40,6 +40,7 @@
 #define KEYBOARD_NAME "anyconsole keyboard"
 #define PAD_NODE "event"
 #define TOUCHPAD_NODE "touch"
+#define TOUCHPAD_MIDDLE 0.5
 #define PAD_VENDOR 0x054c
 #define PAD_PRODUCT 0x0ce6
 #define PAD_VERSION 0x8111
@@ -120,6 +121,8 @@ struct pad {
     char address[ADDRESS_SIZE];
     int bus, battery, charging, claimed_guide;
     double touchpad_aspect;
+    float touch_x, touch_y;
+    int clicked;
     SDL_JoystickPowerLevel level;
     time_t active;
 };
@@ -138,7 +141,7 @@ static struct pollfd watched[WATCHED_MAX];
 static struct watch watches[WATCHED_MAX];
 static int watched_count;
 static struct pad pads[PHYSICAL_PADS_MAX];
-static int pad_count, reach, sleep_minutes;
+static int pad_count, reach, sleep_minutes, touchpad_pointer = 1;
 static SDL_JoystickID motion_source = NO_PAD;
 static struct bluetooth_device known[BLUETOOTH_DEVICES_MAX];
 static int known_count;
@@ -401,10 +404,47 @@ static double touchpad_aspect(struct udev_device *hid) {
     return aspect;
 }
 
+static int canvas_width(void) {
+    json_object *display = json_object_from_file(DISPLAY_FILE), *canvas;
+    int width = json_object_object_get_ex(display, "canvas", &canvas) ? atoi(json_object_get_string(canvas)) : 0;
+    json_object_put(display);
+    return width;
+}
+
+static void point(struct pad *source, SDL_ControllerTouchpadEvent *event) {
+    static double travel[2];
+    static int width;
+    if (event->type == SDL_CONTROLLERTOUCHPADDOWN) {
+        width = canvas_width();
+        travel[0] = travel[1] = 0;
+    }
+    if (event->type != SDL_CONTROLLERTOUCHPADMOTION) return;
+    double motion[2] = {(event->x - source->touch_x) * width, (event->y - source->touch_y) * source->touchpad_aspect * width};
+    int moved = 0;
+    for (int axis = 0; axis < 2; axis++) {
+        travel[axis] += motion[axis];
+        double whole = trunc(travel[axis]);
+        travel[axis] -= whole;
+        if (!whole) continue;
+        libevdev_uinput_write_event(keyboard, EV_REL, axis ? REL_Y : REL_X, whole);
+        moved = 1;
+    }
+    if (moved) libevdev_uinput_write_event(keyboard, EV_SYN, SYN_REPORT, 0);
+}
+
+static void click(struct pad *source, int down) {
+    if (down) source->clicked = source->touch_x < TOUCHPAD_MIDDLE ? BTN_LEFT : BTN_RIGHT;
+    emit(keyboard, EV_KEY, source->clicked, down);
+    if (!down) source->clicked = 0;
+}
+
 static void touch(struct libevdev_uinput *device, struct pad *source, SDL_ControllerTouchpadEvent *event) {
     int down = event->type != SDL_CONTROLLERTOUCHPADUP;
     if (event->finger) return;
     if (!source->touchpad_aspect) source->touchpad_aspect = touchpad_aspect(source->hid);
+    if (touchpad_pointer) point(source, event);
+    source->touch_x = event->x;
+    source->touch_y = event->y;
     if (down) {
         libevdev_uinput_write_event(device, EV_ABS, ABS_X, event->x * fmin(1, 1 / source->touchpad_aspect) * SDL_JOYSTICK_AXIS_MAX);
         libevdev_uinput_write_event(device, EV_ABS, ABS_Y, event->y * fmin(1, source->touchpad_aspect) * SDL_JOYSTICK_AXIS_MAX);
@@ -950,6 +990,8 @@ static void command(char *line) {
         if (changed) write_controllers();
     } else if (words == 2 && !strcmp(first, "forget")) {
         forget(second);
+    } else if (words == 2 && !strcmp(first, "touchpad")) {
+        touchpad_pointer = !strcmp(second, "pointer");
     } else if (seat < 0) {
         fprintf(stderr, "bad command: %s", line);
     } else if (words == 3) {
@@ -1153,6 +1195,8 @@ static void handle(SDL_Event *event) {
     case SDL_CONTROLLERBUTTONUP:
         source = pad_of(event->cbutton.which);
         if (source && event->cbutton.state == SDL_PRESSED) touched(source);
+        if (source && event->cbutton.button == SDL_CONTROLLER_BUTTON_TOUCHPAD && (touchpad_pointer || source->clicked))
+            click(source, event->cbutton.state == SDL_PRESSED);
         if (event->cbutton.button != SDL_CONTROLLER_BUTTON_GUIDE) drive(0, SDL_GameControllerGetStringForButton(event->cbutton.button), event->cbutton.state == SDL_PRESSED);
         else if (source && guide_button(source) == NO_BUTTON) press_guide_of(source, event->cbutton.state == SDL_PRESSED);
         break;
