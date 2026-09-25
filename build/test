@@ -259,7 +259,7 @@ play_wireless_controller() {
   fakepad bluetooth press
   fakepad bluetooth release
   expect '.guide | not'
-  guest "docker run -d -i --name rumble --device $PAD_NODES/event0:/dev/input/event0 --entrypoint sh $FAKEPAD_IMAGE -c '{ echo $STRONG_RUMBLE_EFFECT; cat; } | fftest /dev/input/event0'" >/dev/null
+  guest "docker run -d -i --name rumble --network none --device $PAD_NODES/event0:/dev/input/event0 --entrypoint sh $FAKEPAD_IMAGE -c '{ echo $STRONG_RUMBLE_EFFECT; cat; } | fftest /dev/input/event0'" >/dev/null
   wait_for $STEP_SECONDS fakepad_rumbled
   guest "docker rm -f rumble" >/dev/null
   log ok "rumble played on the virtual pad reached the physical pad"
@@ -302,6 +302,8 @@ expect '.stores[0].online and ([.games[].key] | index("alter-ego/nes") != null)'
 open_store
 install_watching_home alter-ego/nes "Alter Ego"
 play_game alter-ego/nes
+wait_for $STEP_SECONDS guest "grep -qF 'configured in port 1' $LOG_DIR/$(game_name alter-ego/nes).log"
+log ok "RetroArch configured the virtual pad"
 snapshot alter-ego
 api POST settings "resolution 1080" >/dev/null
 expect ".display.canvas == \"1920x1080\" and .display.frame == .display.canvas and ($(status_of alter-ego/nes running))"

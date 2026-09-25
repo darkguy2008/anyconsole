@@ -76,7 +76,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libgl1-m
 ENV HOME=/tmp SDL_JOYSTICK_HIDAPI=0 SDL_JOYSTICK_DISABLE_UDEV=1 SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1
 
 FROM gpu AS retroarch
-RUN apt-get update && apt-get install -y --no-install-recommends libasound2t64 libjack-jackd2-0 libfontconfig1 libdbus-1-3 libxi6 libxrandr2 libxinerama1 libxxf86vm1 libxss1 libxext6 libxrender1 libxcursor1 libxfixes3 libv4l-0 libudev1 libxkbcommon0 libwayland-egl1 libwayland-cursor0 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libasound2t64 libjack-jackd2-0 libfontconfig1 libdbus-1-3 libxi6 libxrandr2 libxinerama1 libxxf86vm1 libxss1 libxext6 libxrender1 libxcursor1 libxfixes3 libv4l-0 libudev1 libxkbcommon0 libwayland-egl1 libwayland-cursor0 libsdl2-2.0-0 && rm -rf /var/lib/apt/lists/*
 COPY --from=retroarch-download /retroarch /retroarch
 RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib/x86_64-linux-gnu/${bundled##*/}" ] || rm "$bundled"; done
 COPY retroarch.cfg vulkan.cfg /retroarch/
@@ -246,7 +246,7 @@ RUN mkdir /anycon \
 # win98 Windows 98
 FROM gpu AS win98
 RUN apt-get update && apt-get install -y --no-install-recommends qemu-system-x86 qemu-system-gui qemu-utils mtools dosfstools fdisk syslinux-common 7zip jq python3-evdev && rm -rf /var/lib/apt/lists/*
-LABEL anyconsole.launch="img iso" anyconsole.bios="/bios" anyconsole.install="/opt/win98/install" anyconsole.devices="/dev/kvm"
+LABEL anyconsole.launch="img iso" anyconsole.bios="/bios" anyconsole.install="/opt/win98/install" anyconsole.devices="/dev/kvm" anyconsole.touchpad="raw"
 COPY --from=win98-download /usr/local/bin/patcher9x /usr/local/bin/
 COPY --from=win98-download /base /opt/win98/base
 COPY --from=win98-programs /anycon /opt/win98/base/anycon
