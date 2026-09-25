@@ -1,16 +1,19 @@
-MODULES="e1000e r8169 af_packet vfat nls_cp437 nls_utf8 virtio_pci evdev uinput joydev usbhid hid-generic overlay cifs"
-MODULE_TREES="kernel/sound kernel/arch/x86/kvm"
+MODULES="e1000e r8169 af_packet vfat nls_cp437 nls_utf8 virtio_pci evdev uinput uhid overlay cifs"
+MODULE_TREES="kernel/sound kernel/arch/x86/kvm kernel/drivers/hid kernel/drivers/input/joystick kernel/drivers/bluetooth kernel/net/bluetooth kernel/crypto"
 API_PORT=8080
 
 PAD_FIFO=/run/pad
 PAD_NODES=/run/pads
 INPUT_NODES=/run/input
-INPUTS_DIR=/run/inputs
 STATE_FILE=/run/state.json
 DISPLAY_FILE=/run/display/state.json
+CONTROLLERS_FILE=/run/controllers/state.json
+NOTIFY_FIFO=/run/notify
 SETTINGS_FILE=/data/settings.json
 RENDER_GPU_FILE=/data/render-gpu
 RESOLUTIONS="720 1080 1440 2160"
+SLEEP_MINUTES="10 30 60 0"
+STICK_REACH_DIVISOR=4
 STORES_FILE=/data/stores
 CATALOG_DIR=/run/catalog
 GAMES_DIR=/data/games
@@ -23,8 +26,9 @@ GAME_IMAGE=anyconsole
 REWIND_LABEL=anyconsole.rewind
 BIOS_DIR=/data/bios
 PAD_NAME="Sony Interactive Entertainment DualSense Wireless Controller"
+MOTION_NAME="$PAD_NAME Motion Sensors"
 CONTROLLER_MAPPINGS=/usr/share/anyconsole/gamecontrollerdb.txt
-SHARED_WITH_C="PAD_FIFO PAD_NODES INPUT_NODES INPUTS_DIR STATE_FILE DISPLAY_FILE SETTINGS_FILE RENDER_GPU_FILE RESOLUTIONS STORES_FILE CATALOG_DIR GAMES_DIR SOCKETS_DIR REWIND_DIR LOG_DIR GUIDE_DEVICE VOLUME_LIMIT REWIND_LABEL CONTROLLER_MAPPINGS PAD_NAME"
+SHARED_WITH_C="PAD_FIFO PAD_NODES INPUT_NODES STATE_FILE DISPLAY_FILE CONTROLLERS_FILE NOTIFY_FIFO SETTINGS_FILE RENDER_GPU_FILE RESOLUTIONS SLEEP_MINUTES STICK_REACH_DIVISOR STORES_FILE CATALOG_DIR GAMES_DIR SOCKETS_DIR REWIND_DIR LOG_DIR GUIDE_DEVICE VOLUME_LIMIT REWIND_LABEL CONTROLLER_MAPPINGS PAD_NAME MOTION_NAME"
 
 load_drivers() {
   modprobe -a $MODULES

@@ -2,9 +2,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 DISK_SIZE=${DISK_SIZE:-8G}
-INSTALLER_SLACK_MIB=64
+ESP_SLACK_MIB=64
 DISK=build/out/disk.img
 INSTALLER=build/out/installer.img
+INSTALLER_ROOT=build/out/installer-root.img
+MEASURE_FACTOR=2
+ALIGNMENT_MIB=1
 ESP=build/out/esp
 RELEASE=rel/$(cat VERSION)
 MOUNT=/mnt/anyconsole
@@ -58,11 +61,25 @@ build_disk() {
   losetup -d "$loop"
 }
 
+fill_installer_root() {
+  rm -f "$INSTALLER_ROOT"
+  truncate -s "$1" "$INSTALLER_ROOT"
+  mke2fs -qF -t ext4 -L installer -N "$(find "$RELEASE" | wc -l)" -d "$RELEASE" "$INSTALLER_ROOT"
+}
+
+used_bytes() { tune2fs -l "$1" | awk -F': *' '/^Block count:/ { count = $2 } /^Free blocks:/ { free = $2 } /^Block size:/ { size = $2 } END { print (count - free) * size }'; }
+
+build_installer_root() {
+  fill_installer_root "$(( $(du -sm "$RELEASE" | cut -f1) * MEASURE_FACTOR ))M"
+  fill_installer_root "$(used_bytes "$INSTALLER_ROOT")"
+}
+
 build_installer() {
   rm -f "$INSTALLER"
-  esp_mib=$(( $(du -sm "$ESP" | cut -f1) + INSTALLER_SLACK_MIB ))
-  release_mib=$(du -sm "$RELEASE" | cut -f1)
-  truncate -s "$((esp_mib + release_mib + INSTALLER_SLACK_MIB + 1))M" "$INSTALLER"
+  build_installer_root
+  esp_mib=$(( $(du -sm "$ESP" | cut -f1) + ESP_SLACK_MIB ))
+  root_mib=$(du --apparent-size -m "$INSTALLER_ROOT" | cut -f1)
+  truncate -s "$((ALIGNMENT_MIB + esp_mib + root_mib + ALIGNMENT_MIB))M" "$INSTALLER"
   loop=$(losetup -fP --show "$INSTALLER")
   sfdisk -q "$loop" <<TABLE
 label: gpt
@@ -70,11 +87,9 @@ size=${esp_mib}MiB, type=uefi, name=INSTALL
 type=linux, name=installer
 TABLE
   mkfs.fat -n INSTALL "${loop}p1" >/dev/null
-  mke2fs -qF -t ext4 -L installer "${loop}p2"
+  cat "$INSTALLER_ROOT" > "${loop}p2"
+  rm "$INSTALLER_ROOT"
   mkdir -p "$MOUNT"
-  mount "${loop}p2" "$MOUNT"
-  cp -a "$RELEASE"/. "$MOUNT"/
-  umount "$MOUNT"
   mount "${loop}p1" "$MOUNT"
   cp -a "$ESP"/. "$MOUNT"/
   umount "$MOUNT"

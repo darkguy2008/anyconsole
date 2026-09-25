@@ -9,7 +9,7 @@ WORKDIR /cores
 FROM unzip AS retroarch-download
 ARG LIBRETRO
 ADD $LIBRETRO/stable/1.22.2/linux/x86_64/RetroArch.7z .
-ADD "https://raw.githubusercontent.com/libretro/retroarch-joypad-autoconfig/master/linuxraw/Sony%20Interactive%20Entertainment%20DualSense%20Wireless%20Controller.cfg" /retroarch/autoconfig/linuxraw/dualsense.cfg
+ADD "https://raw.githubusercontent.com/libretro/retroarch-joypad-autoconfig/master/sdl2/PS5%20Controller.cfg" /retroarch/autoconfig/sdl2/ps5.cfg
 RUN 7z e RetroArch.7z RetroArch-Linux-x86_64/RetroArch-Linux-x86_64.AppImage >/dev/null \
  && chmod +x RetroArch-Linux-x86_64.AppImage \
  && ./RetroArch-Linux-x86_64.AppImage --appimage-extract >/dev/null \
@@ -73,7 +73,7 @@ RUN 7z e azahar_libretro.so.zip >/dev/null
 
 FROM debian:trixie-slim AS gpu
 RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libgl1-mesa-dri mesa-libgallium libglx-mesa0 libegl1 libegl-mesa0 libgles2 libvulkan1 mesa-vulkan-drivers libpulse0 && rm -rf /var/lib/apt/lists/*
-ENV HOME=/tmp
+ENV HOME=/tmp SDL_JOYSTICK_HIDAPI=0 SDL_JOYSTICK_DISABLE_UDEV=1 SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1
 
 FROM gpu AS retroarch
 RUN apt-get update && apt-get install -y --no-install-recommends libasound2t64 libjack-jackd2-0 libfontconfig1 libdbus-1-3 libxi6 libxrandr2 libxinerama1 libxxf86vm1 libxss1 libxext6 libxrender1 libxcursor1 libxfixes3 libv4l-0 libudev1 libxkbcommon0 libwayland-egl1 libwayland-cursor0 && rm -rf /var/lib/apt/lists/*
@@ -160,7 +160,6 @@ COPY --from=azahar /cores/azahar_libretro.so /retroarch/core.so
 FROM gpu AS x11
 RUN apt-get update && apt-get install -y --no-install-recommends xwayland xwayland-run xauth libopengl0 libasound2-plugins && rm -rf /var/lib/apt/lists/*
 COPY asound.conf /etc/asound.conf
-ENV SDL_JOYSTICK_HIDAPI=0 SDL_JOYSTICK_DISABLE_UDEV=1 SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1
 VOLUME /engine
 
 FROM debian:trixie-slim AS fetch

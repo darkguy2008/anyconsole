@@ -4,7 +4,7 @@ CONFIG=$XDG_CONFIG_HOME/rpcs3
 USER_HOME=$CONFIG/dev_hdd0/home/00000001
 
 pad_config() {
-  printf 'Player 1 Input:\n  Handler: Evdev\n  Device: "%s"\n  Config:\n' "$PAD_NAME"
+  printf 'Player 1 Input:\n  Handler: Evdev\n  Device: "%s"\n  Buddy Device: "%s"\n  Config:\n' "$PAD_NAME" "$MOTION_NAME"
   sed 's/^/    /' /opt/rpcs3/pad.yml
 }
 
