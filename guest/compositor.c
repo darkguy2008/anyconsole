@@ -270,12 +270,14 @@ static int games_running(void) {
     return 0;
 }
 
-static struct wlr_box area(void) {
-    int width = active->output->width, height = active->output->height;
-    if (width * ASPECT_HEIGHT > height * ASPECT_WIDTH) width = height * ASPECT_WIDTH / ASPECT_HEIGHT;
-    else height = width * ASPECT_HEIGHT / ASPECT_WIDTH;
-    return (struct wlr_box){(active->output->width - width) / 2, (active->output->height - height) / 2, width, height};
+static struct wlr_box fit(struct wlr_box outer, int aspect_width, int aspect_height) {
+    int width = outer.width, height = outer.height;
+    if (width * aspect_height > height * aspect_width) width = height * aspect_width / aspect_height;
+    else height = width * aspect_height / aspect_width;
+    return (struct wlr_box){outer.x + (outer.width - width) / 2, outer.y + (outer.height - height) / 2, width, height};
 }
+
+static struct wlr_box area(void) { return fit((struct wlr_box){0, 0, active->output->width, active->output->height}, ASPECT_WIDTH, ASPECT_HEIGHT); }
 
 static enum filter choose_filter(struct wlr_box box) {
     if (!canvas_width || (box.width % canvas_width == 0 && box.height % canvas_height == 0)) return NEAREST;
@@ -431,8 +433,9 @@ static struct wlr_texture *compose(struct wlr_buffer **composed) {
     *composed = canvas_chain ? wlr_swapchain_acquire(canvas_chain, NULL) : NULL;
     if (!*composed) return game;
     struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, *composed, NULL);
-    if (!game) wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){.box = {0, 0, canvas_width, canvas_height}, .color = {0, 0, 0, 1}});
-    else wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = game, .dst_box = {0, 0, canvas_width, canvas_height}});
+    struct wlr_box canvas = {0, 0, canvas_width, canvas_height};
+    wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){.box = canvas, .color = {0, 0, 0, 1}});
+    if (game) wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = game, .dst_box = fit(canvas, game->width, game->height)});
     struct wlr_texture *interface = overlay_visible() ? wlr_surface_get_texture(overlay->surface) : NULL;
     if (interface) wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = interface, .dst_box = overlay_box()});
     wlr_render_pass_submit(pass);
@@ -532,9 +535,10 @@ static void paint(struct wlr_output_state *state) {
     if (filter == PIXEL && (game || interface) && draw_pixel(state, box)) return;
     enum wlr_scale_filter_mode mode = filter == NEAREST ? WLR_SCALE_FILTER_NEAREST : WLR_SCALE_FILTER_BILINEAR;
     struct wlr_render_pass *pass = wlr_output_begin_render_pass(output, state, NULL, NULL);
-    if (!game || box.width != output->width || box.height != output->height)
+    struct wlr_box picture = game ? fit(box, game->width, game->height) : box;
+    if (!game || picture.width != output->width || picture.height != output->height)
         wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){.box = {0, 0, output->width, output->height}, .color = {0, 0, 0, 1}});
-    if (game) wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = game, .dst_box = box, .filter_mode = mode});
+    if (game) wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = game, .dst_box = picture, .filter_mode = mode});
     if (interface)
         wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = interface, .dst_box = scaled(overlay_box(), box), .filter_mode = mode});
     wlr_render_pass_submit(pass);

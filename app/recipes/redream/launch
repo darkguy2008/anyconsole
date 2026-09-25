@@ -1,5 +1,9 @@
 #!/bin/sh
 set -eu
+PICTURE_WIDTH=4
+PICTURE_HEIGHT=3
 cp -u /opt/redream/redream /engine/
 find /bios -maxdepth 1 -type f -exec ln -sf {} /engine/ \;
-exec xwayland-run -fullscreen -geometry "$CANVAS" -- /engine/redream --width="${CANVAS%x*}" --height="${CANVAS#*x}" "$@"
+height=${CANVAS#*x}
+width=$((height * PICTURE_WIDTH / PICTURE_HEIGHT))
+exec xwayland-run -fullscreen -geometry "${width}x$height" -- /engine/redream --width="$width" --height="$height" "$@"
