@@ -351,7 +351,9 @@ open_store
 install_game commander-keen/msdos "Commander Keen"
 play_game commander-keen/msdos
 expect '.rewind.states >= 1'
-key KEY_ENTER
+send "EV_KEY KEY_ENTER 1"
+expect '.rewind.states >= 2'
+send "EV_KEY KEY_ENTER 0"
 snapshot keen
 rewind_to_older_state commander-keen/msdos
 key KEY_LEFTMETA

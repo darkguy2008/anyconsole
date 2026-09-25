@@ -3,12 +3,11 @@ ARG LIBRETRO=https://buildbot.libretro.com
 FROM debian:trixie-slim AS unzip
 ARG LIBRETRO
 RUN apt-get update && apt-get install -y --no-install-recommends 7zip && rm -rf /var/lib/apt/lists/*
-ENV CORES=$LIBRETRO/nightly/linux/x86_64/latest SYSTEM=$LIBRETRO/assets/system
+ENV CORES=$LIBRETRO/nightly/linux/x86_64/latest SYSTEM=$LIBRETRO/assets/system STABLE=$LIBRETRO/stable/1.22.2/linux/x86_64
 WORKDIR /cores
 
 FROM unzip AS retroarch-download
-ARG LIBRETRO
-ADD $LIBRETRO/stable/1.22.2/linux/x86_64/RetroArch.7z .
+ADD $STABLE/RetroArch.7z .
 ADD "https://raw.githubusercontent.com/libretro/retroarch-joypad-autoconfig/master/sdl2/PS5%20Controller.cfg" /retroarch/autoconfig/sdl2/ps5.cfg
 RUN 7z e RetroArch.7z RetroArch-Linux-x86_64/RetroArch-Linux-x86_64.AppImage >/dev/null \
  && chmod +x RetroArch-Linux-x86_64.AppImage \
@@ -60,8 +59,8 @@ ADD $CORES/swanstation_libretro.so.zip .
 RUN 7z e swanstation_libretro.so.zip >/dev/null
 
 FROM unzip AS pcsx2
-ADD $CORES/pcsx2_libretro.so.zip .
-RUN 7z e pcsx2_libretro.so.zip >/dev/null
+ADD $STABLE/RetroArch_cores.7z $SYSTEM/LRPS2.zip .
+RUN 7z e RetroArch_cores.7z pcsx2_libretro.so -r >/dev/null && 7z x -o/system LRPS2.zip >/dev/null
 
 FROM unzip AS ppsspp
 ADD $CORES/ppsspp_libretro.so.zip $SYSTEM/PPSSPP.zip .
@@ -145,6 +144,9 @@ COPY --from=swanstation /cores/swanstation_libretro.so /retroarch/core.so
 FROM retroarch AS ps2
 LABEL anyconsole.launch="m3u chd iso cso" anyconsole.bios="/system/pcsx2/bios"
 COPY --from=pcsx2 /cores/pcsx2_libretro.so /retroarch/core.so
+COPY --from=pcsx2 /system /system
+COPY ps2.opt /retroarch/core.opt
+VOLUME /system/pcsx2/cache
 
 # psp PlayStation Portable
 FROM retroarch AS psp

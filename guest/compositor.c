@@ -548,7 +548,7 @@ static void on_frame(struct wl_listener *listener, void *data) {
     dirty = 0;
     wlr_output_state_init(&state);
     if (!scan_out(&state)) paint(&state);
-    if (!wlr_output_commit_state(entry->output, &state)) fprintf(stderr, "compositor: could not present on %s\n", entry->output->name);
+    if (!wlr_output_commit_state(entry->output, &state)) redraw();
     wlr_output_state_finish(&state);
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
