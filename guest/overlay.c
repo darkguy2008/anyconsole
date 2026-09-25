@@ -51,6 +51,7 @@
 #define REPEAT_INTERVAL_MS 80
 #define NS_PER_MS 1000000
 #define PERCENT 100
+#define RGB_MASK 0x00ffffffu
 #define VOLUME_STEP "5%"
 #define GAMES_MAX 512
 #define STORES_MAX 32
@@ -71,9 +72,7 @@
 #define SAVE_SECONDS 5
 #define SAVE_CHANGE_PERCENT 1
 #define STATES "states"
-#define FRAMES "frames"
 #define STATE_EXTENSION ".state"
-#define THUMBNAIL_EXTENSION ".png"
 #define SCREEN_EXTENSION ".screen.png"
 #define REWIND_TREE_DEPTH 2
 #define CAROUSEL_ROWS 4
@@ -99,7 +98,7 @@ static const char *const tasks[] = {[INSTALLING] = "installing", [UNINSTALLING] 
 
 struct game {
     char slug[NAME_MAX + 1], platform[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX];
-    int installed, commands, context, paused, closing, job_output, percent, states_watch, frames_watch, rewinds, probe_output;
+    int installed, commands, context, paused, closing, job_output, percent, states_watch, rewinds, probe_output;
     size_t job_length;
     enum task task;
     unsigned stores;
@@ -291,7 +290,6 @@ static int by_slot(const struct dirent **left, const struct dirent **right) { re
 static void remove_state(const char *state) {
     char path[PATH_MAX];
     unlink(rewind_path(path, active, "/" STATES "/%s", state));
-    unlink(rewind_path(path, active, "/" STATES "/%s" THUMBNAIL_EXTENSION, state));
     unlink(rewind_path(path, active, "/" STATES "/%s" SCREEN_EXTENSION, state));
 }
 
@@ -342,7 +340,7 @@ static int changed_percent(cairo_surface_t *frame, cairo_surface_t *last) {
     unsigned char *now = cairo_image_surface_get_data(frame), *before = cairo_image_surface_get_data(last);
     for (int y = 0; y < frame_height; y++)
         for (int x = 0; x < frame_width; x++)
-            changed_pixels += ((uint32_t *)(now + y * stride))[x] != ((uint32_t *)(before + y * stride))[x];
+            changed_pixels += (((uint32_t *)(now + y * stride))[x] ^ ((uint32_t *)(before + y * stride))[x]) & RGB_MASK;
     return changed_pixels * PERCENT / (frame_width * frame_height);
 }
 
@@ -848,18 +846,12 @@ static void ended(int index, int status) {
     refresh_rewinds();
 }
 
-static void prepare_rewinds(int index, char *states, char *frames) {
+static void prepare_rewinds(int index, char *states) {
     char path[PATH_MAX];
     remove_rewinds(index);
     mkdir(rewind_path(path, index, ""), S_IRWXU);
     mkdir(rewind_path(states, index, "/" STATES), S_IRWXU);
-    mkdir(rewind_path(frames, index, "/" FRAMES), S_IRWXU);
     games[index].states_watch = inotify_add_watch(watcher, states, IN_CLOSE_WRITE);
-    games[index].frames_watch = inotify_add_watch(watcher, frames, IN_CLOSE_WRITE);
-}
-
-static void request_frame(void) {
-    if (rewindable() && !games[active].paused && !games[active].closing) send_command(active, "SCREENSHOT");
 }
 
 static cairo_surface_t *captured_screen(void) {
@@ -874,9 +866,17 @@ static cairo_surface_t *captured_screen(void) {
     return screen;
 }
 
+static int changed_since_save(cairo_surface_t *screen) {
+    if (!rewind_count) return 1;
+    cairo_surface_t *last = state_image(rewind_count - 1, SCREEN_EXTENSION);
+    int percent = changed_percent(screen, last);
+    cairo_surface_destroy(last);
+    return percent >= SAVE_CHANGE_PERCENT;
+}
+
 static void end_capture(int captured) {
     cairo_surface_t *screen = captured ? captured_screen() : NULL;
-    if (capture.save && capture.game == active) {
+    if (capture.save && capture.game == active && screen && changed_since_save(screen)) {
         cairo_surface_destroy(pending_screen);
         pending_screen = cairo_surface_reference(screen);
         pending_after = rewind_count ? slot(rewinds[rewind_count - 1]) : -1;
@@ -945,18 +945,10 @@ static void start_capture(int index) {
     zwlr_screencopy_frame_v1_add_listener(capture.frame, &capture_listener, NULL);
 }
 
-static void check_frame(int index, const char *file) {
-    char path[PATH_MAX];
-    if (index != active || capture.frame || notification_count) return;
-    cairo_surface_t *frame = cairo_image_surface_create_from_png(rewind_path(path, index, "/" FRAMES "/%s", file));
-    cairo_surface_t *last = rewind_count ? state_image(rewind_count - 1, THUMBNAIL_EXTENSION) : NULL;
-    if (!cairo_surface_status(frame) && (!last || changed_percent(frame, last) >= SAVE_CHANGE_PERCENT)) {
-        capture.save = display_output != NULL;
-        if (capture.save) start_capture(index);
-        else send_command(index, "SAVE_STATE");
-    }
-    cairo_surface_destroy(frame);
-    cairo_surface_destroy(last);
+static void sample_screen(void) {
+    if (!rewindable() || !display_output || games[active].paused || games[active].closing || capture.frame || notification_count) return;
+    capture.save = 1;
+    start_capture(active);
 }
 
 static void load_rewind(void) {
@@ -1001,18 +993,18 @@ static void finish_close(int index) {
 }
 
 static void play(int index) {
-    char directory[PATH_MAX], states[PATH_MAX], frames[PATH_MAX];
+    char directory[PATH_MAX], states[PATH_MAX];
     int commands[2];
     struct game *game = &games[index];
     if (!listen_socket(index, directory, sizeof directory)) { notify("Could not start %s", game->title); return; }
     if (pipe2(commands, O_CLOEXEC) < 0) { perror("pipe"); close(game->context); return; }
     int output = game_log(index);
-    prepare_rewinds(index, states, frames);
+    prepare_rewinds(index, states);
     guide[0] = (struct view){.screen = GUIDE, .game = -1, .action = REWIND};
     game->rewinds = 0;
     guide_depth = 1;
     show_game(index);
-    game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, states, frames, NULL}, commands[0], output, output);
+    game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, states, NULL}, commands[0], output, output);
     close(output);
     close(commands[0]);
     game->commands = commands[1];
@@ -1582,7 +1574,7 @@ static void settle(void) {
     if (active < 0) dashboard_open = 1;
     for (int i = 0; i < game_count; i++) {
         int pause = i != active || interactive();
-        if (!games[i].pid || games[i].closing || games[i].paused == pause || games[i].freezer) continue;
+        if (!games[i].pid || !game_window(i) || games[i].closing || games[i].paused == pause || games[i].freezer) continue;
         freeze(i, pause);
     }
     enum surface_mode wanted = HIDDEN;
@@ -1629,10 +1621,6 @@ static void reap(void) {
 
 static int read_game_change(struct inotify_event *event) {
     for (int i = 0; i < game_count; i++) {
-        if (event->wd == games[i].frames_watch) {
-            check_frame(i, event->name);
-            return 1;
-        }
         if (event->wd == games[i].states_watch) {
             if (i == active) refresh_rewinds();
             return 1;
@@ -1846,7 +1834,7 @@ int main(void) {
         if (watched[REPEAT].revents && read(repeat_timer, &expirations, sizeof expirations) > 0) press(repeating);
         if (watched[NOTIFICATIONS].revents && read(notification_timer, &expirations, sizeof expirations) > 0) expire_notifications();
         if (watched[MESSAGES].revents) read_messages(watched[MESSAGES].fd);
-        if (watched[SAVE].revents && read(save_timer, &expirations, sizeof expirations) > 0) request_frame();
+        if (watched[SAVE].revents && read(save_timer, &expirations, sizeof expirations) > 0) sample_screen();
         if (watched[MONITOR].revents) read_monitor();
         for (int i = device_polls - 1; i >= 0; i--)
             if (watched[FIXED + i].revents) read_input(polled[i], 0);
