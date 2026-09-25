@@ -119,6 +119,7 @@ struct pad {
     struct udev_device *hid;
     char address[ADDRESS_SIZE];
     int bus, battery, charging, claimed_guide;
+    double touchpad_aspect;
     SDL_JoystickPowerLevel level;
     time_t active;
 };
@@ -238,7 +239,7 @@ static struct libevdev_uinput *create_touchpad(int seat) {
     struct libevdev *device = libevdev_new();
     struct input_absinfo axis = {.maximum = SDL_JOYSTICK_AXIS_MAX};
     libevdev_set_name(device, PAD_NAME " Touchpad");
-    libevdev_enable_property(device, INPUT_PROP_DIRECT);
+    libevdev_enable_property(device, INPUT_PROP_POINTER);
     libevdev_enable_event_code(device, EV_KEY, BTN_TOUCH, NULL);
     libevdev_enable_event_code(device, EV_ABS, ABS_X, &axis);
     libevdev_enable_event_code(device, EV_ABS, ABS_Y, &axis);
@@ -370,12 +371,43 @@ static void drive(int seat, const char *name, int value) {
     fprintf(stderr, "unknown control %s\n", name);
 }
 
-static void touch(struct libevdev_uinput *device, SDL_ControllerTouchpadEvent *event) {
+static struct udev_enumerate *children(struct udev_device *hid, const char *subsystem) {
+    struct udev_enumerate *found = udev_enumerate_new(udev);
+    udev_enumerate_add_match_subsystem(found, subsystem);
+    udev_enumerate_add_match_parent(found, hid);
+    udev_enumerate_scan_devices(found);
+    return found;
+}
+
+static double touchpad_aspect(struct udev_device *hid) {
+    struct udev_list_entry *entry;
+    struct libevdev *device;
+    double aspect = 1;
+    if (!hid) return aspect;
+    struct udev_enumerate *nodes = children(hid, "input");
+    udev_list_entry_foreach(entry, udev_enumerate_get_list_entry(nodes)) {
+        struct udev_device *node = udev_device_new_from_syspath(udev, udev_list_entry_get_name(entry));
+        const char *devnode = udev_device_get_devnode(node);
+        int fd = devnode && udev_device_get_property_value(node, "ID_INPUT_TOUCHPAD") ? open(devnode, O_RDONLY | O_NONBLOCK | O_CLOEXEC) : -1;
+        if (!libevdev_new_from_fd(fd, &device)) {
+            const struct input_absinfo *x = libevdev_get_abs_info(device, ABS_X), *y = libevdev_get_abs_info(device, ABS_Y);
+            aspect = (double)(y->maximum - y->minimum) / (x->maximum - x->minimum);
+            libevdev_free(device);
+        }
+        close(fd);
+        udev_device_unref(node);
+    }
+    udev_enumerate_unref(nodes);
+    return aspect;
+}
+
+static void touch(struct libevdev_uinput *device, struct pad *source, SDL_ControllerTouchpadEvent *event) {
     int down = event->type != SDL_CONTROLLERTOUCHPADUP;
     if (event->finger) return;
+    if (!source->touchpad_aspect) source->touchpad_aspect = touchpad_aspect(source->hid);
     if (down) {
-        libevdev_uinput_write_event(device, EV_ABS, ABS_X, event->x * SDL_JOYSTICK_AXIS_MAX);
-        libevdev_uinput_write_event(device, EV_ABS, ABS_Y, event->y * SDL_JOYSTICK_AXIS_MAX);
+        libevdev_uinput_write_event(device, EV_ABS, ABS_X, event->x * fmin(1, 1 / source->touchpad_aspect) * SDL_JOYSTICK_AXIS_MAX);
+        libevdev_uinput_write_event(device, EV_ABS, ABS_Y, event->y * fmin(1, source->touchpad_aspect) * SDL_JOYSTICK_AXIS_MAX);
     }
     emit(device, EV_KEY, BTN_TOUCH, down);
 }
@@ -501,10 +533,7 @@ static int read_battery(struct pad *controller_pad) {
     struct udev_list_entry *entry;
     int battery = controller_pad->battery, charging = controller_pad->charging;
     if (!controller_pad->hid) return 0;
-    struct udev_enumerate *supplies = udev_enumerate_new(udev);
-    udev_enumerate_add_match_subsystem(supplies, "power_supply");
-    udev_enumerate_add_match_parent(supplies, controller_pad->hid);
-    udev_enumerate_scan_devices(supplies);
+    struct udev_enumerate *supplies = children(controller_pad->hid, "power_supply");
     udev_list_entry_foreach(entry, udev_enumerate_get_list_entry(supplies)) {
         struct udev_device *supply = udev_device_new_from_syspath(udev, udev_list_entry_get_name(entry));
         const char *capacity = udev_device_get_sysattr_value(supply, "capacity"), *status = udev_device_get_sysattr_value(supply, "status");
@@ -536,10 +565,7 @@ static void identify(struct pad *controller_pad, const char *path) {
 
 static void reannounce(struct pad *controller_pad) {
     struct udev_list_entry *entry;
-    struct udev_enumerate *nodes = udev_enumerate_new(udev);
-    udev_enumerate_add_match_subsystem(nodes, "hidraw");
-    udev_enumerate_add_match_parent(nodes, controller_pad->hid);
-    udev_enumerate_scan_devices(nodes);
+    struct udev_enumerate *nodes = children(controller_pad->hid, "hidraw");
     udev_list_entry_foreach(entry, udev_enumerate_get_list_entry(nodes)) {
         struct udev_device *hidraw = udev_device_new_from_syspath(udev, udev_list_entry_get_name(entry));
         if (udev_device_set_sysattr_value(hidraw, "uevent", UEVENT_ADD) < 0) perror(udev_list_entry_get_name(entry));
@@ -1136,7 +1162,8 @@ static void handle(SDL_Event *event) {
     case SDL_CONTROLLERTOUCHPADDOWN:
     case SDL_CONTROLLERTOUCHPADMOTION:
     case SDL_CONTROLLERTOUCHPADUP:
-        if (touchpad[0]) touch(touchpad[0], &event->ctouchpad);
+        source = pad_of(event->ctouchpad.which);
+        if (source && touchpad[0]) touch(touchpad[0], source, &event->ctouchpad);
         break;
     case SDL_CONTROLLERSENSORUPDATE: sense(&event->csensor); break;
     case SDL_JOYBATTERYUPDATED:

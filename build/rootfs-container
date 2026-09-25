@@ -45,7 +45,7 @@ dlopened() {
   } | sort -u | while read -r library; do [ ! -e "$LIBDIR/$library" ] || echo "$LIBDIR/$library"; done
 }
 
-build_padd() { gcc $CFLAGS -o /bin/padd /src/guest/padd.c $(sdl2-config --cflags --libs) $(pkg-config --cflags --libs libevdev libsystemd libudev json-c); }
+build_padd() { gcc $CFLAGS -o /bin/padd /src/guest/padd.c $(sdl2-config --cflags --libs) $(pkg-config --cflags --libs libevdev libsystemd libudev json-c) -lm; }
 
 generate_protocol() {
   wayland-scanner client-header "$1" "/tmp/$(basename "$1" .xml).h"
