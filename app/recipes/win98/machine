@@ -1,5 +1,7 @@
 #!/usr/bin/python3
+import configparser
 import json
+import math
 import select
 import signal
 import socket
@@ -18,7 +20,7 @@ SHUTDOWN_SECONDS = 60
 RECEIVE_BYTES = 65536
 PAD = "/dev/input/event0"
 TOUCHPAD = "/dev/input/touch0"
-POINTER_MAX = 0x7FFF
+SETUP_SCRIPT = "/opt/win98/base/msbatch.inf"
 FRAME_SECONDS = 1 / 60
 SCREEN_CROSSING_SECONDS = 1.5
 STICK_DEADZONE = 0.2
@@ -76,20 +78,35 @@ class Machine:
             sys.exit("Windows did not shut down in time")
 
 
+def desktop_width():
+    setup = configparser.ConfigParser(delimiters=("=",), strict=False, allow_no_value=True, interpolation=None)
+    setup.read(SETUP_SCRIPT)
+    return int(setup["System"]["DisplChar"].split(",")[1])
+
+
 class Pointer:
     def __init__(self, machine, pad, touchpad):
         self.machine = machine
         self.stick_ranges = {code: pad.absinfo(code) for code in STICK}
-        self.touch_ranges = {code: touchpad.absinfo(code) for code in STICK}
-        self.position = [POINTER_MAX / 2] * len(AXES)
+        touch_x, width = touchpad.absinfo(ecodes.ABS_X), desktop_width()
+        touch_width = touch_x.max - touch_x.min
+        self.touch_middle = touch_x.min + touch_width * TOUCHPAD_MIDDLE
+        self.touch_scale = width / touch_width
+        self.stick_scale = width * FRAME_SECONDS / SCREEN_CROSSING_SECONDS
+        self.finger = [0] * len(AXES)
+        self.last_finger = None
         self.velocity = [0.0] * len(AXES)
+        self.travel = [0.0] * len(AXES)
         self.clicked = None
 
     def moving(self):
         return any(self.velocity)
 
-    def move(self):
-        self.machine.input(*({"type": "abs", "data": {"axis": axis, "value": round(value)}} for axis, value in zip(AXES, self.position)))
+    def move(self, motion):
+        fractions, counts = zip(*(math.modf(travel + distance) for travel, distance in zip(self.travel, motion)))
+        self.travel = list(fractions)
+        if any(counts):
+            self.machine.input(*({"type": "rel", "data": {"axis": axis, "value": int(count)}} for axis, count in zip(AXES, counts)))
 
     def button(self, name, down):
         self.machine.input({"type": "btn", "data": {"down": down, "button": name}})
@@ -110,24 +127,26 @@ class Pointer:
             self.key(KEYS[event.code], bool(event.value))
         elif event.type == ecodes.EV_KEY and event.code == TOUCHPAD_CLICK:
             if event.value:
-                self.clicked = "left" if self.position[0] < TOUCHPAD_MIDDLE * POINTER_MAX else "right"
+                self.clicked = "left" if self.finger[0] < self.touch_middle else "right"
             self.button(self.clicked, bool(event.value))
         elif event.type == ecodes.EV_ABS and event.code in STICK:
-            self.velocity[STICK.index(event.code)] = self.deflection(event.code, event.value) * POINTER_MAX * FRAME_SECONDS / SCREEN_CROSSING_SECONDS
+            self.velocity[STICK.index(event.code)] = self.deflection(event.code, event.value) * self.stick_scale
         elif event.type == ecodes.EV_ABS and event.code in ARROWS:
             for direction, name in zip((-1, 1), ARROWS[event.code]):
                 self.key(name, event.value == direction)
 
     def handle_touchpad(self, event):
-        if event.type == ecodes.EV_SYN:
-            self.move()
-        elif event.type == ecodes.EV_ABS and event.code in STICK:
-            axis = self.touch_ranges[event.code]
-            self.position[STICK.index(event.code)] = (event.value - axis.min) / (axis.max - axis.min) * POINTER_MAX
+        if event.type == ecodes.EV_ABS and event.code in STICK:
+            self.finger[STICK.index(event.code)] = event.value
+        elif event.type == ecodes.EV_KEY and event.code == ecodes.BTN_TOUCH:
+            self.last_finger = None
+        elif event.type == ecodes.EV_SYN:
+            if self.last_finger:
+                self.move((now - last) * self.touch_scale for now, last in zip(self.finger, self.last_finger))
+            self.last_finger = list(self.finger)
 
     def step(self):
-        self.position = [min(max(position + velocity, 0), POINTER_MAX) for position, velocity in zip(self.position, self.velocity)]
-        self.move()
+        self.move(self.velocity)
 
 
 def play(arguments):
