@@ -259,8 +259,9 @@ play_wireless_controller() {
   fakepad bluetooth press
   fakepad bluetooth release
   expect '.guide | not'
-  guest "echo $STRONG_RUMBLE_EFFECT | docker run --rm -i --device $PAD_NODES/event0:/dev/input/event0 --entrypoint fftest $FAKEPAD_IMAGE /dev/input/event0" >/dev/null
+  guest "docker run -d -i --name rumble --device $PAD_NODES/event0:/dev/input/event0 --entrypoint sh $FAKEPAD_IMAGE -c '{ echo $STRONG_RUMBLE_EFFECT; cat; } | fftest /dev/input/event0'" >/dev/null
   wait_for $STEP_SECONDS fakepad_rumbled
+  guest "docker rm -f rumble" >/dev/null
   log ok "rumble played on the virtual pad reached the physical pad"
   fakepad bluetooth battery $LOW_BATTERY
   expect "any(.notifications[]; . == \"$FAKEPAD_NAME battery low\")"
