@@ -416,11 +416,12 @@ static int overlay_visible(void) { return overlay && overlay->surface->mapped; }
 
 static int scan_out(struct wlr_output_state *state) {
     struct wlr_surface *surface = shown ? shown->toplevel->base->surface : NULL;
-    struct wlr_box box = area();
-    if (!surface || !surface->buffer || overlay_visible() || box.width != active->output->width || box.height != active->output->height ||
-        surface->buffer->base.width != box.width || surface->buffer->base.height != box.height)
-        return 0;
-    wlr_output_state_set_buffer(state, &surface->buffer->base);
+    if (!surface || !surface->buffer || overlay_visible()) return 0;
+    struct wlr_buffer *buffer = &surface->buffer->base;
+    struct wlr_box picture = fit(area(), buffer->width, buffer->height);
+    if (picture.width != buffer->width || picture.height != buffer->height) return 0;
+    wlr_output_state_set_buffer(state, buffer);
+    state->buffer_dst_box = picture;
     if (wlr_output_test_state(active->output, state)) return 1;
     wlr_output_state_finish(state);
     wlr_output_state_init(state);
@@ -452,7 +453,7 @@ static struct wlr_texture *compose(struct wlr_buffer **composed) {
         wlr_swapchain_destroy(canvas_chain);
         canvas_chain = wlr_swapchain_create(allocator, canvas_width, canvas_height, &active->output->swapchain->format);
     }
-    *composed = canvas_chain ? wlr_swapchain_acquire(canvas_chain, NULL) : NULL;
+    *composed = canvas_chain ? wlr_swapchain_acquire(canvas_chain) : NULL;
     if (!*composed) return game;
     struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, *composed, NULL);
     struct wlr_box canvas = {0, 0, canvas_width, canvas_height};
@@ -493,7 +494,7 @@ static struct program *pixel_program(GLenum target) {
 static int draw_pixel(struct wlr_output_state *state, struct wlr_box box) {
     struct wlr_output *output = active->output;
     if (!wlr_output_configure_primary_swapchain(output, state, &output->swapchain)) return 0;
-    struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain, NULL), *composed = NULL;
+    struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain), *composed = NULL;
     if (!buffer) return 0;
     struct wlr_texture *texture = compose(&composed);
     if (!texture) {
@@ -550,7 +551,7 @@ static void paint(struct wlr_output_state *state) {
                                             : choose_filter(box, canvas_width, canvas_height);
     if (filter == PIXEL && (game || interface) && draw_pixel(state, box)) return;
     enum wlr_scale_filter_mode mode = filter == NEAREST ? WLR_SCALE_FILTER_NEAREST : WLR_SCALE_FILTER_BILINEAR;
-    struct wlr_render_pass *pass = wlr_output_begin_render_pass(output, state, NULL, NULL);
+    struct wlr_render_pass *pass = wlr_output_begin_render_pass(output, state, NULL);
     draw_scene(pass, (struct wlr_box){0, 0, output->width, output->height}, box, game, interface, mode);
     wlr_render_pass_submit(pass);
 }
