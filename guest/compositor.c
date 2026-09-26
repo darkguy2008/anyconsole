@@ -285,9 +285,9 @@ static void size_window(struct window *window) {
 
 static struct wlr_box area(void) { return fit((struct wlr_box){0, 0, active->output->width, active->output->height}, ASPECT_WIDTH, ASPECT_HEIGHT); }
 
-static enum filter choose_filter(struct wlr_box box) {
-    if (!canvas_width || (box.width % canvas_width == 0 && box.height % canvas_height == 0)) return NEAREST;
-    if (box.width < canvas_width || !wlr_renderer_is_gles2(renderer)) return LINEAR;
+static enum filter choose_filter(struct wlr_box target, int width, int height) {
+    if (!width || (target.width % width == 0 && target.height % height == 0)) return NEAREST;
+    if (target.width < width || !wlr_renderer_is_gles2(renderer)) return LINEAR;
     return PIXEL;
 }
 
@@ -313,7 +313,7 @@ static void redraw(void) {
 
 static void write_state(void) {
     json_object *state = json_object_new_object(), *list = json_object_new_array();
-    char canvas[TEXT_MAX] = "", box_size[TEXT_MAX] = "", frame[TEXT_MAX] = "";
+    char canvas[TEXT_MAX] = "", frame[TEXT_MAX] = "";
     struct display *entry;
     wl_list_for_each(entry, &displays, link) {
         json_object *item = json_object_new_object();
@@ -325,8 +325,7 @@ static void write_state(void) {
     if (active) {
         struct wlr_box box = area();
         snprintf(canvas, sizeof canvas, "%dx%d", canvas_width, canvas_height);
-        snprintf(box_size, sizeof box_size, "%dx%d", box.width, box.height);
-        json_object_object_add(state, "filter", json_object_new_string(filters[choose_filter(box)]));
+        json_object_object_add(state, "filter", json_object_new_string(filters[choose_filter(box, canvas_width, canvas_height)]));
         json_object *placement = json_object_new_object();
         json_object_object_add(placement, "x", json_object_new_int(box.x));
         json_object_object_add(placement, "y", json_object_new_int(box.y));
@@ -339,7 +338,6 @@ static void write_state(void) {
     json_object_object_add(state, "gpu", json_object_new_string(render_gpu->name));
     json_object_object_add(state, "vulkan", json_object_new_boolean(render_gpu->rank != NO_VULKAN));
     json_object_object_add(state, "canvas", json_object_new_string(canvas));
-    json_object_object_add(state, "area", json_object_new_string(box_size));
     json_object_object_add(state, "pending", pending ? json_object_new_string(label(pending->output)) : NULL);
     json_object_object_add(state, "shown", shown ? json_object_new_string(shown->app_id) : NULL);
     json_object_object_add(state, "frame", json_object_new_string(frame));
@@ -429,9 +427,27 @@ static int scan_out(struct wlr_output_state *state) {
     return 0;
 }
 
+static struct wlr_box scaled(struct wlr_box inner, struct wlr_box box) {
+    return (struct wlr_box){box.x + inner.x * box.width / canvas_width, box.y + inner.y * box.height / canvas_height,
+                            inner.width * box.width / canvas_width, inner.height * box.height / canvas_height};
+}
+
+static void draw_scene(struct wlr_render_pass *pass, struct wlr_box target, struct wlr_box box, struct wlr_texture *game, struct wlr_texture *interface,
+                       enum wlr_scale_filter_mode mode) {
+    struct wlr_box picture = game ? fit(box, game->width, game->height) : (struct wlr_box){0};
+    pixman_region32_t bars;
+    pixman_region32_init_rect(&bars, picture.x, picture.y, picture.width, picture.height);
+    pixman_region32_inverse(&bars, &bars, &(pixman_box32_t){target.x, target.y, target.x + target.width, target.y + target.height});
+    wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){.box = target, .color = {0, 0, 0, 1}, .clip = &bars});
+    pixman_region32_fini(&bars);
+    if (game) wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = game, .dst_box = picture, .filter_mode = mode});
+    if (interface)
+        wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = interface, .dst_box = scaled(overlay_box(), box), .filter_mode = mode});
+}
+
 static struct wlr_texture *compose(struct wlr_buffer **composed) {
     struct wlr_texture *game = shown ? wlr_surface_get_texture(shown->toplevel->base->surface) : NULL;
-    if (!overlay_visible() && (!game || (game->width == (uint32_t)canvas_width && game->height == (uint32_t)canvas_height))) return game;
+    if (!overlay_visible()) return game;
     if (!canvas_chain || canvas_chain->width != canvas_width || canvas_chain->height != canvas_height) {
         wlr_swapchain_destroy(canvas_chain);
         canvas_chain = wlr_swapchain_create(allocator, canvas_width, canvas_height, &active->output->swapchain->format);
@@ -440,10 +456,7 @@ static struct wlr_texture *compose(struct wlr_buffer **composed) {
     if (!*composed) return game;
     struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, *composed, NULL);
     struct wlr_box canvas = {0, 0, canvas_width, canvas_height};
-    wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){.box = canvas, .color = {0, 0, 0, 1}});
-    if (game) wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = game, .dst_box = fit(canvas, game->width, game->height)});
-    struct wlr_texture *interface = overlay_visible() ? wlr_surface_get_texture(overlay->surface) : NULL;
-    if (interface) wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = interface, .dst_box = overlay_box()});
+    draw_scene(pass, canvas, canvas, game, wlr_surface_get_texture(overlay->surface), WLR_SCALE_FILTER_BILINEAR);
     wlr_render_pass_submit(pass);
     return wlr_texture_from_buffer(renderer, *composed);
 }
@@ -493,8 +506,9 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box) {
     wlr_gles2_texture_get_attribs(texture, &attributes);
     eglMakeCurrent(wlr_egl_get_display(egl), EGL_NO_SURFACE, EGL_NO_SURFACE, wlr_egl_get_context(egl));
     struct program *program = pixel_program(attributes.target);
-    GLfloat left = 2.0f * box.x / output->width - 1, right = 2.0f * (box.x + box.width) / output->width - 1;
-    GLfloat top = 2.0f * box.y / output->height - 1, bottom = 2.0f * (box.y + box.height) / output->height - 1;
+    struct wlr_box picture = composed ? box : fit(box, texture->width, texture->height);
+    GLfloat left = 2.0f * picture.x / output->width - 1, right = 2.0f * (picture.x + picture.width) / output->width - 1;
+    GLfloat top = 2.0f * picture.y / output->height - 1, bottom = 2.0f * (picture.y + picture.height) / output->height - 1;
     const GLfloat corners[] = {left, top, right, top, left, bottom, right, bottom}, coordinates[] = {0, 0, 1, 0, 0, 1, 1, 1};
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     glViewport(0, 0, output->width, output->height);
@@ -507,7 +521,7 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box) {
     glTexParameteri(attributes.target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(attributes.target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glUniform2f(program->size, texture->width, texture->height);
-    glUniform2f(program->extent, (GLfloat)texture->width / box.width, (GLfloat)texture->height / box.height);
+    glUniform2f(program->extent, (GLfloat)texture->width / picture.width, (GLfloat)texture->height / picture.height);
     glVertexAttribPointer(program->position, 2, GL_FLOAT, GL_FALSE, 0, corners);
     glVertexAttribPointer(program->coordinate, 2, GL_FLOAT, GL_FALSE, 0, coordinates);
     glEnableVertexAttribArray(program->position);
@@ -527,26 +541,17 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box) {
     return 1;
 }
 
-static struct wlr_box scaled(struct wlr_box inner, struct wlr_box box) {
-    return (struct wlr_box){box.x + inner.x * box.width / canvas_width, box.y + inner.y * box.height / canvas_height,
-                            inner.width * box.width / canvas_width, inner.height * box.height / canvas_height};
-}
-
 static void paint(struct wlr_output_state *state) {
     struct wlr_output *output = active->output;
     struct wlr_box box = area();
-    enum filter filter = choose_filter(box);
     struct wlr_texture *game = shown ? wlr_surface_get_texture(shown->toplevel->base->surface) : NULL;
     struct wlr_texture *interface = overlay_visible() ? wlr_surface_get_texture(overlay->surface) : NULL;
+    enum filter filter = game && !interface ? choose_filter(fit(box, game->width, game->height), game->width, game->height)
+                                            : choose_filter(box, canvas_width, canvas_height);
     if (filter == PIXEL && (game || interface) && draw_pixel(state, box)) return;
     enum wlr_scale_filter_mode mode = filter == NEAREST ? WLR_SCALE_FILTER_NEAREST : WLR_SCALE_FILTER_BILINEAR;
     struct wlr_render_pass *pass = wlr_output_begin_render_pass(output, state, NULL, NULL);
-    struct wlr_box picture = game ? fit(box, game->width, game->height) : box;
-    if (!game || picture.width != output->width || picture.height != output->height)
-        wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){.box = {0, 0, output->width, output->height}, .color = {0, 0, 0, 1}});
-    if (game) wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = game, .dst_box = picture, .filter_mode = mode});
-    if (interface)
-        wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = interface, .dst_box = scaled(overlay_box(), box), .filter_mode = mode});
+    draw_scene(pass, (struct wlr_box){0, 0, output->width, output->height}, box, game, interface, mode);
     wlr_render_pass_submit(pass);
 }
 

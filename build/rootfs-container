@@ -78,7 +78,7 @@ build_compositor() {
     wayland-scanner server-header "$protocol" "/tmp/$(basename "$protocol" .xml)-protocol.h"
   done
   gcc $CFLAGS -DWLR_USE_UNSTABLE -o /bin/compositor /src/guest/compositor.c \
-    $(pkg-config --cflags --libs wlroots-0.18 wayland-server xkbcommon libdrm json-c vulkan egl glesv2) -lm
+    $(pkg-config --cflags --libs wlroots-0.18 pixman-1 wayland-server xkbcommon libdrm json-c vulkan egl glesv2) -lm
 }
 
 copy_binaries() {
