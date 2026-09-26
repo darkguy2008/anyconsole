@@ -277,6 +277,12 @@ static struct wlr_box fit(struct wlr_box outer, int aspect_width, int aspect_hei
     return (struct wlr_box){outer.x + (outer.width - width) / 2, outer.y + (outer.height - height) / 2, width, height};
 }
 
+static void size_window(struct window *window) {
+    int fullscreen = window->toplevel->requested.fullscreen;
+    wlr_xdg_toplevel_set_fullscreen(window->toplevel, fullscreen);
+    wlr_xdg_toplevel_set_size(window->toplevel, fullscreen ? canvas_width : 0, fullscreen ? canvas_height : 0);
+}
+
 static struct wlr_box area(void) { return fit((struct wlr_box){0, 0, active->output->width, active->output->height}, ASPECT_WIDTH, ASPECT_HEIGHT); }
 
 static enum filter choose_filter(struct wlr_box box) {
@@ -361,7 +367,7 @@ static void update_canvas(void) {
     canvas_width = width;
     canvas_height = height;
     wl_list_for_each(window, &windows, link)
-        if (window->toplevel->base->initialized) wlr_xdg_toplevel_set_size(window->toplevel, canvas_width, canvas_height);
+        if (window->toplevel->base->initialized) size_window(window);
     configure_overlay();
     redraw();
 }
@@ -626,10 +632,7 @@ static void on_window_activate(struct wl_listener *listener, void *data) {
 static void on_window_commit(struct wl_listener *listener, void *data) {
     (void)data;
     struct window *window = wl_container_of(listener, window, commit);
-    if (window->toplevel->base->initial_commit) {
-        wlr_xdg_toplevel_set_fullscreen(window->toplevel, true);
-        wlr_xdg_toplevel_set_size(window->toplevel, canvas_width, canvas_height);
-    }
+    if (window->toplevel->base->initial_commit) size_window(window);
     struct wlr_surface *surface = window->toplevel->base->surface;
     if (surface->buffer && (surface->buffer->base.width != window->frame_width || surface->buffer->base.height != window->frame_height)) {
         window->frame_width = surface->buffer->base.width;
@@ -642,7 +645,7 @@ static void on_window_commit(struct wl_listener *listener, void *data) {
 static void on_window_request_fullscreen(struct wl_listener *listener, void *data) {
     (void)data;
     struct window *window = wl_container_of(listener, window, request_fullscreen);
-    if (window->toplevel->base->initialized) wlr_xdg_surface_schedule_configure(window->toplevel->base);
+    if (window->toplevel->base->initialized) size_window(window);
 }
 
 static void on_window_map(struct wl_listener *listener, void *data) {
