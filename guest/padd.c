@@ -46,6 +46,8 @@
 #define PAD_VERSION 0x8111
 #define AXIS_MAX 255
 #define AXIS_CENTER (AXIS_MAX / 2 + 1)
+#define STICK_DEADZONE 0.08
+#define TRIGGER_DEADZONE 0.04
 #define DS_ACC_RES_PER_G 8192
 #define DS_ACC_RANGE (4 * DS_ACC_RES_PER_G)
 #define DS_GYRO_RES_PER_DEG_S 1024
@@ -367,8 +369,8 @@ static void drive(int seat, const char *name, int value) {
         if (held[seat][i] == value) return;
         held[seat][i] = value;
         if (c->direction) value = hat(seat, c->code);
-        emit(pad[seat], c->type, c->code, value);
-        if (c->button) emit(pad[seat], EV_KEY, c->button, value > 0);
+        libevdev_uinput_write_event(pad[seat], c->type, c->code, value);
+        if (c->button) libevdev_uinput_write_event(pad[seat], EV_KEY, c->button, value > 0);
         return;
     }
     fprintf(stderr, "unknown control %s\n", name);
@@ -1117,7 +1119,25 @@ static void read_settings_change(int fd) {
     }
 }
 
-static int scaled(int value, int min) { return (value - min) * AXIS_MAX / (SDL_JOYSTICK_AXIS_MAX - min); }
+static double past_deadzone(double magnitude, double deadzone) {
+    return magnitude > deadzone ? fmin((magnitude - deadzone) / (1 - deadzone), 1) : 0;
+}
+
+static double unit_axis(SDL_GameController *controller, SDL_GameControllerAxis axis) {
+    return SDL_GameControllerGetAxis(controller, axis) / (double)SDL_JOYSTICK_AXIS_MAX;
+}
+
+static void drive_axis(SDL_GameController *controller, SDL_GameControllerAxis axis) {
+    if (axis >= SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
+        drive(0, SDL_GameControllerGetStringForAxis(axis), lround(past_deadzone(unit_axis(controller, axis), TRIGGER_DEADZONE) * AXIS_MAX));
+        return;
+    }
+    SDL_GameControllerAxis horizontal = axis - axis % 2, vertical = horizontal + 1;
+    double x = unit_axis(controller, horizontal), y = unit_axis(controller, vertical), magnitude = hypot(x, y);
+    double gain = magnitude ? past_deadzone(magnitude, STICK_DEADZONE) / magnitude : 0;
+    drive(0, SDL_GameControllerGetStringForAxis(horizontal), lround((x * gain + 1) * AXIS_MAX / 2));
+    drive(0, SDL_GameControllerGetStringForAxis(vertical), lround((y * gain + 1) * AXIS_MAX / 2));
+}
 
 static void sense_with(struct pad *controller_pad, SDL_bool enabled) {
     SDL_GameControllerSetSensorEnabled(controller_pad->controller, SDL_SENSOR_ACCEL, enabled);
@@ -1203,8 +1223,7 @@ static void handle(SDL_Event *event) {
     case SDL_CONTROLLERAXISMOTION:
         source = pad_of(event->caxis.which);
         if (source && abs(event->caxis.value) > reach) touched(source);
-        drive(0, SDL_GameControllerGetStringForAxis(event->caxis.axis),
-              scaled(event->caxis.value, event->caxis.axis >= SDL_CONTROLLER_AXIS_TRIGGERLEFT ? 0 : SDL_JOYSTICK_AXIS_MIN));
+        if (source) drive_axis(source->controller, event->caxis.axis);
         break;
     case SDL_CONTROLLERTOUCHPADDOWN:
     case SDL_CONTROLLERTOUCHPADMOTION:
@@ -1259,6 +1278,8 @@ int main(void) {
     capture_devices(udev_enumerate_new(udev));
     for (;;) {
         for (SDL_Event event; SDL_PollEvent(&event);) handle(&event);
+        for (int seat = 0; seat < SEATS; seat++)
+            if (pad[seat]) libevdev_uinput_write_event(pad[seat], EV_SYN, SYN_REPORT, 0);
         watched[BUS] = (struct pollfd){.fd = bus ? sd_bus_get_fd(bus) : -1, .events = bus ? sd_bus_get_events(bus) : 0};
         int ready = poll(watched, watched_count, bus_timeout());
         if (ready < 0) continue;

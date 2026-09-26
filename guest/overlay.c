@@ -108,7 +108,7 @@ struct game {
 struct view { enum screen screen; int game, selected; enum action action; int arg; };
 struct row { char label[TEXT_MAX], value[TEXT_MAX]; enum action action; int arg; };
 struct device { int id; char name[TEXT_MAX], node[TEXT_MAX]; };
-struct input { struct libevdev *device; int guide, x, y, center, reach; };
+struct input { struct libevdev *device; int guide, directions[ABS_CNT], center, reach; };
 struct notification { char text[TEXT_MAX]; struct timespec expires; };
 struct window { struct zwlr_foreign_toplevel_handle_v1 *handle; char app_id[TEXT_MAX]; };
 struct buffer { struct wl_buffer *buffer; void *pixels; int busy; };
@@ -1234,10 +1234,11 @@ static void open_input(const char *node) {
 static void handle_event(struct input *input, struct input_event *event) {
     if (event->type == EV_KEY && event->value != 2 && key_command(event->code) != NONE) hold(key_command(event->code), event->value);
     if (event->type != EV_ABS) return;
-    if (event->code == ABS_HAT0X) steer(&input->x, event->value, LEFT, RIGHT);
-    if (event->code == ABS_HAT0Y) steer(&input->y, event->value, UP, DOWN);
-    if (event->code == ABS_X && input->reach) steer(&input->x, stick(input, event->value), LEFT, RIGHT);
-    if (event->code == ABS_Y && input->reach) steer(&input->y, stick(input, event->value), UP, DOWN);
+    int *direction = &input->directions[event->code];
+    if (event->code == ABS_HAT0X) steer(direction, event->value, LEFT, RIGHT);
+    if (event->code == ABS_HAT0Y) steer(direction, event->value, UP, DOWN);
+    if (event->code == ABS_X && input->reach) steer(direction, stick(input, event->value), LEFT, RIGHT);
+    if (event->code == ABS_Y && input->reach) steer(direction, stick(input, event->value), UP, DOWN);
 }
 
 static void read_input(int index, int discard) {
@@ -1249,7 +1250,7 @@ static void read_input(int index, int discard) {
             while (libevdev_next_event(input->device, LIBEVDEV_READ_FLAG_SYNC, &event) == LIBEVDEV_READ_STATUS_SYNC) continue;
         else if (!discard) handle_event(input, &event);
     }
-    if (discard) input->x = input->y = 0;
+    if (discard) memset(input->directions, 0, sizeof input->directions);
     if (status == -EAGAIN) return;
     close(libevdev_get_fd(input->device));
     libevdev_free(input->device);
