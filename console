@@ -31,6 +31,7 @@ case "${1:-status}" in
   state) api GET state ;;
   store)
     case "${2:-}" in
+      list) api GET state | jq -r '.stores | to_entries[] | "\(.key + 1)  \(.value.label)  \(if .value.online then "online" else "offline" end)"' ;;
       add) api POST stores "$3" ;;
       del) api DELETE "stores/$3" ;;
       *) exec "$0" help ;;
@@ -76,7 +77,8 @@ usage: console [box address] <command>
   status     show the running console's OTA state
   state      show the console's screen, games, stores, audio and controllers
   store add smb://[user:password@]host/share/path  add a game store
-  store del <n>  remove the nth store listed by state
+  store list  number every game store and show whether it is online
+  store del <n>  remove the nth store listed by store list
   input <line>...  send pad lines ("1 a 1", "1 guide 0"), events ("EV_KEY KEY_LEFTMETA 1"), "pair" or "forget <address>"
   volume <percent>  set the output volume
   set display [label]  show the console on this display from state (none = Auto)

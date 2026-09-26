@@ -89,7 +89,7 @@ static const struct { const char *name, *title; } screens[] = {
     [CONTROLLERS] = {"controllers", "Controllers"}, [CONTROLLER] = {"controller", ""}, [SETTINGS] = {"settings", "Settings"},
 };
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
-              OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RESTART, POWER_OFF,
+              OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
               CHOOSE_DISPLAY, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND };
 enum command { NONE, UP, DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
 enum surface_mode { HIDDEN, NOTIFICATIONS_ONLY, FULL };
@@ -725,6 +725,7 @@ static int build(struct view *view) {
         count = add_row(count, OPEN_OUTPUTS, 0, "Output", "%s", chosen(outputs, output_count, default_output));
         count = add_row(count, OPEN_MICROPHONES, 0, "Microphone", "%s", chosen(microphones, microphone_count, default_microphone));
         count = add_row(count, OPEN_CONTROLLERS, 0, "Controllers", "");
+        count = add_row(count, RELOAD, 0, "Reload", "");
         count = add_row(count, RESTART, 0, "Restart", "");
         count = add_row(count, POWER_OFF, 0, "Power off", "");
         break;
@@ -1120,6 +1121,7 @@ static void act(struct row *row) {
         tell_padd("forget %s", chosen_controller);
         guide_depth--;
         break;
+    case RELOAD: exit(0);
     case RESTART: start((char *[]){"reboot", NULL}); break;
     case POWER_OFF: start((char *[]){"poweroff", NULL}); break;
     }
