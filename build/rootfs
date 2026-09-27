@@ -40,7 +40,7 @@ stage_modules() {
 
 build_base() {
   ensure_apt_cache
-  docker build --network host --build-arg APT_PROXY="$APT_PROXY" -t "$BASE_IMAGE" - < build/base.Dockerfile
+  docker build --network host --build-arg APT_PROXY="$APT_PROXY" -t "$BASE_IMAGE" -f build/base.Dockerfile build/bluez
 }
 
 build_userspace() {

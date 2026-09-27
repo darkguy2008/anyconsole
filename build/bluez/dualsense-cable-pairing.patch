@@ -1,0 +1,286 @@
+diff -ru a/plugins/sixaxis.c b/plugins/sixaxis.c
+--- a/plugins/sixaxis.c	2026-09-27 15:27:15
++++ b/plugins/sixaxis.c	2026-09-27 15:27:58
+@@ -27,6 +27,7 @@
+ #include <libudev.h>
+ 
+ #include "bluetooth/bluetooth.h"
++#include "bluetooth/hci.h"
+ #include "bluetooth/sdp.h"
+ #include "bluetooth/uuid.h"
+ 
+@@ -41,6 +42,11 @@
+ 
+ #define DS4_FEATURE_REPORT_PAIRING_INFO		0x12
+ #define DS4_FEATURE_REPORT_PAIRING_INFO_SIZE	16
++#define DS5_FEATURE_REPORT_PAIRING_INFO		0x09
++#define DS5_FEATURE_REPORT_PAIRING_INFO_SIZE	20
++#define DS5_FEATURE_REPORT_SET_PAIRING		0x0a
++#define DS5_FEATURE_REPORT_SET_PAIRING_SIZE	27
++#define DS5_LINK_KEY_SIZE			16
+ 
+ struct authentication_closure {
+ 	guint auth_id;
+@@ -134,12 +140,43 @@
+ 	return 0;
+ }
+ 
++static int ds5_get_pairing_info(int fd, uint8_t *buf)
++{
++	int ret;
++
++	memset(buf, 0, DS5_FEATURE_REPORT_PAIRING_INFO_SIZE);
++
++	buf[0] = DS5_FEATURE_REPORT_PAIRING_INFO;
++
++	ret = ioctl(fd, HIDIOCGFEATURE(DS5_FEATURE_REPORT_PAIRING_INFO_SIZE),
++									buf);
++	if (ret < 0)
++		error("sixaxis: failed to read DS5 pairing info (%s)",
++							strerror(errno));
++
++	return ret;
++}
++
++static int ds5_get_device_bdaddr(int fd, bdaddr_t *bdaddr)
++{
++	uint8_t buf[DS5_FEATURE_REPORT_PAIRING_INFO_SIZE];
++
++	if (ds5_get_pairing_info(fd, buf) < 0)
++		return -1;
++
++	bacpy(bdaddr, (bdaddr_t *) (buf + 1));
++
++	return 0;
++}
++
+ static int get_device_bdaddr(int fd, bdaddr_t *bdaddr, CablePairingType type)
+ {
+ 	if (type == CABLE_PAIRING_SIXAXIS)
+ 		return sixaxis_get_device_bdaddr(fd, bdaddr);
+ 	else if (type == CABLE_PAIRING_DS4)
+ 		return ds4_get_device_bdaddr(fd, bdaddr);
++	else if (type == CABLE_PAIRING_DS5)
++		return ds5_get_device_bdaddr(fd, bdaddr);
+ 	return -1;
+ }
+ 
+@@ -186,12 +223,26 @@
+ 	return 0;
+ }
+ 
++static int ds5_get_central_bdaddr(int fd, bdaddr_t *bdaddr)
++{
++	uint8_t buf[DS5_FEATURE_REPORT_PAIRING_INFO_SIZE];
++
++	if (ds5_get_pairing_info(fd, buf) < 0)
++		return -1;
++
++	bacpy(bdaddr, (bdaddr_t *) (buf + 10));
++
++	return 0;
++}
++
+ static int get_central_bdaddr(int fd, bdaddr_t *bdaddr, CablePairingType type)
+ {
+ 	if (type == CABLE_PAIRING_SIXAXIS)
+ 		return sixaxis_get_central_bdaddr(fd, bdaddr);
+ 	else if (type == CABLE_PAIRING_DS4)
+ 		return ds4_get_central_bdaddr(fd, bdaddr);
++	else if (type == CABLE_PAIRING_DS5)
++		return ds5_get_central_bdaddr(fd, bdaddr);
+ 	return -1;
+ }
+ 
+@@ -243,6 +294,37 @@
+ 	return -1;
+ }
+ 
++static int ds5_pair(int fd, struct btd_adapter *adapter,
++						struct btd_device *device)
++{
++	uint8_t buf[DS5_FEATURE_REPORT_SET_PAIRING_SIZE];
++	uint8_t *key = buf + 1 + sizeof(bdaddr_t);
++	int ret;
++
++	memset(buf, 0, sizeof(buf));
++
++	buf[0] = DS5_FEATURE_REPORT_SET_PAIRING;
++	bacpy((bdaddr_t *) (buf + 1), btd_adapter_get_address(adapter));
++
++	if (util_getrandom(key, DS5_LINK_KEY_SIZE, 0) < 0) {
++		error("sixaxis: failed to generate DS5 link key (%s)",
++							strerror(errno));
++		return -1;
++	}
++
++	ret = ioctl(fd, HIDIOCSFEATURE(sizeof(buf)), buf);
++	if (ret < 0) {
++		error("sixaxis: failed to write DS5 pairing (%s)",
++							strerror(errno));
++		return ret;
++	}
++
++	btd_adapter_add_link_key(adapter, device, key,
++						HCI_LK_UNAUTH_COMBINATION);
++
++	return 0;
++}
++
+ static bool is_auth_pending(struct authentication_closure *closure)
+ {
+ 	GHashTableIter iter;
+@@ -291,7 +373,11 @@
+ 		goto out;
+ 
+ 	adapter_bdaddr = btd_adapter_get_address(closure->adapter);
+-	if (bacmp(adapter_bdaddr, &central_bdaddr)) {
++	if (closure->type == CABLE_PAIRING_DS5) {
++		if (ds5_pair(closure->fd, closure->adapter,
++						closure->device) < 0)
++			goto out;
++	} else if (bacmp(adapter_bdaddr, &central_bdaddr)) {
+ 		if (set_central_bdaddr(closure->fd, adapter_bdaddr,
+ 							closure->type) < 0)
+ 			goto out;
+@@ -435,7 +521,8 @@
+ 
+ 	cp = get_pairing_type_for_device(udevice, &bus, &sysfs_path);
+ 	if (!cp || (cp->type != CABLE_PAIRING_SIXAXIS &&
+-				cp->type != CABLE_PAIRING_DS4)) {
++				cp->type != CABLE_PAIRING_DS4 &&
++				cp->type != CABLE_PAIRING_DS5)) {
+ 		g_free(sysfs_path);
+ 		return;
+ 	}
+diff -ru a/profiles/input/server.c b/profiles/input/server.c
+--- a/profiles/input/server.c	2026-09-27 15:27:15
++++ b/profiles/input/server.c	2026-09-27 15:27:48
+@@ -122,7 +122,8 @@
+ 
+ 	cp = get_pairing(vid, pid, NULL);
+ 	if (cp && (cp->type == CABLE_PAIRING_SIXAXIS ||
+-					cp->type == CABLE_PAIRING_DS4))
++					cp->type == CABLE_PAIRING_DS4 ||
++					cp->type == CABLE_PAIRING_DS5))
+ 		return true;
+ 
+ 	return false;
+diff -ru a/profiles/input/sixaxis.h b/profiles/input/sixaxis.h
+--- a/profiles/input/sixaxis.h	2026-09-27 15:27:15
++++ b/profiles/input/sixaxis.h	2026-09-27 15:27:48
+@@ -17,6 +17,7 @@
+ 	CABLE_PAIRING_UNSUPPORTED = 0,
+ 	CABLE_PAIRING_SIXAXIS,
+ 	CABLE_PAIRING_DS4,
++	CABLE_PAIRING_DS5,
+ } CablePairingType;
+ 
+ struct cable_pairing {
+@@ -71,6 +72,22 @@
+ 			.pid = 0x09cc,
+ 			.version = 0x0001,
+ 			.type = CABLE_PAIRING_DS4,
++		},
++		{
++			.name = "DualSense Wireless Controller",
++			.source = 0x0002,
++			.vid = 0x054c,
++			.pid = 0x0ce6,
++			.version = 0x0001,
++			.type = CABLE_PAIRING_DS5,
++		},
++		{
++			.name = "DualSense Edge Wireless Controller",
++			.source = 0x0002,
++			.vid = 0x054c,
++			.pid = 0x0df2,
++			.version = 0x0001,
++			.type = CABLE_PAIRING_DS5,
+ 		},
+ 	};
+ 	guint i;
+diff -ru a/src/adapter.c b/src/adapter.c
+--- a/src/adapter.c	2026-09-27 15:27:15
++++ b/src/adapter.c	2026-09-27 15:27:48
+@@ -8745,6 +8745,67 @@
+ 	g_key_file_free(key_file);
+ }
+ 
++static GSList *stored_link_keys(struct btd_adapter *adapter)
++{
++	char dirname[PATH_MAX];
++	GSList *keys = NULL;
++	DIR *dir;
++	struct dirent *entry;
++
++	create_filename(dirname, PATH_MAX, "/%s",
++				btd_adapter_get_storage_dir(adapter));
++
++	dir = opendir(dirname);
++	if (!dir)
++		return NULL;
++
++	while ((entry = readdir(dir)) != NULL) {
++		char filename[PATH_MAX];
++		GKeyFile *key_file;
++		struct link_key_info *key_info;
++
++		if (entry->d_type == DT_UNKNOWN)
++			entry->d_type = util_get_dt(dirname, entry->d_name);
++
++		if (entry->d_type != DT_DIR || bachk(entry->d_name) < 0)
++			continue;
++
++		create_filename(filename, PATH_MAX, "/%s/%s/info",
++					btd_adapter_get_storage_dir(adapter),
++					entry->d_name);
++
++		key_file = g_key_file_new();
++		g_key_file_load_from_file(key_file, filename, 0, NULL);
++		key_info = get_key_info(key_file, entry->d_name,
++						get_addr_type(key_file));
++		g_key_file_free(key_file);
++
++		if (key_info && key_info->is_blocked)
++			g_free(key_info);
++		else if (key_info)
++			keys = g_slist_append(keys, key_info);
++	}
++
++	closedir(dir);
++
++	return keys;
++}
++
++void btd_adapter_add_link_key(struct btd_adapter *adapter,
++				struct btd_device *device, const uint8_t *key,
++				uint8_t type)
++{
++	GSList *keys;
++
++	store_link_key(adapter, device, key, type, 0);
++	device_set_paired(device, BDADDR_BREDR);
++	device_set_bonded(device, BDADDR_BREDR);
++
++	keys = stored_link_keys(adapter);
++	load_link_keys(adapter, keys, btd_opts.debug_keys);
++	g_slist_free_full(keys, g_free);
++}
++
+ static void new_link_key_callback(uint16_t index, uint16_t length,
+ 					const void *param, void *user_data)
+ {
+diff -ru a/src/adapter.h b/src/adapter.h
+--- a/src/adapter.h	2026-09-27 15:27:15
++++ b/src/adapter.h	2026-09-27 15:27:48
+@@ -33,6 +33,9 @@
+ bool btd_adapter_is_default(struct btd_adapter *adapter);
+ uint16_t btd_adapter_get_index(struct btd_adapter *adapter);
+ bool btd_adapter_has_cable_pairing_devices(struct btd_adapter *adapter);
++void btd_adapter_add_link_key(struct btd_adapter *adapter,
++				struct btd_device *device, const uint8_t *key,
++				uint8_t type);
+ 
+ typedef void (*adapter_cb) (struct btd_adapter *adapter, gpointer user_data);
+ 

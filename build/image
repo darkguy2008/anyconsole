@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
+. guest/config
 DISK_SIZE=${DISK_SIZE:-8G}
 ESP_SLACK_MIB=64
 DISK=build/out/disk.img
@@ -17,7 +18,7 @@ build_esp() {
   mkdir -p "$ESP/EFI/BOOT" "$ESP/grub"
   grub-mkimage -O x86_64-efi -p '(,gpt1)/grub' -o "$ESP/EFI/BOOT/BOOTX64.EFI" \
     part_gpt ext2 fat normal linux search search_label test all_video gfxterm gfxmenu png efi_gop loadenv
-  cp "$RELEASE/usr/share/anyconsole/splash.png" "$ESP/grub/"
+  cp "$RELEASE$SPLASH_IMAGE" "$ESP/grub/"
   cat > "$ESP/grub/theme.txt" <<'THEME'
 desktop-image: "splash.png"
 desktop-image-scale-method: "padding"

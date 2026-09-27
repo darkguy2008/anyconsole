@@ -31,10 +31,16 @@ make_skeleton() {
 fetch() { curl -fsSL -R -z "$DOWNLOAD_CACHE/$1" -o "$DOWNLOAD_CACHE/$1" "$2" || [ -f "$DOWNLOAD_CACHE/$1" ]; }
 
 write_shared_header() {
-  for name in $SHARED_WITH_C; do
-    eval "value=\$$name"
-    printf '#define %s "%s"\n' "$name" "$value"
-  done > /tmp/anyconsole.h
+  {
+    for name in $SHARED_WITH_C; do
+      eval "value=\$$name"
+      printf '#define %s "%s"\n' "$name" "$value"
+    done
+    for name in $NUMBERS_SHARED_WITH_C; do
+      eval "value=\$$name"
+      printf '#define %s %s\n' "$name" "$value"
+    done
+  } > /tmp/anyconsole.h
 }
 
 vulkan_drivers() { find $VULKAN_DRIVERS -name '*.json' ! -name $SOFTWARE_VULKAN_DRIVER; }
@@ -60,7 +66,7 @@ build_splash() {
   generate_protocol "$PROTOCOLS/stable/xdg-shell/xdg-shell.xml"
   gcc $CFLAGS -o /bin/splash /src/guest/splash.c /tmp/xdg-shell.c \
     $(pkg-config --cflags --libs libdrm libpng pixman-1 wayland-client) -lm
-  rsvg-convert -o $ROOTFS/usr/share/anyconsole/splash.png /src/guest/splash.svg
+  rsvg-convert -o $ROOTFS$SPLASH_IMAGE /src/guest/splash.svg
 }
 
 build_overlay() {
@@ -69,7 +75,7 @@ build_overlay() {
   generate_protocol "$PROTOCOLS/staging/security-context/security-context-v1.xml"
   generate_protocol "$DOWNLOAD_CACHE/wlr-screencopy-unstable-v1.xml"
   gcc $CFLAGS -o /bin/overlay /src/guest/overlay.c /tmp/wlr-layer-shell-unstable-v1.c /tmp/wlr-foreign-toplevel-management-unstable-v1.c \
-    /tmp/security-context-v1.c /tmp/wlr-screencopy-unstable-v1.c /tmp/xdg-shell.c $(pkg-config --cflags --libs cairo pixman-1 json-c libevdev wayland-client) -lm
+    /tmp/security-context-v1.c /tmp/wlr-screencopy-unstable-v1.c /tmp/xdg-shell.c $(pkg-config --cflags --libs cairo pixman-1 json-c wayland-client) -lm
 }
 
 build_compositor() {
@@ -140,6 +146,12 @@ install_system() {
   printf 'VERSION=%s\n' "$VERSION" > $ROOTFS/etc/anyconsole-release
 }
 
+hide_input_from_compositor() {
+  mkdir -p "$ROOTFS${INPUT_RULES%/*}"
+  printf 'SUBSYSTEM=="input", KERNEL=="event*", ENV{LIBINPUT_IGNORE_DEVICE}="1"\nSUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="%s", ENV{LIBINPUT_IGNORE_DEVICE}=""\n' \
+    "$KEYBOARD_NAME" > "$ROOTFS$INPUT_RULES"
+}
+
 install_app() { cp -a /src/app $ROOTFS/opt/anyconsole; }
 
 finalize() {
@@ -162,5 +174,6 @@ configure_network
 configure_users
 configure_locale
 install_system
+hide_input_from_compositor
 install_app
 finalize

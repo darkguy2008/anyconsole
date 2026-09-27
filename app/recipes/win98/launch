@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 . /opt/win98/hardware
-DATA=/saves/data.img
+DATA=/shared/data.img
+DATA_PARTITION=$DATA$PARTITION
 THROWAWAY_DIR=/tmp
 
 throwaway() {
@@ -10,12 +11,49 @@ throwaway() {
   echo "$overlay"
 }
 
+save_paths() { printf '%s' "$GAME_CONFIG" | jq -r '.saves // [] | .[]'; }
+
+parent() { case $1 in */*) echo "${1%/*}" ;; esac; }
+
+on_data_disk() { [ -z "$1" ] || mdir -i "$DATA_PARTITION" "::/$1" >/dev/null 2>&1; }
+
+restore_saves() {
+  save_paths | while IFS= read -r path; do
+    ! on_data_disk "$path" || mdeltree -i "$DATA_PARTITION" "::/$path"
+    [ -d "/saves/$path" ] && on_data_disk "$(parent "$path")" || continue
+    mcopy -s -i "$DATA_PARTITION" "/saves/$path" "::/$(parent "$path")"
+  done
+}
+
+keep_saves() {
+  save_paths | while IFS= read -r path; do
+    rm -rf "/saves/$path"
+    on_data_disk "$path" || continue
+    mkdir -p "/saves/$path"
+    [ -z "$(mdir -b -i "$DATA_PARTITION" "::/$path")" ] || mcopy -s -i "$DATA_PARTITION" "::/$path/*" "/saves/$path/"
+  done
+}
+
+run_machine() {
+  /opt/win98/machine "$@" &
+  machine=$!
+  trap 'kill -TERM "$machine"' TERM
+  while :; do
+    status=0
+    wait "$machine" || status=$?
+    kill -0 "$machine" 2>/dev/null || return
+  done
+}
+
 [ -f "$BASE" ] || { echo "Windows 98 is not installed; reinstall this game to install it" >&2; exit 1; }
 [ -f "$DATA" ] || make_data_disk "$DATA"
+restore_saves
 set -- $(scsi_disk 0 "$(throwaway "$BASE")" qcow2) $(scsi_disk 1 "$DATA")
 [ ! -f "$ROM_DISK" ] || set -- "$@" $(scsi_disk 2 "$(throwaway "$ROM_DISK")" qcow2)
 for cd in /game/*.[Ii][Ss][Oo]; do
   [ ! -f "$cd" ] || set -- "$@" -drive "file=$cd,media=cdrom"
 done
-exec /opt/win98/machine $HARDWARE "$@" -display sdl,gl=on -audiodev "pa,id=sound,server=$PULSE_SERVER" \
+run_machine $HARDWARE "$@" -display sdl,gl=on -audiodev "pa,id=sound,server=$PULSE_SERVER" \
   -device "$(printf '%s' "$GAME_CONFIG" | jq -r '.sound // "sb16"'),audiodev=sound"
+keep_saves
+exit "$status"

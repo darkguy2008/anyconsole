@@ -30,14 +30,12 @@
 #define DEVICES "/dev/input"
 #define UINPUT_DEVICES "/sys/devices/virtual/input/"
 #define NODE_MODE (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
-#define SEATS 4
 #define CAPTURED_MAX 32
 #define PHYSICAL_PADS_MAX 16
 #define BLUETOOTH_DEVICES_MAX 64
 #define NO_PAD (-1)
 #define NO_BATTERY (-1)
 #define NO_BUTTON (-1)
-#define KEYBOARD_NAME "anyconsole keyboard"
 #define PAD_NODE "event"
 #define TOUCHPAD_NODE "touch"
 #define TOUCHPAD_MIDDLE 0.5
@@ -46,6 +44,9 @@
 #define PAD_VERSION 0x8111
 #define AXIS_MAX 255
 #define AXIS_CENTER (AXIS_MAX / 2 + 1)
+#define AXIS_REACH (AXIS_MAX / STICK_REACH_DIVISOR)
+#define SDL_AXIS_REACH (SDL_JOYSTICK_AXIS_MAX / STICK_REACH_DIVISOR)
+#define TRIGGER_PRESS (AXIS_MAX / 2)
 #define STICK_DEADZONE 0.08
 #define TRIGGER_DEADZONE 0.04
 #define DS_ACC_RES_PER_G 8192
@@ -55,12 +56,19 @@
 #define DEGREES_PER_RADIAN (180 / M_PI)
 #define SENSOR_AXES SDL_arraysize(((SDL_ControllerSensorEvent){0}).data)
 #define GAIN_MAX UINT16_MAX
+#define POINTER_TICKS_PER_SECOND 60
+#define POINTER_CROSSING_SECONDS 1.5
+#define SCROLL_STEPS_PER_SECOND 10
+#define MOUSE_COUNTS_PER_FULL_TILT 32
+#define USB_MOUSE_REPORT_MS 8
+#define MOUSE_REST_MS (2 * USB_MOUSE_REPORT_MS)
 #define PAIRING_SECONDS 60
 #define SECONDS_PER_MINUTE 60
 #define USEC_PER_SEC 1000000
 #define USEC_PER_MSEC 1000
 #define NSEC_PER_USEC 1000
-#define WORD_MAX 31
+#define NSEC_PER_MSEC (NSEC_PER_USEC * USEC_PER_MSEC)
+#define NSEC_PER_SEC (NSEC_PER_USEC * USEC_PER_SEC)
 #define ADDRESS_SIZE sizeof "00:00:00:00:00:00"
 #define SYSTEM_BUS "unix:path=/run/dbus/system_bus_socket"
 #define BLUEZ "org.bluez"
@@ -82,6 +90,7 @@
 #define CONTROLLERS_PARTIAL CONTROLLERS_FILE ".partial"
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
+#define notify(...) tell_overlay("notify " __VA_ARGS__)
 
 struct control {
     const char *name;
@@ -103,15 +112,51 @@ static const struct control controls[] = {
     AXIS("lefttrigger", ABS_Z, BTN_TL2), AXIS("righttrigger", ABS_RZ, BTN_TR2),
     HAT("dpup", ABS_HAT0Y, -1), HAT("dpdown", ABS_HAT0Y, 1), HAT("dpleft", ABS_HAT0X, -1), HAT("dpright", ABS_HAT0X, 1),
 };
+#define CONTROL_COUNT SDL_arraysize(controls)
 
-enum source { COMMANDS, HOTPLUG, SETTINGS, PAIRING, SLEEP, BUS, FIXED_SOURCES, CAPTURED = FIXED_SOURCES, PHYSICAL_PAD, VIRTUAL_PAD };
-#define WATCHED_MAX (FIXED_SOURCES + CAPTURED_MAX + PHYSICAL_PADS_MAX + SEATS)
+struct binding { const char *control; unsigned short code; };
+
+static const struct binding key_bindings[] = {
+    {"dpup", KEY_UP}, {"dpdown", KEY_DOWN}, {"dpleft", KEY_LEFT}, {"dpright", KEY_RIGHT}, {"a", KEY_ENTER}, {"b", KEY_ESC},
+    {"x", KEY_SPACE}, {"y", KEY_TAB}, {"leftshoulder", KEY_PAGEUP}, {"rightshoulder", KEY_PAGEDOWN}, {"start", KEY_ENTER}, {"back", KEY_BACKSPACE},
+};
+static const struct binding pointer_bindings[] = {{"a", BTN_LEFT}, {"b", BTN_RIGHT}, {"x", BTN_MIDDLE}};
+static const struct binding click_bindings[] = {{"righttrigger", BTN_LEFT}, {"lefttrigger", BTN_RIGHT}};
+static const struct binding keyboard_pad_bindings[] = {
+    {"dpup", KEY_UP}, {"dpdown", KEY_DOWN}, {"dpleft", KEY_LEFT}, {"dpright", KEY_RIGHT}, {"a", KEY_Z}, {"b", KEY_X},
+    {"x", KEY_A}, {"y", KEY_S}, {"leftshoulder", KEY_Q}, {"rightshoulder", KEY_W}, {"start", KEY_ENTER}, {"back", KEY_RIGHTSHIFT},
+};
+static const struct binding mouse_pad_bindings[] = {{"a", BTN_LEFT}, {"b", BTN_RIGHT}};
+
+enum mode { ANALOG, DIGITAL, KEYS, POINTER, DESKTOP, MODE_COUNT };
+static const char *const modes[] = {[ANALOG] = "analog", [DIGITAL] = "digital", [KEYS] = "keyboard", [POINTER] = "mouse", [DESKTOP] = "keyboard-mouse"};
+#define MODE(mode) (1u << (mode))
+enum kind { PAD, KEYBOARD, MOUSE };
+static const struct { const char *name; enum mode native; unsigned modes; } kinds[] = {
+    [PAD] = {"pad", ANALOG, MODE(ANALOG) | MODE(DIGITAL) | MODE(KEYS) | MODE(POINTER) | MODE(DESKTOP)},
+    [KEYBOARD] = {"keyboard", KEYS, MODE(KEYS) | MODE(DIGITAL)},
+    [MOUSE] = {"mouse", POINTER, MODE(POINTER) | MODE(ANALOG)},
+};
+
+enum source { COMMANDS, HOTPLUG, SETTINGS, PAIRING, SLEEP, POINTING, RESTING, BUS, FIXED_SOURCES, CAPTURED = FIXED_SOURCES, PHYSICAL_PAD, VIRTUAL_PAD };
+#define WATCHED_MAX (FIXED_SOURCES + CAPTURED_MAX + PHYSICAL_PADS_MAX + PADS)
 
 enum pairing { NOT_PAIRING, SEARCHING, BONDING };
 
+struct device {
+    char name[NAME_MAX + 1];
+    int id, pad, guide;
+    enum kind kind;
+    enum mode mode;
+    int raw[CONTROL_COUNT];
+    const struct control *swallowed;
+    double travel[3];
+    struct libevdev *evdev;
+};
+
 struct watch {
     enum source source;
-    struct libevdev *device;
+    struct device *input;
     SDL_JoystickID pad;
     int seat;
 };
@@ -119,9 +164,10 @@ struct watch {
 struct pad {
     SDL_GameController *controller;
     SDL_JoystickID instance;
+    struct device *input;
     struct udev_device *hid;
     char address[ADDRESS_SIZE];
-    int bus, battery, charging, claimed_guide;
+    int bus, battery, charging;
     double touchpad_aspect;
     float touch_x, touch_y;
     int clicked;
@@ -134,20 +180,22 @@ struct bluetooth_device {
     int paired, trusted, seen;
 };
 
-static struct libevdev_uinput *pad[SEATS], *touchpad[SEATS], *motion[SEATS], *guide, *keyboard;
-static const struct control *swallowed[SEATS];
-static int held[SEATS][SDL_arraysize(controls)];
-static struct ff_effect *effects[SEATS];
-static int effect_count[SEATS], gain[SEATS];
+static struct libevdev_uinput *pad[PADS], *touchpad[PADS], *motion[PADS], *keyboard;
+static int emitted[PADS][CONTROL_COUNT], keymap[CONTROL_COUNT], axis_control[SDL_CONTROLLER_AXIS_MAX], button_control[SDL_CONTROLLER_BUTTON_MAX];
+static struct ff_effect *effects[PADS];
+static int effect_count[PADS], gain[PADS];
+static SDL_JoystickID motion_source[PADS];
+static struct device device_table[INPUT_DEVICES_MAX], *remote_pads[PADS], *remote_keyboard;
+static int next_id = 1, pointing, menu_open;
+static double pointer_speed;
 static struct pollfd watched[WATCHED_MAX];
 static struct watch watches[WATCHED_MAX];
 static int watched_count;
 static struct pad pads[PHYSICAL_PADS_MAX];
-static int pad_count, reach, sleep_minutes, touchpad_pointer = 1;
-static SDL_JoystickID motion_source = NO_PAD;
+static int pad_count, sleep_minutes, touchpad_pointer = 1;
 static struct bluetooth_device known[BLUETOOTH_DEVICES_MAX];
 static int known_count;
-static char adapter[PATH_MAX], target[ADDRESS_SIZE], armed[ADDRESS_SIZE], offered[PHYSICAL_PADS_MAX][ADDRESS_SIZE], target_name[NAME_MAX + 1];
+static char adapter[PATH_MAX], target[ADDRESS_SIZE], armed[ADDRESS_SIZE], offered[PHYSICAL_PADS_MAX][ADDRESS_SIZE];
 static int offered_count;
 static enum pairing pairing;
 static struct udev *udev;
@@ -159,7 +207,7 @@ static void emit(struct libevdev_uinput *device, unsigned type, unsigned code, i
     libevdev_uinput_write_event(device, EV_SYN, SYN_REPORT, 0);
 }
 
-static void notify(const char *format, ...) {
+static void tell_overlay(const char *format, ...) {
     char line[PIPE_BUF];
     va_list arguments;
     va_start(arguments, format);
@@ -167,10 +215,16 @@ static void notify(const char *format, ...) {
     va_end(arguments);
     if (length >= (int)sizeof line - 1) length = sizeof line - 2;
     line[length++] = '\n';
-    int fd = open(NOTIFY_FIFO, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    int fd = open(OVERLAY_FIFO, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) return;
-    if (write(fd, line, length) < 0) perror(NOTIFY_FIFO);
+    if (write(fd, line, length) < 0) perror(OVERLAY_FIFO);
     close(fd);
+}
+
+static int routed(struct device *device) { return device->pad != NO_PAD && !menu_open; }
+
+static void menu(struct device *device, const char *command, int value) {
+    if (!routed(device) || !strcmp(command, "guide")) tell_overlay("press %d %s %d", device->id, command, value);
 }
 
 static const char *node(const char *prefix, int number) {
@@ -188,7 +242,7 @@ static void publish(const char *path, const char *dev_file) {
     else if (mknod(path, S_IFCHR | NODE_MODE, makedev(major, minor)) < 0) perror(path);
 }
 
-static void expose(int fd, const char *pad_node, int shared, int create) {
+static void expose(int fd, const char *directory, const char *name, int create) {
     char sysname[UINPUT_MAX_NAME_SIZE], pattern[PATH_MAX], path[PATH_MAX], dev_file[PATH_MAX];
     glob_t found;
     if (ioctl(fd, UI_GET_SYSNAME(sizeof sysname), sysname) < 0) { perror("uinput sysname"); return; }
@@ -196,13 +250,7 @@ static void expose(int fd, const char *pad_node, int shared, int create) {
     if (glob(pattern, 0, NULL, &found)) { fprintf(stderr, "%s: no device nodes\n", sysname); return; }
     for (size_t i = 0; i < found.gl_pathc; i++) {
         snprintf(dev_file, sizeof dev_file, "%s/dev", found.gl_pathv[i]);
-        if (shared) {
-            snprintf(path, sizeof path, INPUT_NODES "/%s", basename(found.gl_pathv[i]));
-            if (create) publish(path, dev_file);
-            else unlink(path);
-        }
-        if (!pad_node) continue;
-        snprintf(path, sizeof path, PAD_NODES "/%s", pad_node);
+        snprintf(path, sizeof path, "%s/%s", directory, name ? name : basename(found.gl_pathv[i]));
         if (create) publish(path, dev_file);
         else unlink(path);
     }
@@ -215,20 +263,13 @@ static int is_virtual(const char *path) {
     return realpath(link, resolved) && !strncmp(resolved, UINPUT_DEVICES, strlen(UINPUT_DEVICES));
 }
 
-static struct libevdev_uinput *create(struct libevdev *device, const char *pad_node, int shared) {
+static struct libevdev_uinput *create(struct libevdev *device, const char *directory, const char *name) {
     struct libevdev_uinput *created;
     int error = libevdev_uinput_create_from_device(device, LIBEVDEV_UINPUT_OPEN_MANAGED, &created);
     if (error) { fprintf(stderr, "%s: %s\n", libevdev_get_name(device), strerror(-error)); exit(1); }
     libevdev_free(device);
-    expose(libevdev_uinput_get_fd(created), pad_node, shared, 1);
+    expose(libevdev_uinput_get_fd(created), directory, name, 1);
     return created;
-}
-
-static struct libevdev_uinput *create_guide(void) {
-    struct libevdev *device = libevdev_new();
-    libevdev_set_name(device, GUIDE_DEVICE);
-    libevdev_enable_event_code(device, EV_KEY, BTN_MODE, NULL);
-    return create(device, NULL, 1);
 }
 
 static struct libevdev_uinput *create_keyboard(void) {
@@ -237,7 +278,7 @@ static struct libevdev_uinput *create_keyboard(void) {
     for (unsigned code = KEY_ESC; code < BTN_MISC; code++) libevdev_enable_event_code(device, EV_KEY, code, NULL);
     for (unsigned code = BTN_MOUSE; code < BTN_JOYSTICK; code++) libevdev_enable_event_code(device, EV_KEY, code, NULL);
     for (unsigned code = 0; code <= REL_MAX; code++) libevdev_enable_event_code(device, EV_REL, code, NULL);
-    return create(device, NULL, 1);
+    return create(device, INPUT_NODES, NULL);
 }
 
 static struct libevdev_uinput *create_touchpad(int seat) {
@@ -248,7 +289,7 @@ static struct libevdev_uinput *create_touchpad(int seat) {
     libevdev_enable_event_code(device, EV_KEY, BTN_TOUCH, NULL);
     libevdev_enable_event_code(device, EV_ABS, ABS_X, &axis);
     libevdev_enable_event_code(device, EV_ABS, ABS_Y, &axis);
-    return create(device, node(TOUCHPAD_NODE, seat), 0);
+    return create(device, PAD_NODES, node(TOUCHPAD_NODE, seat));
 }
 
 static struct libevdev *pad_device(const char *name) {
@@ -271,7 +312,7 @@ static struct libevdev_uinput *create_motion(int seat) {
         libevdev_enable_event_code(device, EV_ABS, ABS_RX + axis, &gyroscope);
     }
     libevdev_enable_event_code(device, EV_MSC, MSC_TIMESTAMP, NULL);
-    return create(device, node(PAD_NODE, SEATS + seat), 0);
+    return create(device, PAD_NODES, node(PAD_NODE, PADS + seat));
 }
 
 static struct watch *watch(int fd, enum source source) {
@@ -293,21 +334,108 @@ static void unwatch(int index) {
     drop(index);
 }
 
+static int is_stick(unsigned i) { return controls[i].type == EV_ABS && !controls[i].button && !controls[i].direction; }
+
+static int rest(unsigned i) { return is_stick(i) ? AXIS_CENTER : 0; }
+
+static int control_named(const char *name) {
+    for (unsigned i = 0; name && i < CONTROL_COUNT; i++)
+        if (!strcmp(controls[i].name, name)) return i;
+    return -1;
+}
+
+static int control_index(unsigned short type, unsigned short code) {
+    for (unsigned i = 0; i < CONTROL_COUNT; i++)
+        if (controls[i].type == type && controls[i].code == code && !controls[i].direction) return i;
+    return -1;
+}
+
+static int is_left_stick(unsigned i) { return is_stick(i) && (controls[i].code == ABS_X || controls[i].code == ABS_Y); }
+
+static int stick_direction(int value) { return value < AXIS_CENTER - AXIS_REACH ? -1 : value > AXIS_CENTER + AXIS_REACH ? 1 : 0; }
+
+static int pressed_value(unsigned i, int value) { return controls[i].button ? value > TRIGGER_PRESS : value > 0; }
+
+static int direction_control(unsigned stick, int direction) {
+    unsigned short hat = controls[stick].code == ABS_X ? ABS_HAT0X : ABS_HAT0Y;
+    for (unsigned i = 0; i < CONTROL_COUNT; i++)
+        if (controls[i].code == hat && controls[i].direction == direction) return i;
+    return -1;
+}
+
+static void cross(struct device *device, unsigned stick, int before, int value, void (*press)(struct device *, int, int)) {
+    int from = stick_direction(before), to = stick_direction(value);
+    if (!is_left_stick(stick) || from == to) return;
+    if (from) press(device, direction_control(stick, from), 0);
+    if (to) press(device, direction_control(stick, to), 1);
+}
+
+static int mode_named(const char *name) {
+    for (unsigned i = 0; i < SDL_arraysize(modes); i++)
+        if (!strcmp(modes[i], name)) return i;
+    return -1;
+}
+
+static int effective(struct device *device, unsigned i) {
+    const struct control *c = &controls[i];
+    if (!routed(device) || (device->mode != ANALOG && device->mode != DIGITAL)) return rest(i);
+    if (device->mode == ANALOG) return device->raw[i];
+    if (c->direction)
+        return device->raw[i] || stick_direction(device->raw[control_index(EV_ABS, c->code == ABS_HAT0X ? ABS_X : ABS_Y)]) == c->direction;
+    if (is_stick(i)) return AXIS_CENTER;
+    if (c->button) return pressed_value(i, device->raw[i]) ? AXIS_MAX : 0;
+    return device->raw[i];
+}
+
+static int hat(int seat, unsigned short code) {
+    int value = 0;
+    for (unsigned i = 0; i < CONTROL_COUNT; i++)
+        if (controls[i].code == code && controls[i].direction && emitted[seat][i]) value += controls[i].direction;
+    return value;
+}
+
+static void sync_control(int seat, unsigned i) {
+    const struct control *c = &controls[i];
+    int value = rest(i);
+    for (int j = 0; j < INPUT_DEVICES_MAX; j++) {
+        struct device *device = &device_table[j];
+        if (!device->id || device->pad != seat) continue;
+        int candidate = effective(device, i);
+        if (abs(candidate - rest(i)) > abs(value - rest(i))) value = candidate;
+    }
+    if (value == emitted[seat][i]) return;
+    emitted[seat][i] = value;
+    if (c->type == EV_KEY) libevdev_uinput_write_event(pad[seat], EV_KEY, c->code, value);
+    else if (c->direction) libevdev_uinput_write_event(pad[seat], EV_ABS, c->code, hat(seat, c->code));
+    else {
+        libevdev_uinput_write_event(pad[seat], EV_ABS, c->code, value);
+        if (c->button) libevdev_uinput_write_event(pad[seat], EV_KEY, c->button, value > 0);
+    }
+}
+
+static void sync_pad(int seat, unsigned i) {
+    if (!pad[seat]) return;
+    sync_control(seat, i);
+    if (!is_left_stick(i)) return;
+    sync_control(seat, direction_control(i, -1));
+    sync_control(seat, direction_control(i, 1));
+}
+
 static void plug(int seat) {
     if (pad[seat]) return;
     struct libevdev *device = pad_device(PAD_NAME);
-    for (const struct control *c = controls; c < controls + SDL_arraysize(controls); c++) {
+    for (const struct control *c = controls; c < controls + CONTROL_COUNT; c++) {
         if (c->type == EV_KEY) { libevdev_enable_event_code(device, EV_KEY, c->code, NULL); continue; }
         if (c->button) libevdev_enable_event_code(device, EV_KEY, c->button, NULL);
         struct input_absinfo abs = c->direction ? (struct input_absinfo){.minimum = -1, .maximum = 1}
-                                                : (struct input_absinfo){.value = c->button ? 0 : AXIS_CENTER, .maximum = AXIS_MAX};
+                                                : (struct input_absinfo){.value = rest(c - controls), .maximum = AXIS_MAX};
         libevdev_enable_event_code(device, EV_ABS, c->code, &abs);
     }
     libevdev_enable_event_code(device, EV_FF, FF_RUMBLE, NULL);
     libevdev_enable_event_code(device, EV_FF, FF_GAIN, NULL);
-    memset(held[seat], 0, sizeof held[seat]);
+    for (unsigned i = 0; i < CONTROL_COUNT; i++) emitted[seat][i] = rest(i);
     gain[seat] = GAIN_MAX;
-    pad[seat] = create(device, node(PAD_NODE, seat), 1);
+    pad[seat] = create(device, PAD_NODES, node(PAD_NODE, seat));
     touchpad[seat] = create_touchpad(seat);
     motion[seat] = create_motion(seat);
     struct watch *feedback = watch(libevdev_uinput_get_fd(pad[seat]), VIRTUAL_PAD);
@@ -318,9 +446,9 @@ static void unplug(int seat) {
     if (!pad[seat]) return;
     for (int i = 0; i < watched_count; i++)
         if (watches[i].source == VIRTUAL_PAD && watches[i].seat == seat) { drop(i); break; }
-    expose(libevdev_uinput_get_fd(pad[seat]), node(PAD_NODE, seat), 1, 0);
-    expose(libevdev_uinput_get_fd(touchpad[seat]), node(TOUCHPAD_NODE, seat), 0, 0);
-    expose(libevdev_uinput_get_fd(motion[seat]), node(PAD_NODE, SEATS + seat), 0, 0);
+    expose(libevdev_uinput_get_fd(pad[seat]), PAD_NODES, node(PAD_NODE, seat), 0);
+    expose(libevdev_uinput_get_fd(touchpad[seat]), PAD_NODES, node(TOUCHPAD_NODE, seat), 0);
+    expose(libevdev_uinput_get_fd(motion[seat]), PAD_NODES, node(PAD_NODE, PADS + seat), 0);
     libevdev_uinput_destroy(pad[seat]);
     libevdev_uinput_destroy(touchpad[seat]);
     libevdev_uinput_destroy(motion[seat]);
@@ -330,50 +458,221 @@ static void unplug(int seat) {
     effect_count[seat] = 0;
 }
 
-static int hat(int seat, unsigned short code) {
-    int value = 0;
-    for (unsigned i = 0; i < SDL_arraysize(controls); i++)
-        if (controls[i].code == code && held[seat][i]) value += controls[i].direction;
-    return value;
-}
-
-static int holding(int seat, unsigned short code) {
-    for (unsigned i = 0; i < SDL_arraysize(controls); i++)
-        if (controls[i].code == code) return held[seat][i];
+static unsigned short bound(const struct binding *bindings, size_t count, const char *control) {
+    for (size_t i = 0; i < count; i++)
+        if (!strcmp(bindings[i].control, control)) return bindings[i].code;
     return 0;
 }
 
-static void press_guide(int value) { emit(guide, EV_KEY, BTN_MODE, value); }
+static const char *binding_of(const struct binding *bindings, size_t count, unsigned short code) {
+    for (size_t i = 0; i < count; i++)
+        if (bindings[i].code == code) return bindings[i].control;
+    return NULL;
+}
+
+static unsigned short emulated_code(enum mode mode, unsigned i) {
+    const char *name = controls[i].name;
+    unsigned short click = mode == DESKTOP ? bound(click_bindings, SDL_arraysize(click_bindings), name) : 0;
+    if (keymap[i]) return keymap[i];
+    if (mode == POINTER) return bound(pointer_bindings, SDL_arraysize(pointer_bindings), name);
+    return click ? click : bound(key_bindings, SDL_arraysize(key_bindings), name);
+}
+
+static void press_key(unsigned short code, int pressed) {
+    if (code) emit(keyboard, EV_KEY, code, pressed);
+}
+
+static void press_emulated_key(struct device *device, int i, int pressed) {
+    (void)device;
+    press_key(emulated_code(KEYS, i), pressed);
+}
+
+static int canvas_width(void) {
+    json_object *display = json_object_from_file(DISPLAY_FILE), *canvas;
+    int width = json_object_object_get_ex(display, "canvas", &canvas) ? atoi(json_object_get_string(canvas)) : 0;
+    json_object_put(display);
+    return width;
+}
+
+static double deflection(int value) { return (value - AXIS_CENTER) / (double)(AXIS_MAX - AXIS_CENTER); }
+
+static int move_pointer(double *travel, const double *motion, const unsigned short *axes, unsigned count) {
+    int moved = 0;
+    for (unsigned axis = 0; axis < count; axis++) {
+        travel[axis] += motion[axis];
+        double whole = trunc(travel[axis]);
+        travel[axis] -= whole;
+        if (!whole) continue;
+        libevdev_uinput_write_event(keyboard, EV_REL, axes[axis], whole);
+        moved = 1;
+    }
+    if (moved) libevdev_uinput_write_event(keyboard, EV_SYN, SYN_REPORT, 0);
+    return moved;
+}
+
+static void tick_pointer(void) {
+    static const unsigned short axes[] = {REL_X, REL_Y, REL_WHEEL};
+    int was_pointing = pointing;
+    pointing = 0;
+    for (int j = 0; j < INPUT_DEVICES_MAX; j++) {
+        struct device *device = &device_table[j];
+        if (!device->id || !routed(device) || device->kind != PAD || (device->mode != POINTER && device->mode != DESKTOP)) continue;
+        double step[] = {deflection(device->raw[axis_control[SDL_CONTROLLER_AXIS_LEFTX]]) * pointer_speed,
+                         deflection(device->raw[axis_control[SDL_CONTROLLER_AXIS_LEFTY]]) * pointer_speed,
+                         -deflection(device->raw[axis_control[SDL_CONTROLLER_AXIS_RIGHTY]]) * SCROLL_STEPS_PER_SECOND / POINTER_TICKS_PER_SECOND};
+        pointing |= step[0] || step[1] || step[2];
+        move_pointer(device->travel, step, axes, SDL_arraysize(axes));
+    }
+    if (pointing == was_pointing) return;
+    struct itimerspec timer = {0};
+    if (pointing) timer.it_value.tv_nsec = timer.it_interval.tv_nsec = NSEC_PER_SEC / POINTER_TICKS_PER_SECOND;
+    timerfd_settime(watched[POINTING].fd, 0, &timer, NULL);
+}
+
+static void start_pointer(void) {
+    if (pointing) return;
+    pointer_speed = (double)canvas_width() / POINTER_CROSSING_SECONDS / POINTER_TICKS_PER_SECOND;
+    tick_pointer();
+}
+
+static void emulate(struct device *device, unsigned i, int before, int value) {
+    if (is_stick(i) && device->mode == KEYS) cross(device, i, before, value, press_emulated_key);
+    else if (is_stick(i) && value != AXIS_CENTER && controls[i].code != ABS_RX) start_pointer();
+    else if (!is_stick(i) && pressed_value(i, before) != pressed_value(i, value)) press_key(emulated_code(device->mode, i), pressed_value(i, value));
+}
+
+static void drive_control(struct device *device, int i, int value) {
+    if (i < 0 || device->raw[i] == value) return;
+    int before = device->raw[i];
+    device->raw[i] = value;
+    if (!routed(device)) return;
+    if (device->mode == ANALOG || device->mode == DIGITAL) sync_pad(device->pad, i);
+    else emulate(device, i, before, value);
+}
+
+static const char *command_of(unsigned short code) {
+    switch (code) {
+    case KEY_UP: return "up";
+    case KEY_DOWN: return "down";
+    case KEY_LEFT: return "left";
+    case KEY_RIGHT: return "right";
+    case KEY_ENTER: case KEY_KPENTER: case KEY_X: case BTN_SOUTH: case BTN_START: return "confirm";
+    case KEY_ESC: case KEY_BACKSPACE: case KEY_Z: case BTN_EAST: return "back";
+    case KEY_LEFTMETA: case KEY_RIGHTMETA: case BTN_MODE: return "guide";
+    default: return "other";
+    }
+}
+
+static void menu_direction(struct device *device, int i, int pressed) {
+    int horizontal = controls[i].code == ABS_HAT0X, negative = controls[i].direction < 0;
+    menu(device, horizontal ? (negative ? "left" : "right") : (negative ? "up" : "down"), pressed);
+}
+
+static void menu_control(struct device *device, unsigned i, int before, int value) {
+    if (controls[i].direction) menu_direction(device, i, value);
+    else if (is_stick(i)) cross(device, i, before, value, menu_direction);
+    else if (pressed_value(i, before) != pressed_value(i, value)) menu(device, command_of(controls[i].code), pressed_value(i, value));
+}
 
 static unsigned short combo_partner(const struct control *c) {
     return c->code == BTN_SELECT ? BTN_START : c->code == BTN_START ? BTN_SELECT : 0;
 }
 
-static void drive(int seat, const char *name, int value) {
-    if (!strcmp(name, "guide")) { press_guide(value); return; }
-    if (!pad[seat]) { fprintf(stderr, "seat %d not plugged\n", seat + 1); return; }
-    for (unsigned i = 0; i < SDL_arraysize(controls); i++) {
-        const struct control *c = &controls[i];
-        if (strcmp(c->name, name)) continue;
-        if (c == swallowed[seat]) {
-            if (value) return;
-            swallowed[seat] = NULL;
-            press_guide(0);
-            return;
-        }
-        if (value && combo_partner(c) && holding(seat, combo_partner(c))) {
-            swallowed[seat] = c;
-            press_guide(1);
-            return;
-        }
-        if (held[seat][i] == value) return;
-        held[seat][i] = value;
-        if (c->direction) value = hat(seat, c->code);
-        libevdev_uinput_write_event(pad[seat], c->type, c->code, value);
-        if (c->button) libevdev_uinput_write_event(pad[seat], EV_KEY, c->button, value > 0);
-        return;
+static void pad_input(struct device *device, int i, int value) {
+    if (i < 0) return;
+    const struct control *c = &controls[i];
+    if (c->code == BTN_MODE) {
+        menu(device, "guide", value);
+    } else if (c == device->swallowed) {
+        if (value) return;
+        device->swallowed = NULL;
+        menu(device, "guide", 0);
+    } else if (value && combo_partner(c) && device->raw[control_index(EV_KEY, combo_partner(c))]) {
+        device->swallowed = c;
+        menu(device, "guide", 1);
+    } else if (device->raw[i] != value) {
+        menu_control(device, i, device->raw[i], value);
+        drive_control(device, i, value);
     }
-    fprintf(stderr, "unknown control %s\n", name);
+}
+
+static int is_meta(struct input_event *event) { return event->type == EV_KEY && !strcmp(command_of(event->code), "guide"); }
+
+static void arm_rest(void) {
+    timerfd_settime(watched[RESTING].fd, 0, &(struct itimerspec){.it_value.tv_nsec = MOUSE_REST_MS * NSEC_PER_MSEC}, NULL);
+}
+
+static void tilt(struct device *device, unsigned short code, int delta) {
+    int value = AXIS_CENTER + delta * (AXIS_MAX - AXIS_CENTER) / MOUSE_COUNTS_PER_FULL_TILT;
+    drive_control(device, control_index(EV_ABS, code == REL_X ? ABS_RX : ABS_RY), value < 0 ? 0 : value > AXIS_MAX ? AXIS_MAX : value);
+    arm_rest();
+}
+
+static void rest_mice(void) {
+    for (int j = 0; j < INPUT_DEVICES_MAX; j++) {
+        struct device *device = &device_table[j];
+        if (!device->id || device->kind != MOUSE) continue;
+        drive_control(device, axis_control[SDL_CONTROLLER_AXIS_RIGHTX], AXIS_CENTER);
+        drive_control(device, axis_control[SDL_CONTROLLER_AXIS_RIGHTY], AXIS_CENTER);
+    }
+}
+
+static void key_input(struct device *device, struct input_event *event) {
+    if (event->type == EV_KEY && event->value != 2) menu(device, command_of(event->code), event->value);
+    if (!routed(device) || is_meta(event)) return;
+    if (device->mode == kinds[device->kind].native) {
+        libevdev_uinput_write_event(keyboard, event->type, event->code, event->value);
+    } else if (event->type == EV_KEY && event->value != 2) {
+        const char *control = device->kind == KEYBOARD ? binding_of(keyboard_pad_bindings, SDL_arraysize(keyboard_pad_bindings), event->code)
+                                                       : binding_of(mouse_pad_bindings, SDL_arraysize(mouse_pad_bindings), event->code);
+        drive_control(device, control_named(control), event->value);
+    } else if (event->type == EV_REL && device->kind == MOUSE && (event->code == REL_X || event->code == REL_Y)) {
+        tilt(device, event->code, event->value);
+    }
+}
+
+static void release_keys(struct device *device) {
+    if (!device->evdev || !routed(device) || device->mode != kinds[device->kind].native) return;
+    for (unsigned code = 0; code <= KEY_MAX; code++)
+        if (libevdev_has_event_code(device->evdev, EV_KEY, code) && libevdev_get_event_value(device->evdev, EV_KEY, code))
+            emit(keyboard, EV_KEY, code, 0);
+}
+
+static void release(struct device *device) {
+    release_keys(device);
+    for (unsigned i = 0; i < CONTROL_COUNT; i++) drive_control(device, i, rest(i));
+    device->swallowed = NULL;
+    memset(device->travel, 0, sizeof device->travel);
+}
+
+static void release_all(void) {
+    for (int j = 0; j < INPUT_DEVICES_MAX; j++)
+        if (device_table[j].id) release(&device_table[j]);
+}
+
+static struct device *new_device(const char *name, enum kind kind, int guide) {
+    for (int j = 0; j < INPUT_DEVICES_MAX; j++) {
+        struct device *device = &device_table[j];
+        if (device->id) continue;
+        *device = (struct device){.id = next_id++, .pad = NO_PAD, .guide = guide, .kind = kind, .mode = kinds[kind].native};
+        snprintf(device->name, sizeof device->name, "%s", name);
+        for (unsigned i = 0; i < CONTROL_COUNT; i++) device->raw[i] = rest(i);
+        return device;
+    }
+    fprintf(stderr, "padd: too many devices\n");
+    return NULL;
+}
+
+static void free_device(struct device *device) {
+    release(device);
+    device->id = 0;
+}
+
+static struct device *device_with_id(int id) {
+    if (!id) return NULL;
+    for (int j = 0; j < INPUT_DEVICES_MAX; j++)
+        if (device_table[j].id == id) return &device_table[j];
+    return NULL;
 }
 
 static struct udev_enumerate *children(struct udev_device *hid, const char *subsystem) {
@@ -406,14 +705,8 @@ static double touchpad_aspect(struct udev_device *hid) {
     return aspect;
 }
 
-static int canvas_width(void) {
-    json_object *display = json_object_from_file(DISPLAY_FILE), *canvas;
-    int width = json_object_object_get_ex(display, "canvas", &canvas) ? atoi(json_object_get_string(canvas)) : 0;
-    json_object_put(display);
-    return width;
-}
-
 static void point(struct pad *source, SDL_ControllerTouchpadEvent *event) {
+    static const unsigned short axes[] = {REL_X, REL_Y};
     static double travel[2];
     static int width;
     if (event->type == SDL_CONTROLLERTOUCHPADDOWN) {
@@ -421,17 +714,8 @@ static void point(struct pad *source, SDL_ControllerTouchpadEvent *event) {
         travel[0] = travel[1] = 0;
     }
     if (event->type != SDL_CONTROLLERTOUCHPADMOTION) return;
-    double motion[2] = {(event->x - source->touch_x) * width, (event->y - source->touch_y) * source->touchpad_aspect * width};
-    int moved = 0;
-    for (int axis = 0; axis < 2; axis++) {
-        travel[axis] += motion[axis];
-        double whole = trunc(travel[axis]);
-        travel[axis] -= whole;
-        if (!whole) continue;
-        libevdev_uinput_write_event(keyboard, EV_REL, axis ? REL_Y : REL_X, whole);
-        moved = 1;
-    }
-    if (moved) libevdev_uinput_write_event(keyboard, EV_SYN, SYN_REPORT, 0);
+    double motion[] = {(event->x - source->touch_x) * width, (event->y - source->touch_y) * source->touchpad_aspect * width};
+    move_pointer(travel, motion, axes, SDL_arraysize(axes));
 }
 
 static void click(struct pad *source, int down) {
@@ -440,31 +724,76 @@ static void click(struct pad *source, int down) {
     if (!down) source->clicked = 0;
 }
 
-static void touch(struct libevdev_uinput *device, struct pad *source, SDL_ControllerTouchpadEvent *event) {
+static void touch(struct pad *source, SDL_ControllerTouchpadEvent *event) {
+    struct device *input = source->input;
     int down = event->type != SDL_CONTROLLERTOUCHPADUP;
-    if (event->finger) return;
+    if (event->finger || !routed(input)) return;
     if (!source->touchpad_aspect) source->touchpad_aspect = touchpad_aspect(source->hid);
     if (touchpad_pointer) point(source, event);
     source->touch_x = event->x;
     source->touch_y = event->y;
+    if (input->mode != ANALOG || !touchpad[input->pad]) return;
     if (down) {
-        libevdev_uinput_write_event(device, EV_ABS, ABS_X, event->x * fmin(1, 1 / source->touchpad_aspect) * SDL_JOYSTICK_AXIS_MAX);
-        libevdev_uinput_write_event(device, EV_ABS, ABS_Y, event->y * fmin(1, source->touchpad_aspect) * SDL_JOYSTICK_AXIS_MAX);
+        libevdev_uinput_write_event(touchpad[input->pad], EV_ABS, ABS_X, event->x * fmin(1, 1 / source->touchpad_aspect) * SDL_JOYSTICK_AXIS_MAX);
+        libevdev_uinput_write_event(touchpad[input->pad], EV_ABS, ABS_Y, event->y * fmin(1, source->touchpad_aspect) * SDL_JOYSTICK_AXIS_MAX);
     }
-    emit(device, EV_KEY, BTN_TOUCH, down);
+    emit(touchpad[input->pad], EV_KEY, BTN_TOUCH, down);
+}
+
+static struct pad *pad_of(SDL_JoystickID instance) {
+    for (int i = 0; i < pad_count; i++)
+        if (pads[i].instance == instance) return &pads[i];
+    return NULL;
 }
 
 static void sense(SDL_ControllerSensorEvent *event) {
     struct input_event report[SENSOR_AXES + 2];
-    int gyroscope = event->sensor == SDL_SENSOR_GYRO;
-    if (event->which != motion_source || !motion[0] || (!gyroscope && event->sensor != SDL_SENSOR_ACCEL)) return;
+    struct pad *source = pad_of(event->which);
+    int gyroscope = event->sensor == SDL_SENSOR_GYRO, seat = source && routed(source->input) ? source->input->pad : NO_PAD;
+    if (seat == NO_PAD || motion_source[seat] != event->which || !motion[seat] || (!gyroscope && event->sensor != SDL_SENSOR_ACCEL)) return;
     for (unsigned axis = 0; axis < SENSOR_AXES; axis++)
         report[axis] = (struct input_event){.type = EV_ABS, .code = (gyroscope ? ABS_RX : ABS_X) + axis,
                                             .value = gyroscope ? event->data[axis] * DEGREES_PER_RADIAN * DS_GYRO_RES_PER_DEG_S
                                                                : event->data[axis] / SDL_STANDARD_GRAVITY * DS_ACC_RES_PER_G};
     report[SENSOR_AXES] = (struct input_event){.type = EV_MSC, .code = MSC_TIMESTAMP, .value = (int)event->timestamp_us};
     report[SENSOR_AXES + 1] = (struct input_event){.type = EV_SYN, .code = SYN_REPORT};
-    if (write(libevdev_uinput_get_fd(motion[0]), report, sizeof report) < 0) perror("padd: motion");
+    if (write(libevdev_uinput_get_fd(motion[seat]), report, sizeof report) < 0) perror("padd: motion");
+}
+
+static void sense_with(struct pad *controller_pad, SDL_bool enabled) {
+    SDL_GameControllerSetSensorEnabled(controller_pad->controller, SDL_SENSOR_ACCEL, enabled);
+    SDL_GameControllerSetSensorEnabled(controller_pad->controller, SDL_SENSOR_GYRO, enabled);
+}
+
+static time_t now(void) {
+    struct timespec time;
+    clock_gettime(CLOCK_MONOTONIC, &time);
+    return time.tv_sec;
+}
+
+static void touched(struct pad *controller_pad) {
+    int seat = controller_pad->input->pad;
+    controller_pad->active = now();
+    if (seat == NO_PAD || controller_pad->input->mode != ANALOG || motion_source[seat] == controller_pad->instance) return;
+    struct pad *previous = pad_of(motion_source[seat]);
+    if (previous) sense_with(previous, SDL_FALSE);
+    sense_with(controller_pad, SDL_TRUE);
+    motion_source[seat] = controller_pad->instance;
+}
+
+static struct pad *pad_with_input(struct device *device) {
+    for (int i = 0; i < pad_count; i++)
+        if (pads[i].input == device) return &pads[i];
+    return NULL;
+}
+
+static void forget_motion(struct pad *controller_pad) {
+    if (!controller_pad) return;
+    for (int seat = 0; seat < PADS; seat++) {
+        if (motion_source[seat] != controller_pad->instance) continue;
+        motion_source[seat] = NO_PAD;
+        sense_with(controller_pad, SDL_FALSE);
+    }
 }
 
 static void store_effect(int seat, struct ff_effect *effect) {
@@ -483,7 +812,8 @@ static void rumble(int seat, int id, int count) {
     struct ff_effect *effect = &effects[seat][id];
     Uint16 strong = count ? (Uint32)effect->u.rumble.strong_magnitude * gain[seat] / GAIN_MAX : 0;
     Uint16 weak = count ? (Uint32)effect->u.rumble.weak_magnitude * gain[seat] / GAIN_MAX : 0;
-    for (int i = 0; i < pad_count; i++) SDL_GameControllerRumble(pads[i].controller, strong, weak, effect->replay.length);
+    for (int i = 0; i < pad_count; i++)
+        if (pads[i].input->pad == seat) SDL_GameControllerRumble(pads[i].controller, strong, weak, effect->replay.length);
 }
 
 static void read_feedback(int index) {
@@ -507,12 +837,6 @@ static void read_feedback(int index) {
 }
 
 static int same(const char *address, const char *other) { return *address && !strcasecmp(address, other); }
-
-static struct pad *pad_of(SDL_JoystickID instance) {
-    for (int i = 0; i < pad_count; i++)
-        if (pads[i].instance == instance) return &pads[i];
-    return NULL;
-}
 
 static struct pad *pad_with_address(const char *address) {
     for (int i = 0; i < pad_count; i++)
@@ -549,8 +873,23 @@ static json_object *controller(const char *name, const char *address, const char
     return entry;
 }
 
+static json_object *device_entry(struct device *device) {
+    json_object *entry = json_object_new_object(), *allowed = json_object_new_array();
+    for (enum mode mode = ANALOG; mode < MODE_COUNT; mode++)
+        if (kinds[device->kind].modes & MODE(mode)) json_object_array_add(allowed, json_object_new_string(modes[mode]));
+    json_object_object_add(entry, "id", json_object_new_int(device->id));
+    json_object_object_add(entry, "name", json_object_new_string(device->name));
+    json_object_object_add(entry, "kind", json_object_new_string(kinds[device->kind].name));
+    json_object_object_add(entry, "guide", json_object_new_boolean(device->guide));
+    json_object_object_add(entry, "pad", device->pad == NO_PAD ? NULL : json_object_new_int(device->pad + 1));
+    json_object_object_add(entry, "mode", json_object_new_string(modes[device->mode]));
+    json_object_object_add(entry, "native", json_object_new_string(modes[kinds[device->kind].native]));
+    json_object_object_add(entry, "modes", allowed);
+    return entry;
+}
+
 static void write_controllers(void) {
-    json_object *state = json_object_new_object(), *list = json_object_new_array(), *keyboards = json_object_new_array();
+    json_object *state = json_object_new_object(), *list = json_object_new_array(), *inputs = json_object_new_array();
     for (int i = 0; i < pad_count; i++) {
         struct bluetooth_device *device = known_address(pads[i].address);
         json_object_array_add(list, controller(SDL_GameControllerName(pads[i].controller), pads[i].address,
@@ -560,15 +899,20 @@ static void write_controllers(void) {
     for (int i = 0; i < known_count; i++)
         if (known[i].trusted && !pad_with_address(known[i].address))
             json_object_array_add(list, controller(known[i].name, known[i].address, NULL, NO_BATTERY, 0, 1));
-    for (int i = 0; i < watched_count; i++)
-        if (watches[i].source == CAPTURED) json_object_array_add(keyboards, json_object_new_string(libevdev_get_name(watches[i].device)));
+    for (int j = 0; j < INPUT_DEVICES_MAX; j++)
+        if (device_table[j].id) json_object_array_add(inputs, device_entry(&device_table[j]));
     json_object_object_add(state, "bluetooth", json_object_new_boolean(*adapter));
     json_object_object_add(state, "pairing", json_object_new_boolean(pairing != NOT_PAIRING));
     json_object_object_add(state, "controllers", list);
-    json_object_object_add(state, "keyboards", keyboards);
+    json_object_object_add(state, "devices", inputs);
     if (json_object_to_file_ext(CONTROLLERS_PARTIAL, state, JSON_C_TO_STRING_PLAIN) < 0 || rename(CONTROLLERS_PARTIAL, CONTROLLERS_FILE) < 0)
         perror(CONTROLLERS_FILE);
     json_object_put(state);
+}
+
+static void announce(struct device *device) {
+    write_controllers();
+    tell_overlay("connect %d", device->id);
 }
 
 static int read_battery(struct pad *controller_pad) {
@@ -616,12 +960,6 @@ static void reannounce(struct pad *controller_pad) {
     udev_enumerate_unref(nodes);
 }
 
-static time_t now(void) {
-    struct timespec time;
-    clock_gettime(CLOCK_MONOTONIC, &time);
-    return time.tv_sec;
-}
-
 static void call(const char *path, const char *interface, const char *method, sd_bus_message_handler_t done, const char *types, ...) {
     va_list arguments;
     va_start(arguments, types);
@@ -658,7 +996,7 @@ static void stop_pairing(void) {
     if (pairing == NOT_PAIRING) return;
     if (pairing == SEARCHING && *adapter) call(adapter, ADAPTER_INTERFACE, "StopDiscovery", NULL, "");
     pairing = NOT_PAIRING;
-    *target = *target_name = '\0';
+    *target = '\0';
     timerfd_settime(watched[PAIRING].fd, 0, &(struct itimerspec){0}, NULL);
     write_controllers();
 }
@@ -667,30 +1005,28 @@ static int on_paired(sd_bus_message *reply, void *data, sd_bus_error *error) {
     (void)data, (void)error;
     struct bluetooth_device *device = known_address(target);
     if (!device || sd_bus_message_is_method_error(reply, NULL)) {
-        notify("Could not pair %s", *target_name ? target_name : device ? device->name : "the controller");
+        notify("Could not pair %s", device ? device->name : "the controller");
         stop_pairing();
         return 0;
     }
     trust(device);
     call(device->path, DEVICE_INTERFACE, "Connect", NULL, "");
-    notify("Paired %s", *target_name ? target_name : device->name);
+    notify("Paired %s", device->name);
     stop_pairing();
     return 0;
 }
 
 static void consider(struct bluetooth_device *device) {
-    if (pairing != SEARCHING || !device || !device->seen || device->paired) return;
-    if (*target ? !same(device->address, target) : strcmp(device->icon, GAMEPAD_ICON)) return;
+    if (pairing != SEARCHING || !device || !device->seen || device->paired || strcmp(device->icon, GAMEPAD_ICON)) return;
     call(adapter, ADAPTER_INTERFACE, "StopDiscovery", NULL, "");
     pairing = BONDING;
     snprintf(target, sizeof target, "%s", device->address);
     call(device->path, DEVICE_INTERFACE, "Pair", on_paired, "");
 }
 
-static void start_pairing(const char *address) {
+static void start_pairing(void) {
     if (!*adapter) { notify("No Bluetooth adapter"); return; }
     pairing = SEARCHING;
-    snprintf(target, sizeof target, "%s", address);
     for (int i = 0; i < known_count; i++) known[i].seen = 0;
     call(adapter, ADAPTER_INTERFACE, "StartDiscovery", NULL, "");
     timerfd_settime(watched[PAIRING].fd, 0, &(struct itimerspec){.it_value.tv_sec = PAIRING_SECONDS}, NULL);
@@ -713,23 +1049,12 @@ static void withdraw(const char *address) {
     if (index >= 0) memcpy(offered[index], offered[--offered_count], ADDRESS_SIZE);
 }
 
-static int adopt(struct pad *controller_pad) {
+static void adopt(struct pad *controller_pad) {
     struct bluetooth_device *device = known_address(controller_pad->address);
-    const char *name = SDL_GameControllerName(controller_pad->controller);
-    if (controller_pad->bus != BUS_USB || !*controller_pad->address || !*adapter || (device && device->trusted)) return 0;
-    if (offered_index(controller_pad->address) >= 0) {
-        snprintf(armed, sizeof armed, "%s", controller_pad->address);
-        reannounce(controller_pad);
-        notify("Pairing %s", name);
-        return 1;
-    }
-    SDL_GameControllerType type = SDL_GameControllerGetType(controller_pad->controller);
-    const char *share = type == SDL_CONTROLLER_TYPE_PS5 ? "Create" : type == SDL_CONTROLLER_TYPE_PS4 ? "Share" : NULL;
-    if (!share) return 0;
-    start_pairing(controller_pad->address);
-    snprintf(target_name, sizeof target_name, "%s", name);
-    notify("Unplug %s, then hold %s and PS", name, share);
-    return 1;
+    if (controller_pad->bus != BUS_USB || !*adapter || (device && device->trusted) || offered_index(controller_pad->address) < 0) return;
+    snprintf(armed, sizeof armed, "%s", controller_pad->address);
+    reannounce(controller_pad);
+    notify("Pairing %s", SDL_GameControllerName(controller_pad->controller));
 }
 
 static int reject(sd_bus_message *message, void *data, sd_bus_error *error) {
@@ -973,43 +1298,103 @@ static void process_bus(void) {
     open_bus();
 }
 
-static int seat_of(const char *word) {
-    int seat = atoi(word) - 1;
-    return seat >= 0 && seat < SEATS ? seat : -1;
+static void assign(struct device *device, int seat) {
+    struct pad *controller_pad = pad_with_input(device);
+    if (device->pad == seat) return;
+    release(device);
+    forget_motion(controller_pad);
+    device->pad = seat;
+    if (controller_pad) {
+        SDL_GameControllerSetPlayerIndex(controller_pad->controller, seat);
+        touched(controller_pad);
+    }
+    write_controllers();
 }
 
-static void command(char *line) {
-    char first[WORD_MAX + 1], second[WORD_MAX + 1];
-    int value;
-    int words = sscanf(line, "%" STRINGIFY(WORD_MAX) "s %" STRINGIFY(WORD_MAX) "s %d", first, second, &value);
-    int seat = words >= 2 ? seat_of(words == 3 ? first : second) : -1;
-    if (words == 1 && !strcmp(first, "pair")) {
-        if (pairing == NOT_PAIRING) start_pairing("");
-        else stop_pairing();
-    } else if (words == 1 && !strcmp(first, "batteries")) {
-        int changed = 0;
-        for (int i = 0; i < pad_count; i++) changed |= read_battery(&pads[i]);
-        if (changed) write_controllers();
-    } else if (words == 2 && !strcmp(first, "forget")) {
-        forget(second);
-    } else if (words == 2 && !strcmp(first, "touchpad")) {
-        touchpad_pointer = !strcmp(second, "pointer");
-    } else if (seat < 0) {
-        fprintf(stderr, "bad command: %s", line);
-    } else if (words == 3) {
-        drive(seat, second, value);
-    } else if (!strcmp(first, "plug")) {
-        plug(seat);
-    } else if (!strcmp(first, "unplug")) {
-        unplug(seat);
-    } else {
-        fprintf(stderr, "bad command: %s", line);
+static void set_mode(struct device *device, const char *name) {
+    int mode = mode_named(name);
+    if (mode < 0 || !(kinds[device->kind].modes & MODE(mode)) || (enum mode)mode == device->mode) return;
+    release(device);
+    forget_motion(pad_with_input(device));
+    device->mode = mode;
+    write_controllers();
+}
+
+static void load_keymap(const char *game) {
+    char path[PATH_MAX], slug[NAME_MAX + 1];
+    json_object *manifest = NULL, *keys = NULL;
+    release_all();
+    memset(keymap, 0, sizeof keymap);
+    const char *platform = strchr(game, '/');
+    if (!platform) return;
+    snprintf(slug, sizeof slug, "%.*s", (int)(platform - game), game);
+    snprintf(path, sizeof path, GAMES_DIR "/%s/" MANIFEST, slug);
+    manifest = json_object_from_file(path);
+    if (json_object_object_get_ex(manifest, platform + 1, &keys) && json_object_object_get_ex(keys, "keys", &keys)) {
+        json_object_object_foreach(keys, control, code) {
+            int i = control_named(control), value = libevdev_event_code_from_name(EV_KEY, json_object_get_string(code));
+            if (i >= 0 && value >= 0) keymap[i] = value;
+        }
+    }
+    json_object_put(manifest);
+}
+
+static void set_menu(int open) {
+    if (open) release_all();
+    menu_open = open;
+}
+
+static void set_pads(int count) {
+    for (int seat = 0; seat < PADS; seat++) {
+        if (seat < count || !seat) plug(seat);
+        else unplug(seat);
     }
 }
 
-static void forward(unsigned type, unsigned code, int value) {
-    if (type == EV_KEY && (code == KEY_LEFTMETA || code == KEY_RIGHTMETA)) press_guide(value > 0);
-    else libevdev_uinput_write_event(keyboard, type, code, value);
+static struct device *remote_device(struct device **slot, const char *name, enum kind kind, int guide) {
+    if (*slot) return *slot;
+    *slot = new_device(name, kind, guide);
+    if (*slot) announce(*slot);
+    return *slot;
+}
+
+static struct device *remote_pad(int number) {
+    char name[NAME_MAX + 1];
+    if (number < 1 || number > PADS) return NULL;
+    snprintf(name, sizeof name, REMOTE_PAD_NAME " %d", number);
+    return remote_device(&remote_pads[number - 1], name, PAD, 1);
+}
+
+static void command(char *line) {
+    char words[3][WORD_MAX + 1];
+    int count = sscanf(line, "%" STRINGIFY(WORD_MAX) "s %" STRINGIFY(WORD_MAX) "s %" STRINGIFY(WORD_MAX) "s", words[0], words[1], words[2]);
+    struct device *device = count == 3 ? device_with_id(atoi(words[1])) : NULL, *remote;
+    if (count == 1 && !strcmp(words[0], "pair")) {
+        if (pairing == NOT_PAIRING) start_pairing();
+        else stop_pairing();
+    } else if (count == 1 && !strcmp(words[0], "batteries")) {
+        int changed = 0;
+        for (int i = 0; i < pad_count; i++) changed |= read_battery(&pads[i]);
+        if (changed) write_controllers();
+    } else if (count == 2 && !strcmp(words[0], "forget")) {
+        forget(words[1]);
+    } else if (count == 2 && !strcmp(words[0], "touchpad")) {
+        touchpad_pointer = !strcmp(words[1], "pointer");
+    } else if (count == 2 && !strcmp(words[0], "game")) {
+        load_keymap(strcmp(words[1], NO_GAME) ? words[1] : "");
+    } else if (count == 2 && !strcmp(words[0], "menu")) {
+        set_menu(atoi(words[1]));
+    } else if (count == 2 && !strcmp(words[0], "pads")) {
+        set_pads(atoi(words[1]));
+    } else if (device && !strcmp(words[0], "assign") && atoi(words[2]) >= 0 && atoi(words[2]) <= PADS) {
+        assign(device, atoi(words[2]) - 1);
+    } else if (device && !strcmp(words[0], "mode")) {
+        set_mode(device, words[2]);
+    } else if (count == 3 && (remote = remote_pad(atoi(words[0])))) {
+        pad_input(remote, control_named(words[1]), atoi(words[2]));
+    } else {
+        fprintf(stderr, "bad command: %s", line);
+    }
 }
 
 static void inject(const char *line) {
@@ -1020,8 +1405,9 @@ static void inject(const char *line) {
         fprintf(stderr, "bad event: %s", line);
         return;
     }
-    forward(type, code, value);
-    forward(EV_SYN, SYN_REPORT, 0);
+    if (!remote_device(&remote_keyboard, REMOTE_KEYBOARD_NAME, KEYBOARD, 0)) return;
+    key_input(remote_keyboard, &(struct input_event){.type = type, .code = code, .value = value});
+    key_input(remote_keyboard, &(struct input_event){.type = EV_SYN, .code = SYN_REPORT});
 }
 
 static void read_commands(int fd) {
@@ -1053,38 +1439,41 @@ static int expired(int timer) {
 
 static void capture(const char *node_name) {
     char path[PATH_MAX];
-    struct libevdev *device = NULL;
+    struct libevdev *evdev = NULL;
     snprintf(path, sizeof path, DEVICES "/%s", node_name);
     if (strncmp(node_name, PAD_NODE, strlen(PAD_NODE)) || is_virtual(path)) return;
     int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) { perror(path); return; }
-    if (libevdev_new_from_fd(fd, &device) < 0 ||
-        (!libevdev_has_event_code(device, EV_KEY, KEY_A) && !libevdev_has_event_code(device, EV_REL, REL_X))) {
-        libevdev_free(device);
+    int keys = !libevdev_new_from_fd(fd, &evdev) && libevdev_has_event_code(evdev, EV_KEY, KEY_A);
+    int pointer = evdev && libevdev_has_event_code(evdev, EV_REL, REL_X);
+    struct device *input = keys || pointer ? new_device(libevdev_get_name(evdev), keys ? KEYBOARD : MOUSE, 0) : NULL;
+    struct watch *captured = input ? watch(fd, CAPTURED) : NULL;
+    if (!captured) {
+        if (input) input->id = 0;
+        libevdev_free(evdev);
         close(fd);
         return;
     }
-    struct watch *captured = watch(fd, CAPTURED);
-    if (!captured) { libevdev_free(device); close(fd); return; }
-    libevdev_grab(device, LIBEVDEV_GRAB);
-    captured->device = device;
-    notify("Connected %s", libevdev_get_name(device));
-    write_controllers();
+    libevdev_grab(evdev, LIBEVDEV_GRAB);
+    input->evdev = evdev;
+    captured->input = input;
+    notify("Connected %s", libevdev_get_name(evdev));
+    announce(input);
 }
 
 static void pass_through(int index) {
-    struct libevdev *device = watches[index].device;
+    struct device *input = watches[index].input;
     struct input_event event;
     int status;
-    while ((status = libevdev_next_event(device, LIBEVDEV_READ_FLAG_NORMAL, &event)) >= 0) {
-        forward(event.type, event.code, event.value);
+    while ((status = libevdev_next_event(input->evdev, LIBEVDEV_READ_FLAG_NORMAL, &event)) >= 0) {
+        key_input(input, &event);
         if (status == LIBEVDEV_READ_STATUS_SYNC)
-            while (libevdev_next_event(device, LIBEVDEV_READ_FLAG_SYNC, &event) == LIBEVDEV_READ_STATUS_SYNC)
-                forward(event.type, event.code, event.value);
+            while (libevdev_next_event(input->evdev, LIBEVDEV_READ_FLAG_SYNC, &event) == LIBEVDEV_READ_STATUS_SYNC) key_input(input, &event);
     }
     if (status == -EAGAIN) return;
-    notify("Disconnected %s", libevdev_get_name(device));
-    libevdev_free(device);
+    notify("Disconnected %s", libevdev_get_name(input->evdev));
+    free_device(input);
+    libevdev_free(input->evdev);
     unwatch(index);
     write_controllers();
 }
@@ -1127,51 +1516,38 @@ static double unit_axis(SDL_GameController *controller, SDL_GameControllerAxis a
     return SDL_GameControllerGetAxis(controller, axis) / (double)SDL_JOYSTICK_AXIS_MAX;
 }
 
-static void drive_axis(SDL_GameController *controller, SDL_GameControllerAxis axis) {
+static void drive_axis(struct pad *source, SDL_GameControllerAxis axis) {
+    SDL_GameController *controller = source->controller;
     if (axis >= SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
-        drive(0, SDL_GameControllerGetStringForAxis(axis), lround(past_deadzone(unit_axis(controller, axis), TRIGGER_DEADZONE) * AXIS_MAX));
+        pad_input(source->input, axis_control[axis], lround(past_deadzone(unit_axis(controller, axis), TRIGGER_DEADZONE) * AXIS_MAX));
         return;
     }
     SDL_GameControllerAxis horizontal = axis - axis % 2, vertical = horizontal + 1;
     double x = unit_axis(controller, horizontal), y = unit_axis(controller, vertical), magnitude = hypot(x, y);
     double gain = magnitude ? past_deadzone(magnitude, STICK_DEADZONE) / magnitude : 0;
-    drive(0, SDL_GameControllerGetStringForAxis(horizontal), lround((x * gain + 1) * AXIS_MAX / 2));
-    drive(0, SDL_GameControllerGetStringForAxis(vertical), lround((y * gain + 1) * AXIS_MAX / 2));
-}
-
-static void sense_with(struct pad *controller_pad, SDL_bool enabled) {
-    SDL_GameControllerSetSensorEnabled(controller_pad->controller, SDL_SENSOR_ACCEL, enabled);
-    SDL_GameControllerSetSensorEnabled(controller_pad->controller, SDL_SENSOR_GYRO, enabled);
-}
-
-static void touched(struct pad *controller_pad) {
-    struct pad *previous = pad_of(motion_source);
-    controller_pad->active = now();
-    if (previous == controller_pad) return;
-    if (previous) sense_with(previous, SDL_FALSE);
-    sense_with(controller_pad, SDL_TRUE);
-    motion_source = controller_pad->instance;
+    pad_input(source->input, axis_control[horizontal], lround((x * gain + 1) * AXIS_MAX / 2));
+    pad_input(source->input, axis_control[vertical], lround((y * gain + 1) * AXIS_MAX / 2));
 }
 
 static void attach(int index) {
     const char *path = SDL_JoystickPathForIndex(index);
     if (path && is_virtual(path)) return;
     if (pad_count == PHYSICAL_PADS_MAX) { fprintf(stderr, "padd: too many pads\n"); return; }
-    int player_index = 0;
-    while (SDL_GameControllerFromPlayerIndex(player_index)) player_index++;
     SDL_GameController *game_controller = SDL_GameControllerOpen(index);
     if (!game_controller) { fprintf(stderr, "%s: %s\n", SDL_JoystickNameForIndex(index), SDL_GetError()); return; }
-    SDL_GameControllerSetPlayerIndex(game_controller, player_index);
+    struct device *input = new_device(SDL_GameControllerName(game_controller), PAD, SDL_GameControllerHasButton(game_controller, SDL_CONTROLLER_BUTTON_GUIDE));
+    if (!input) { SDL_GameControllerClose(game_controller); return; }
+    SDL_GameControllerSetPlayerIndex(game_controller, NO_PAD);
     struct pad *controller_pad = &pads[pad_count++];
     *controller_pad = (struct pad){.controller = game_controller, .instance = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(game_controller)),
-                                   .battery = NO_BATTERY, .level = SDL_JoystickCurrentPowerLevel(SDL_GameControllerGetJoystick(game_controller))};
+                                   .input = input, .battery = NO_BATTERY, .level = SDL_JoystickCurrentPowerLevel(SDL_GameControllerGetJoystick(game_controller))};
     identify(controller_pad, path);
     read_battery(controller_pad);
     touched(controller_pad);
     notify("Connected %s", SDL_GameControllerName(game_controller));
     struct watch *physical = watch(open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC), PHYSICAL_PAD);
     if (physical) physical->pad = controller_pad->instance;
-    write_controllers();
+    announce(input);
     schedule_sleep();
 }
 
@@ -1182,11 +1558,11 @@ static void detach(SDL_JoystickID instance) {
     for (int i = 0; i < watched_count; i++)
         if (watches[i].source == PHYSICAL_PAD && watches[i].pad == instance) { unwatch(i); break; }
     withdraw(controller_pad->address);
+    forget_motion(controller_pad);
+    free_device(controller_pad->input);
     udev_device_unref(controller_pad->hid);
     SDL_GameControllerClose(controller_pad->controller);
     *controller_pad = pads[--pad_count];
-    if (motion_source == instance) motion_source = NO_PAD;
-    if (motion_source == NO_PAD && pad_count) touched(&pads[0]);
     write_controllers();
 }
 
@@ -1196,9 +1572,8 @@ static int guide_button(struct pad *controller_pad) {
 }
 
 static void press_guide_of(struct pad *controller_pad, int pressed) {
-    int claimed = pressed ? adopt(controller_pad) : controller_pad->claimed_guide;
-    controller_pad->claimed_guide = pressed && claimed;
-    if (!claimed) drive(0, "guide", pressed);
+    if (pressed) adopt(controller_pad);
+    pad_input(controller_pad->input, button_control[SDL_CONTROLLER_BUTTON_GUIDE], pressed);
 }
 
 static void handle(SDL_Event *event) {
@@ -1214,22 +1589,24 @@ static void handle(SDL_Event *event) {
     case SDL_CONTROLLERBUTTONDOWN:
     case SDL_CONTROLLERBUTTONUP:
         source = pad_of(event->cbutton.which);
-        if (source && event->cbutton.state == SDL_PRESSED) touched(source);
-        if (source && event->cbutton.button == SDL_CONTROLLER_BUTTON_TOUCHPAD && (touchpad_pointer || source->clicked))
+        if (!source) break;
+        if (event->cbutton.state == SDL_PRESSED) touched(source);
+        if (event->cbutton.button == SDL_CONTROLLER_BUTTON_TOUCHPAD && routed(source->input) && (touchpad_pointer || source->clicked))
             click(source, event->cbutton.state == SDL_PRESSED);
-        if (event->cbutton.button != SDL_CONTROLLER_BUTTON_GUIDE) drive(0, SDL_GameControllerGetStringForButton(event->cbutton.button), event->cbutton.state == SDL_PRESSED);
-        else if (source && guide_button(source) == NO_BUTTON) press_guide_of(source, event->cbutton.state == SDL_PRESSED);
+        if (event->cbutton.button != SDL_CONTROLLER_BUTTON_GUIDE)
+            pad_input(source->input, button_control[event->cbutton.button], event->cbutton.state == SDL_PRESSED);
+        else if (guide_button(source) == NO_BUTTON) press_guide_of(source, event->cbutton.state == SDL_PRESSED);
         break;
     case SDL_CONTROLLERAXISMOTION:
         source = pad_of(event->caxis.which);
-        if (source && abs(event->caxis.value) > reach) touched(source);
-        if (source) drive_axis(source->controller, event->caxis.axis);
+        if (source && abs(event->caxis.value) > SDL_AXIS_REACH) touched(source);
+        if (source) drive_axis(source, event->caxis.axis);
         break;
     case SDL_CONTROLLERTOUCHPADDOWN:
     case SDL_CONTROLLERTOUCHPADMOTION:
     case SDL_CONTROLLERTOUCHPADUP:
         source = pad_of(event->ctouchpad.which);
-        if (source && touchpad[0]) touch(touchpad[0], source, &event->ctouchpad);
+        if (source) touch(source, &event->ctouchpad);
         break;
     case SDL_CONTROLLERSENSORUPDATE: sense(&event->csensor); break;
     case SDL_JOYBATTERYUPDATED:
@@ -1248,6 +1625,10 @@ static struct udev_monitor *watch_devices(void) {
     return created;
 }
 
+static void handle_sdl_events(void) {
+    for (SDL_Event event; SDL_PollEvent(&event);) handle(&event);
+}
+
 int main(void) {
     char settings_directory[PATH_MAX];
     mkfifo(PAD_FIFO, S_IRUSR | S_IWUSR);
@@ -1255,13 +1636,14 @@ int main(void) {
     SDL_SetHint(SDL_HINT_GAMECONTROLLERCONFIG_FILE, CONTROLLER_MAPPINGS);
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     if (SDL_Init(SDL_INIT_GAMECONTROLLER) < 0) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
-    reach = SDL_JOYSTICK_AXIS_MAX / atoi(STICK_REACH_DIVISOR);
+    for (int seat = 0; seat < PADS; seat++) motion_source[seat] = NO_PAD;
     udev = udev_new();
     monitor = watch_devices();
     int fixed[FIXED_SOURCES] = {
         [COMMANDS] = open(PAD_FIFO, O_RDWR | O_NONBLOCK | O_CLOEXEC), [HOTPLUG] = monitor ? udev_monitor_get_fd(monitor) : -1,
         [SETTINGS] = inotify_init1(IN_NONBLOCK | IN_CLOEXEC), [PAIRING] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC),
-        [SLEEP] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC), [BUS] = -1};
+        [SLEEP] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC), [POINTING] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC),
+        [RESTING] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC), [BUS] = -1};
     snprintf(settings_directory, sizeof settings_directory, "%.*s", (int)(strrchr(SETTINGS_FILE, '/') - SETTINGS_FILE), SETTINGS_FILE);
     for (enum source source = COMMANDS; source < FIXED_SOURCES; source++) {
         watched[source] = (struct pollfd){.fd = fixed[source], .events = POLLIN};
@@ -1270,15 +1652,19 @@ int main(void) {
     }
     watched_count = FIXED_SOURCES;
     if (inotify_add_watch(fixed[SETTINGS], settings_directory, IN_MOVED_TO) < 0) { perror(settings_directory); return 1; }
-    guide = create_guide();
+    for (SDL_GameControllerAxis axis = 0; axis < SDL_CONTROLLER_AXIS_MAX; axis++) axis_control[axis] = control_named(SDL_GameControllerGetStringForAxis(axis));
+    for (SDL_GameControllerButton button = 0; button < SDL_CONTROLLER_BUTTON_MAX; button++)
+        button_control[button] = control_named(SDL_GameControllerGetStringForButton(button));
     keyboard = create_keyboard();
     plug(0);
     read_sleep();
     open_bus();
+    write_controllers();
+    tell_overlay("reset");
     capture_devices(udev_enumerate_new(udev));
     for (;;) {
-        for (SDL_Event event; SDL_PollEvent(&event);) handle(&event);
-        for (int seat = 0; seat < SEATS; seat++)
+        handle_sdl_events();
+        for (int seat = 0; seat < PADS; seat++)
             if (pad[seat]) libevdev_uinput_write_event(pad[seat], EV_SYN, SYN_REPORT, 0);
         watched[BUS] = (struct pollfd){.fd = bus ? sd_bus_get_fd(bus) : -1, .events = bus ? sd_bus_get_events(bus) : 0};
         int ready = poll(watched, watched_count, bus_timeout());
@@ -1296,6 +1682,8 @@ int main(void) {
                 stop_pairing();
                 break;
             case SLEEP: if (expired(watched[i].fd)) schedule_sleep(); break;
+            case POINTING: if (expired(watched[i].fd)) tick_pointer(); break;
+            case RESTING: if (expired(watched[i].fd)) rest_mice(); break;
             case BUS: break;
             case CAPTURED: pass_through(i); break;
             case PHYSICAL_PAD:

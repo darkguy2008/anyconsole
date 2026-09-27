@@ -1,0 +1,12 @@
+diff -ru a/src/shared/ad.c b/src/shared/ad.c
+--- a/src/shared/ad.c	2026-09-27 15:51:38
++++ b/src/shared/ad.c	2026-09-27 15:51:38
+@@ -1249,7 +1249,7 @@
+ 					const struct bt_ad_data *data)
+ {
+ 	if (!ad)
+-		return false;
++		return NULL;
+ 
+ 	return queue_find(ad->data, data_match, data);
+ }
