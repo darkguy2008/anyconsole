@@ -5,7 +5,6 @@
 #include <fcntl.h>
 #include <ftw.h>
 #include <json-c/json.h>
-#include <libevdev/libevdev.h>
 #include <limits.h>
 #include <math.h>
 #include <pixman.h>
@@ -33,9 +32,8 @@
 #include "wlr-layer-shell-unstable-v1.h"
 #include "wlr-screencopy-unstable-v1.h"
 
-#define INPUT_DIR "/dev/input"
-#define STATE_PARTIAL STATE_FILE ".partial"
-#define MANIFEST "manifest.json"
+#define PARTIAL ".partial"
+#define STATE_PARTIAL STATE_FILE PARTIAL
 #define WAYLAND_SOCKET "wayland-0"
 #define PIPEWIRE_SOCKET "pipewire-0"
 #define SANDBOX_ENGINE "docker"
@@ -50,12 +48,13 @@
 #define REPEAT_DELAY_MS 400
 #define REPEAT_INTERVAL_MS 80
 #define NS_PER_MS 1000000
+#define MS_PER_SECOND 1000
+#define NS_PER_SECOND ((double)MS_PER_SECOND * NS_PER_MS)
 #define PERCENT 100
 #define RGB_MASK 0x00ffffffu
 #define VOLUME_STEP "5%"
 #define GAMES_MAX 512
 #define STORES_MAX 32
-#define INPUTS_MAX 32
 #define DEVICES_MAX 32
 #define AUDIO_OBJECTS_MAX 256
 #define DEPTH_MAX 4
@@ -81,24 +80,40 @@
 #define BAR_WIDTH_DIVISOR 3
 #define BAR_PER_ROW 0.5
 #define LAUNCH_STEPS 2
+#define NO_DEVICE 0
+#define UNAPPLIED (-2)
+#define NOTIFY_PREFIX "notify "
+#define STRINGIFY_(x) #x
+#define STRINGIFY(x) STRINGIFY_(x)
+#define PROFILE_NAME "Player %d"
+#define EMULATE_FILE "emulate.json"
+#define ATTRACT_PROMPT "Press any button"
+#define ATTRACT_PROMPT_ROW (ROWS_PER_SCREEN * 3 / 4)
+#define ATTRACT_FADE_SECONDS 1.0
 
-enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, MICROPHONES, CONTROLLERS, CONTROLLER, SETTINGS };
+enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, MICROPHONES, CONTROLLERS, CONTROLLER, SETTINGS, WHOIS, LOG_OUT, ATTRACT };
 static const struct { const char *name, *title; } screens[] = {
     [HOME] = {"home", "Home"}, [STORE] = {"store", "Store"}, [GAME] = {"game", ""},
     [GUIDE] = {"guide", "Guide"}, [OUTPUTS] = {"outputs", "Output"}, [MICROPHONES] = {"microphones", "Microphone"},
     [CONTROLLERS] = {"controllers", "Controllers"}, [CONTROLLER] = {"controller", ""}, [SETTINGS] = {"settings", "Settings"},
+    [WHOIS] = {"whois", ""}, [LOG_OUT] = {"logout", ""}, [ATTRACT] = {"attract", ""},
 };
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
-              CHOOSE_DISPLAY, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND };
+              CHOOSE_DISPLAY, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT };
 enum command { NONE, UP, DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
+static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [LEFT] = "left", [RIGHT] = "right",
+                                       [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide"};
+static const struct { const char *name, *label; } mode_labels[] = {
+    {"analog", "Analog pad"}, {"digital", "Digital pad"}, {"keyboard", "Keyboard"}, {"mouse", "Mouse"}, {"keyboard-mouse", "Keyboard & mouse"}};
 enum surface_mode { HIDDEN, NOTIFICATIONS_ONLY, FULL };
 enum task { INSTALLING, UNINSTALLING, LAUNCHING };
 static const char *const tasks[] = {[INSTALLING] = "installing", [UNINSTALLING] = "uninstalling", [LAUNCHING] = "launching"};
 
 struct game {
     char slug[NAME_MAX + 1], platform[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX];
-    int installed, commands, context, paused, closing, job_output, percent, states_watch, rewinds, probe_output;
+    json_object *emulate;
+    int installed, commands, context, paused, closing, job_output, percent, states_watch, rewinds, probe_output, owner;
     size_t job_length;
     enum task task;
     unsigned stores;
@@ -108,7 +123,7 @@ struct game {
 struct view { enum screen screen; int game, selected; enum action action; int arg; };
 struct row { char label[TEXT_MAX], value[TEXT_MAX]; enum action action; int arg; };
 struct device { int id; char name[TEXT_MAX], node[TEXT_MAX]; };
-struct input { struct libevdev *device; int guide, directions[ABS_CNT], center, reach; };
+struct member { int device, profile; };
 struct notification { char text[TEXT_MAX]; struct timespec expires; };
 struct window { struct zwlr_foreign_toplevel_handle_v1 *handle; char app_id[TEXT_MAX]; };
 struct buffer { struct wl_buffer *buffer; void *pixels; int busy; };
@@ -122,18 +137,23 @@ static pid_t refresher, monitor;
 static int refresh_pending, monitor_output = -1;
 static json_tokener *monitor_parser;
 static int audio_objects[AUDIO_OBJECTS_MAX], audio_object_count;
-static struct view dashboard[DEPTH_MAX] = {{.screen = HOME, .game = -1}}, guide[DEPTH_MAX] = {{.screen = GUIDE, .game = -1}};
-static int dashboard_depth = 1, guide_depth = 1, guide_shown, dashboard_open = 1;
+static struct view dashboard[DEPTH_MAX] = {{.screen = HOME, .game = -1}}, guides[PROFILES + 1][DEPTH_MAX];
+static int dashboard_depth = 1, guide_depths[PROFILES + 1], guide_shown, dashboard_open = 1;
 static struct row rows[ROWS_MAX];
 static struct device outputs[DEVICES_MAX], microphones[DEVICES_MAX];
 static char default_output[TEXT_MAX], default_microphone[TEXT_MAX], chosen_controller[TEXT_MAX];
 static int output_count, microphone_count, volume = -1;
-static struct input devices[INPUTS_MAX];
-static int device_count;
+static int players[PADS], player_count, menu_told = -1, focus = NO_DEVICE, picker = NO_DEVICE, repeating_device, guide_profile, applied_game = UNAPPLIED;
+static struct member members[INPUT_DEVICES_MAX];
+static int member_count;
+static struct view whois;
+static struct timespec attract_since;
+static cairo_surface_t *splash;
 static struct notification notifications[NOTIFICATIONS_MAX];
 static int notification_count;
 static enum command repeating;
 static int repeat_timer, notification_timer, save_timer, watcher, log_file, changed = 1;
+static json_object *emulate_choices[PROFILES + 1];
 static char rewinds[REWIND_STATES][NAME_MAX + 1];
 static cairo_surface_t *thumbnails[REWIND_STATES], *pending_screen, *current_screen;
 static int pending_after;
@@ -613,9 +633,27 @@ static void read_display(void) {
     changed = 1;
 }
 
+static json_object *device_of(int id) {
+    json_object *list = list_at(controllers_state, "devices");
+    for (int i = 0; i < length_of(list); i++)
+        if (int_at(json_object_array_get_idx(list, i), "id") == id) return json_object_array_get_idx(list, i);
+    return NULL;
+}
+
+static void drop_member(int index) {
+    if (members[index].device == focus) {
+        guide_shown = 0;
+        focus = NO_DEVICE;
+    }
+    members[index] = members[--member_count];
+}
+
 static void read_controllers(void) {
     json_object_put(controllers_state);
     controllers_state = json_object_from_file(CONTROLLERS_FILE);
+    for (int i = member_count - 1; i >= 0; i--)
+        if (!device_of(members[i].device)) drop_member(i);
+    if (!device_of(picker)) picker = NO_DEVICE;
     changed = 1;
 }
 
@@ -638,6 +676,41 @@ static const char *controller_status(json_object *controller) {
         length += snprintf(text + length, sizeof text - length, "  %d%%", json_object_get_int(battery));
     if (int_at(controller, "charging")) snprintf(text + length, sizeof text - length, " charging");
     return text;
+}
+
+static const char *profile_name(int profile) {
+    static char text[TEXT_MAX];
+    snprintf(text, sizeof text, PROFILE_NAME, profile);
+    return text;
+}
+
+static int seat_of(int profile) {
+    for (int i = 0; i < player_count; i++)
+        if (players[i] == profile) return i;
+    return -1;
+}
+
+static int profile_of(int device) {
+    for (int i = 0; i < member_count; i++)
+        if (members[i].device == device) return members[i].profile;
+    return 0;
+}
+
+static int attract(void) { return !player_count && picker == NO_DEVICE; }
+
+static const char *kind_of(int device) { return string_at(device_of(device), "kind", NULL); }
+
+static int mode_index(json_object *device, const char *mode) {
+    json_object *modes = list_at(device, "modes");
+    for (int i = 0; i < length_of(modes); i++)
+        if (!strcmp(json_object_get_string(json_object_array_get_idx(modes, i)), mode)) return i;
+    return -1;
+}
+
+static const char *mode_label(const char *mode) {
+    for (unsigned i = 0; i < sizeof mode_labels / sizeof *mode_labels; i++)
+        if (!strcmp(mode_labels[i].name, mode)) return mode_labels[i].label;
+    return mode;
 }
 
 static int by_title(const void *left, const void *right) {
@@ -687,6 +760,81 @@ static const char *status(int index) {
 
 static int in_game(void) { return active >= 0 && !dashboard_open; }
 
+static void write_json(const char *path, json_object *object) {
+    char partial[PATH_MAX + sizeof PARTIAL];
+    snprintf(partial, sizeof partial, "%s" PARTIAL, path);
+    if (json_object_to_file_ext(partial, object, JSON_C_TO_STRING_PLAIN) < 0 || rename(partial, path) < 0) perror(path);
+}
+
+static const char *emulate_path(int profile) {
+    static char path[PATH_MAX];
+    snprintf(path, sizeof path, PROFILES_DIR "/%d/" EMULATE_FILE, profile);
+    return path;
+}
+
+static json_object *emulate_of(int profile) {
+    if (!emulate_choices[profile]) emulate_choices[profile] = json_object_from_file(emulate_path(profile));
+    if (!emulate_choices[profile]) emulate_choices[profile] = json_object_new_object();
+    return emulate_choices[profile];
+}
+
+static const char *default_mode(int game, json_object *device) {
+    const char *mode = string_at(games[game].emulate, string_at(device, "kind", NULL), NULL);
+    return mode_index(device, mode) < 0 ? string_at(device, "native", NULL) : mode;
+}
+
+static const char *mode_for(int profile, int game, json_object *device) {
+    if (game < 0) return string_at(device, "native", NULL);
+    const char *chosen = string_at(emulate_of(profile), key(game), string_at(device, "kind", NULL));
+    return mode_index(device, chosen) < 0 ? default_mode(game, device) : chosen;
+}
+
+static const char *emulate_value(void) {
+    static char value[TEXT_MAX];
+    json_object *device = device_of(focus);
+    const char *chosen = string_at(emulate_of(profile_of(focus)), key(active), kind_of(focus));
+    if (mode_index(device, chosen) >= 0) return mode_label(chosen);
+    snprintf(value, sizeof value, "Default (%s)", mode_label(default_mode(active, device)));
+    return value;
+}
+
+static void choose_mode(int profile, int game, const char *kind, const char *mode) {
+    char directory[PATH_MAX];
+    json_object *choices = emulate_of(profile), *game_choices;
+    if (!json_object_object_get_ex(choices, key(game), &game_choices)) {
+        game_choices = json_object_new_object();
+        json_object_object_add(choices, key(game), game_choices);
+    }
+    if (*mode) json_object_object_add(game_choices, kind, json_object_new_string(mode));
+    else json_object_object_del(game_choices, kind);
+    snprintf(directory, sizeof directory, PROFILES_DIR "/%d", profile);
+    mkdir(directory, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
+    write_json(emulate_path(profile), choices);
+}
+
+static void apply_modes(void) {
+    if (active != applied_game) tell_padd("game %s", active >= 0 ? key(active) : NO_GAME);
+    applied_game = active;
+    for (int i = 0; i < member_count; i++) {
+        json_object *device = device_of(members[i].device);
+        if (device) tell_padd("mode %d %s", members[i].device, mode_for(members[i].profile, active, device));
+    }
+}
+
+static void cycle_mode(int step) {
+    json_object *device = device_of(focus), *modes = list_at(device, "modes");
+    int current = mode_index(device, string_at(emulate_of(profile_of(focus)), key(active), kind_of(focus))) + 1;
+    int next = cycle(current, length_of(modes), step);
+    choose_mode(profile_of(focus), active, kind_of(focus), next ? json_object_get_string(json_object_array_get_idx(modes, next - 1)) : "");
+    apply_modes();
+}
+
+static int owned_games(int profile) {
+    int count = 0;
+    for (int i = 0; i < game_count; i++) count += games[i].owner == profile && games[i].pid;
+    return count;
+}
+
 static int rewindable(void) { return in_game() && games[active].rewinds; }
 
 static int build(struct view *view) {
@@ -720,6 +868,7 @@ static int build(struct view *view) {
     case GUIDE:
         if (in_game()) count = add_row(count, SHOW_DASHBOARD, 0, "Dashboard", "");
         if (rewindable()) count = add_row(count, REWIND, 0, "Rewind", "%s", rewind_age());
+        if (in_game() && profile_of(focus)) count = add_row(count, EMULATE, 0, "Emulate", "%s", emulate_value());
         if (volume >= 0) snprintf(level, sizeof level, "%d%%", volume);
         count = add_row(count, VOLUME, 0, "Volume", "%s", level);
         count = add_row(count, OPEN_OUTPUTS, 0, "Output", "%s", chosen(outputs, output_count, default_output));
@@ -728,6 +877,18 @@ static int build(struct view *view) {
         count = add_row(count, RELOAD, 0, "Reload", "");
         count = add_row(count, RESTART, 0, "Restart", "");
         count = add_row(count, POWER_OFF, 0, "Power off", "");
+        count = add_row(count, LOG_OUT_PLAYER, 0, "Log out", "");
+        break;
+    case WHOIS:
+        for (int profile = 1; profile <= PROFILES; profile++) {
+            if (seat_of(profile) < 0) count = add_row(count, LOGIN, profile, profile_name(profile), "");
+            else count = add_row(count, LOGIN, profile, profile_name(profile), "Pad %d", seat_of(profile) + 1);
+        }
+        break;
+    case LOG_OUT:
+        count = add_row(count, CONFIRM_LOG_OUT, 0, "Log out", "Closes %d games", owned_games(profile_of(focus)));
+        break;
+    case ATTRACT:
         break;
     case OUTPUTS:
     case MICROPHONES:
@@ -760,18 +921,28 @@ static int build(struct view *view) {
 }
 
 static const char *title(struct view *view) {
+    static char text[2 * TEXT_MAX];
     if (view->screen == GAME) return games[view->game].title;
     if (view->screen == CONTROLLER) return controller_name();
-    return screens[view->screen].title;
+    if (view->screen == WHOIS) return player_count ? "Who is using this controller?" : "Who's playing?";
+    if (view->screen == LOG_OUT) snprintf(text, sizeof text, "Log out %s", profile_name(profile_of(focus)));
+    else if (view->screen == GUIDE && profile_of(focus)) snprintf(text, sizeof text, "%s  \u00b7  Pad %d", profile_name(profile_of(focus)), seat_of(profile_of(focus)) + 1);
+    else return screens[view->screen].title;
+    return text;
 }
 
-static struct view *top(void) { return guide_shown ? &guide[guide_depth - 1] : &dashboard[dashboard_depth - 1]; }
+static struct view *guide_view(void) { return &guides[guide_profile][guide_depths[guide_profile] - 1]; }
 
-static int interactive(void) { return dashboard_open || guide_shown; }
+static struct view *top(void) {
+    if (picker != NO_DEVICE) return &whois;
+    return guide_shown ? guide_view() : &dashboard[dashboard_depth - 1];
+}
+
+static int interactive(void) { return dashboard_open || guide_shown || picker != NO_DEVICE; }
 
 static void push(enum screen screen, int game) {
     if (guide_shown) {
-        if (guide_depth < DEPTH_MAX) guide[guide_depth++] = (struct view){.screen = screen, .game = game};
+        if (guide_depths[guide_profile] < DEPTH_MAX) guides[guide_profile][guide_depths[guide_profile]++] = (struct view){.screen = screen, .game = game};
     } else if (dashboard_depth < DEPTH_MAX) dashboard[dashboard_depth++] = (struct view){.screen = screen, .game = game};
 }
 
@@ -829,6 +1000,7 @@ static void resume(int index) {
     dashboard_open = 0;
     guide_shown = 0;
     refresh_rewinds();
+    apply_modes();
 }
 
 static void ended(int index, int status) {
@@ -845,6 +1017,7 @@ static void ended(int index, int status) {
     remove_rewinds(index);
     if (active == index) active = -1;
     refresh_rewinds();
+    apply_modes();
 }
 
 static void prepare_rewinds(int index, char *states) {
@@ -970,19 +1143,30 @@ static void freeze(int index, int pause) {
     if (game->freezer < 0) game->freezer = 0;
 }
 
-static void probe_rewind(int index) {
+static void probe_labels(int index) {
     struct game *game = &games[index];
-    game->probe = spawn_reading((char *[]){"games", "label", game->platform, REWIND_LABEL, NULL}, &game->probe_output);
+    game->probe = spawn_reading((char *[]){"games", "labels", game->platform, NULL}, &game->probe_output);
     if (game->probe < 0) game->probe = 0;
 }
 
 static void read_probe(int index) {
-    char value[TEXT_MAX];
+    char path[PATH_MAX];
     struct game *game = &games[index];
-    ssize_t count = read(game->probe_output, value, sizeof value);
-    game->rewinds = count > 0 && value[0] != '\n';
+    json_object *labels = json_object_from_fd(game->probe_output), *manifest, *platform = NULL, *overrides = NULL;
+    game->rewinds = *string_at(labels, REWIND_LABEL, NULL);
+    json_object_put(game->emulate);
+    game->emulate = json_tokener_parse(string_at(labels, EMULATE_LABEL, NULL));
+    if (!game->emulate) game->emulate = json_object_new_object();
+    json_object_put(labels);
+    snprintf(path, sizeof path, GAMES_DIR "/%s/" MANIFEST, game->slug);
+    manifest = json_object_from_file(path);
+    if (json_object_object_get_ex(manifest, game->platform, &platform) && json_object_object_get_ex(platform, "emulate", &overrides)) {
+        json_object_object_foreach(overrides, kind, mode) json_object_object_add(game->emulate, kind, json_object_get(mode));
+    }
+    json_object_put(manifest);
     close(game->probe_output);
     game->probe = 0;
+    if (index == active) apply_modes();
     changed = 1;
 }
 
@@ -994,18 +1178,18 @@ static void finish_close(int index) {
 }
 
 static void play(int index) {
-    char directory[PATH_MAX], states[PATH_MAX];
+    char directory[PATH_MAX], states[PATH_MAX], owner[TEXT_MAX];
     int commands[2];
     struct game *game = &games[index];
     if (!listen_socket(index, directory, sizeof directory)) { notify("Could not start %s", game->title); return; }
     if (pipe2(commands, O_CLOEXEC) < 0) { perror("pipe"); close(game->context); return; }
     int output = game_log(index);
     prepare_rewinds(index, states);
-    guide[0] = (struct view){.screen = GUIDE, .game = -1, .action = REWIND};
+    memset(guide_depths, 0, sizeof guide_depths);
     game->rewinds = 0;
-    guide_depth = 1;
     show_game(index);
-    game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, states, NULL}, commands[0], output, output);
+    snprintf(owner, sizeof owner, "%d", game->owner);
+    game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, states, owner, NULL}, commands[0], output, output);
     close(output);
     close(commands[0]);
     game->commands = commands[1];
@@ -1074,7 +1258,7 @@ static void job_done(int index, int status) {
     game->job = 0;
     if (game->task == LAUNCHING) {
         if (status) notify("Could not start %s", game->title);
-        else play(index);
+        else if (seat_of(game->owner) >= 0) play(index);
         return;
     }
     rescan_installed();
@@ -1082,17 +1266,97 @@ static void job_done(int index, int status) {
     else notify(status ? "Uninstall failed: %s" : "Uninstalled %s", game->title);
 }
 
-static void act(struct row *row) {
+static void save_session(void) {
+    json_object *session = json_object_new_array();
+    for (int i = 0; i < player_count; i++) json_object_array_add(session, json_object_new_int(players[i]));
+    write_json(SESSION_FILE, session);
+    json_object_put(session);
+}
+
+static void load_session(void) {
+    json_object *session = json_object_from_file(SESSION_FILE);
+    for (int i = 0; i < length_of(session) && player_count < PADS; i++) players[player_count++] = json_object_get_int(json_object_array_get_idx(session, i));
+    json_object_put(session);
+}
+
+static void adopt_members(void) {
+    json_object *devices = list_at(controllers_state, "devices");
+    member_count = 0;
+    for (int i = 0; i < length_of(devices); i++) {
+        json_object *device = json_object_array_get_idx(devices, i);
+        int pad = int_at(device, "pad");
+        if (pad && pad <= player_count) members[member_count++] = (struct member){.device = int_at(device, "id"), .profile = players[pad - 1]};
+        else if (pad) tell_padd("assign %d 0", int_at(device, "id"));
+    }
+}
+
+static void seat_devices(void) {
+    save_session();
+    tell_padd("pads %d", player_count);
+    for (int i = 0; i < member_count; i++) tell_padd("assign %d %d", members[i].device, seat_of(members[i].profile) + 1);
+    apply_modes();
+    changed = 1;
+}
+
+static void open_picker(int device) {
+    picker = device;
+    whois = (struct view){.screen = WHOIS, .game = -1};
+    changed = 1;
+}
+
+static void login(int profile, int device) {
+    if (profile < 1 || profile > PROFILES) return;
+    if (seat_of(profile) < 0 && player_count == PADS) { notify("Every pad is taken"); return; }
+    if (!player_count) {
+        dashboard_open = 1;
+        dashboard_depth = 1;
+        memset(guide_depths, 0, sizeof guide_depths);
+    }
+    if (seat_of(profile) < 0) players[player_count++] = profile;
+    for (int i = member_count - 1; i >= 0; i--)
+        if (members[i].device == device) drop_member(i);
+    if (device != NO_DEVICE && member_count < INPUT_DEVICES_MAX) members[member_count++] = (struct member){.device = device, .profile = profile};
+    if (device == picker) picker = NO_DEVICE;
+    seat_devices();
+}
+
+static void logout(int profile, int device) {
+    int seat = seat_of(profile);
+    if (seat < 0) return;
+    for (int i = 0; i < game_count; i++)
+        if (games[i].owner == profile && games[i].pid) close_game(i);
+    for (int i = member_count - 1; i >= 0; i--) {
+        if (members[i].profile != profile) continue;
+        tell_padd("assign %d 0", members[i].device);
+        drop_member(i);
+    }
+    player_count--;
+    memmove(players + seat, players + seat + 1, (player_count - seat) * sizeof *players);
+    guide_shown = 0;
+    seat_devices();
+    if (!player_count && device != NO_DEVICE) open_picker(device);
+}
+
+static void act(struct row *row, int device) {
     char id[TEXT_MAX], store[TEXT_MAX];
     struct view *view = top();
     struct game *game = view->game >= 0 ? &games[view->game] : NULL;
     switch (row->action) {
-    case NOTHING: case VOLUME: case CHOOSE_DISPLAY: case CHOOSE_RESOLUTION: case CHOOSE_SLEEP: break;
+    case NOTHING: case VOLUME: case CHOOSE_DISPLAY: case CHOOSE_RESOLUTION: case CHOOSE_SLEEP: case EMULATE: break;
     case REWIND: load_rewind(); break;
+    case LOGIN: login(row->arg, picker); break;
+    case LOG_OUT_PLAYER:
+        if (owned_games(profile_of(focus))) push(LOG_OUT, -1);
+        else logout(profile_of(focus), focus);
+        break;
+    case CONFIRM_LOG_OUT: logout(profile_of(focus), focus); break;
     case OPEN_STORE: push(STORE, -1); refresh(); break;
     case OPEN_SETTINGS: push(SETTINGS, -1); break;
     case OPEN_GAME: push(GAME, row->arg); break;
-    case PLAY: launch(view->game); break;
+    case PLAY:
+        game->owner = profile_of(device);
+        launch(view->game);
+        break;
     case RESUME: resume(view->game); break;
     case CLOSE: close_game(view->game); break;
     case UNINSTALL: start_job(view->game, UNINSTALLING, (char *[]){"games", "uninstall", game->slug, game->platform, NULL}); break;
@@ -1106,7 +1370,7 @@ static void act(struct row *row) {
     case SET_DEVICE:
         snprintf(id, sizeof id, "%d", row->arg);
         start((char *[]){"wpctl", "set-default", id, NULL});
-        guide_depth--;
+        guide_depths[guide_profile]--;
         break;
     case OPEN_CONTROLLERS:
         push(CONTROLLERS, -1);
@@ -1119,7 +1383,7 @@ static void act(struct row *row) {
         break;
     case FORGET:
         tell_padd("forget %s", chosen_controller);
-        guide_depth--;
+        guide_depths[guide_profile]--;
         break;
     case RELOAD: exit(0);
     case RESTART: start((char *[]){"reboot", NULL}); break;
@@ -1139,6 +1403,7 @@ static void adjust(enum action action, int step) {
     if (action == CHOOSE_RESOLUTION) cycle_resolution(step);
     if (action == CHOOSE_SLEEP) cycle_sleep(step);
     if (action == REWIND && rewind_back - step >= 0 && rewind_back - step <= rewind_count) rewind_back -= step;
+    if (action == EMULATE) cycle_mode(step);
 }
 
 static void open_guide(void) {
@@ -1151,14 +1416,21 @@ static void open_guide(void) {
     if (!capture.frame) start_capture(active);
 }
 
-static void press(enum command command) {
-    if (command == GUIDE_BUTTON) {
-        if (guide_shown) guide_shown = 0;
-        else open_guide();
-        changed = 1;
+static void toggle_guide(int device) {
+    if (guide_shown && focus == device) {
+        guide_shown = 0;
         return;
     }
-    if (!interactive()) return;
+    guide_profile = profile_of(device);
+    if (!guide_depths[guide_profile]) {
+        guides[guide_profile][0] = (struct view){.screen = GUIDE, .game = -1, .action = REWIND};
+        guide_depths[guide_profile] = 1;
+    }
+    focus = device;
+    if (!guide_shown) open_guide();
+}
+
+static void navigate(int device, enum command command) {
     struct view *view = top();
     int count = build(view), selected = view->selected;
     struct row *row = count ? &rows[view->selected] : NULL;
@@ -1166,9 +1438,10 @@ static void press(enum command command) {
     case UP: if (view->selected > 0) view->selected--; break;
     case DOWN: if (view->selected < count - 1) view->selected++; break;
     case LEFT: case RIGHT: if (row) adjust(row->action, command == LEFT ? -1 : 1); break;
-    case CONFIRM: if (row) act(row); break;
-    case BACK:
-        if (guide_shown && guide_depth > 1) guide_depth--;
+    case CONFIRM: if (row) act(row, device); break;
+    case BACK: case GUIDE_BUTTON:
+        if (picker != NO_DEVICE) picker = NO_DEVICE;
+        else if (guide_shown && guide_depths[guide_profile] > 1) guide_depths[guide_profile]--;
         else if (guide_shown) guide_shown = 0;
         else if (dashboard_depth > 1) dashboard_depth--;
         break;
@@ -1182,79 +1455,35 @@ static void press(enum command command) {
     else changed |= view->selected != selected;
 }
 
-static void hold(enum command command, int pressed) {
+static void press(int device, enum command command) {
+    if (attract()) {
+        open_picker(device);
+    } else if (picker != NO_DEVICE) {
+        if (device == picker) navigate(device, command);
+    } else if (!profile_of(device)) {
+        if (command == GUIDE_BUTTON || !int_at(device_of(device), "guide")) open_picker(device);
+    } else if (command == GUIDE_BUTTON) {
+        toggle_guide(device);
+        changed = 1;
+    } else if (interactive() && (!guide_shown || device == focus)) {
+        navigate(device, command);
+    }
+}
+
+static void hold(int device, enum command command, int pressed) {
     struct itimerspec timer = {0};
-    if (pressed) press(command);
-    if (command < UP || command > RIGHT || (!pressed && command != repeating) || (pressed && !interactive())) return;
+    if (pressed) press(device, command);
+    if (command < UP || command > RIGHT || (!pressed && (command != repeating || device != repeating_device)) || (pressed && !interactive())) return;
     repeating = pressed ? command : NONE;
+    repeating_device = device;
     if (pressed) timer = (struct itimerspec){.it_value = {.tv_nsec = REPEAT_DELAY_MS * NS_PER_MS}, .it_interval = {.tv_nsec = REPEAT_INTERVAL_MS * NS_PER_MS}};
     timerfd_settime(repeat_timer, 0, &timer, NULL);
 }
 
-static enum command key_command(unsigned code) {
-    switch (code) {
-    case KEY_UP: case BTN_DPAD_UP: return UP;
-    case KEY_DOWN: case BTN_DPAD_DOWN: return DOWN;
-    case KEY_LEFT: case BTN_DPAD_LEFT: return LEFT;
-    case KEY_RIGHT: case BTN_DPAD_RIGHT: return RIGHT;
-    case KEY_ENTER: case KEY_KPENTER: case KEY_X: case BTN_SOUTH: case BTN_START: return CONFIRM;
-    case KEY_ESC: case KEY_BACKSPACE: case KEY_Z: case BTN_EAST: return BACK;
-    case BTN_MODE: return GUIDE_BUTTON;
-    default: return NONE;
-    }
-}
-
-static void steer(int *state, int direction, enum command negative, enum command positive) {
-    if (direction == *state) return;
-    if (*state) hold(*state < 0 ? negative : positive, 0);
-    *state = direction;
-    if (direction) hold(direction < 0 ? negative : positive, 1);
-}
-
-static int stick(struct input *input, int value) {
-    return value < input->center - input->reach ? -1 : value > input->center + input->reach ? 1 : 0;
-}
-
-static void open_input(const char *node) {
-    char path[PATH_MAX];
-    struct libevdev *device;
-    snprintf(path, sizeof path, INPUT_DIR "/%s", node);
-    if (strncmp(node, "event", strlen("event")) || device_count == INPUTS_MAX) return;
-    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-    if (fd < 0 || libevdev_new_from_fd(fd, &device) < 0) {
-        perror(path);
-        if (fd >= 0) close(fd);
-        return;
-    }
-    int minimum = libevdev_get_abs_minimum(device, ABS_X), maximum = libevdev_get_abs_maximum(device, ABS_X);
-    devices[device_count++] = (struct input){.device = device, .guide = !strcmp(libevdev_get_name(device), GUIDE_DEVICE),
-                                             .center = (minimum + maximum) / 2, .reach = (maximum - minimum) / atoi(STICK_REACH_DIVISOR)};
-}
-
-static void handle_event(struct input *input, struct input_event *event) {
-    if (event->type == EV_KEY && event->value != 2 && key_command(event->code) != NONE) hold(key_command(event->code), event->value);
-    if (event->type != EV_ABS) return;
-    int *direction = &input->directions[event->code];
-    if (event->code == ABS_HAT0X) steer(direction, event->value, LEFT, RIGHT);
-    if (event->code == ABS_HAT0Y) steer(direction, event->value, UP, DOWN);
-    if (event->code == ABS_X && input->reach) steer(direction, stick(input, event->value), LEFT, RIGHT);
-    if (event->code == ABS_Y && input->reach) steer(direction, stick(input, event->value), UP, DOWN);
-}
-
-static void read_input(int index, int discard) {
-    struct input *input = &devices[index];
-    struct input_event event;
-    int status;
-    while ((status = libevdev_next_event(input->device, LIBEVDEV_READ_FLAG_NORMAL, &event)) >= 0) {
-        if (status == LIBEVDEV_READ_STATUS_SYNC)
-            while (libevdev_next_event(input->device, LIBEVDEV_READ_FLAG_SYNC, &event) == LIBEVDEV_READ_STATUS_SYNC) continue;
-        else if (!discard) handle_event(input, &event);
-    }
-    if (discard) memset(input->directions, 0, sizeof input->directions);
-    if (status == -EAGAIN) return;
-    close(libevdev_get_fd(input->device));
-    libevdev_free(input->device);
-    *input = devices[--device_count];
+static enum command command_named(const char *name) {
+    for (unsigned i = 0; i < sizeof commands / sizeof *commands; i++)
+        if (!strcmp(commands[i], name)) return i;
+    return NONE;
 }
 
 static void hide(void) {
@@ -1474,6 +1703,32 @@ static void draw_launch(cairo_t *cr) {
     centered(cr, top_edge + bar_height + 2 * line + margin, status(active));
 }
 
+static void on_frame(void *data, struct wl_callback *callback, uint32_t time) {
+    (void)data, (void)time;
+    wl_callback_destroy(callback);
+    draw_pending = changed = 1;
+}
+
+static const struct wl_callback_listener frame_listener = {.done = on_frame};
+
+static int draw_attract(cairo_t *cr) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double shown = fmin(1, (now.tv_sec - attract_since.tv_sec + (now.tv_nsec - attract_since.tv_nsec) / NS_PER_SECOND) / ATTRACT_FADE_SECONDS);
+    cairo_set_source_rgb(cr, 0, 0, 0);
+    cairo_paint(cr);
+    draw_image(cr, splash, width, height);
+    cairo_set_source_rgba(cr, 1, 1, 1, shown);
+    centered(cr, ATTRACT_PROMPT_ROW * row_height(), ATTRACT_PROMPT);
+    return shown < 1;
+}
+
+static int layer_rows(struct view *view, int top_count, int *intact) {
+    if (view == top() && *intact) return top_count;
+    *intact = 0;
+    return build(view);
+}
+
 static void draw(int top_count) {
     struct buffer *buffer = !buffers[0].busy ? &buffers[0] : !buffers[1].busy ? &buffers[1] : NULL;
     if (!buffer) { draw_pending = 1; return; }
@@ -1481,19 +1736,26 @@ static void draw(int top_count) {
     cairo_surface_t *canvas = cairo_image_surface_create_for_data(buffer->pixels, CAIRO_FORMAT_ARGB32, width, height, width * BYTES_PER_PIXEL);
     cairo_t *cr = cairo_create(canvas);
     double notification_width = (double)output_width / NOTIFICATION_WIDTH_DIVISOR, margin = row_height() * MARGIN_PER_ROW;
+    int animating = 0, intact = 1;
     cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
     cairo_paint(cr);
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
     cairo_select_font_face(cr, FONT, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
     cairo_set_font_size(cr, row_height() * FONT_PER_ROW);
-    if (launching()) draw_launch(cr);
-    if (dashboard_open) draw_view(cr, &dashboard[dashboard_depth - 1], guide_shown ? build(&dashboard[dashboard_depth - 1]) : top_count, width);
-    if (guide_shown) {
-        int guide_count = dashboard_open ? build(&guide[guide_depth - 1]) : top_count;
-        if (guide_count && rows[guide[guide_depth - 1].selected].action == REWIND && rewind_back) draw_preview(cr);
-        draw_view(cr, &guide[guide_depth - 1], guide_count, (double)width / GUIDE_WIDTH_DIVISOR);
-        if (guide_depth == 1 && rewindable()) draw_carousel(cr);
+    if (attract()) {
+        animating = draw_attract(cr);
+    } else {
+        if (launching()) draw_launch(cr);
+        if (dashboard_open) draw_view(cr, &dashboard[dashboard_depth - 1], layer_rows(&dashboard[dashboard_depth - 1], top_count, &intact), width);
     }
+    if (guide_shown) {
+        int guide_count = layer_rows(guide_view(), top_count, &intact);
+        int rewinding = guide_count && rows[guide_view()->selected].action == REWIND;
+        if (rewinding && rewind_back) draw_preview(cr);
+        draw_view(cr, guide_view(), guide_count, (double)width / GUIDE_WIDTH_DIVISOR);
+        if (rewinding) draw_carousel(cr);
+    }
+    if (picker != NO_DEVICE) draw_view(cr, &whois, layer_rows(&whois, top_count, &intact), width);
     for (int i = 0; i < notification_count; i++) {
         cairo_set_source_rgb(cr, 1, 1, 1);
         cairo_rectangle(cr, width - notification_width, i * row_height(), notification_width, row_height());
@@ -1504,6 +1766,7 @@ static void draw(int top_count) {
     cairo_destroy(cr);
     cairo_surface_destroy(canvas);
     buffer->busy = 1;
+    if (animating) wl_callback_add_listener(wl_surface_frame(surface), &frame_listener, NULL);
     wl_surface_attach(surface, buffer->buffer, 0, 0);
     wl_surface_damage_buffer(surface, 0, 0, width, height);
     wl_surface_commit(surface);
@@ -1519,7 +1782,22 @@ static char *serialize_state(int count) {
         json_object_object_add(row, "value", json_object_new_string(rows[i].value));
         json_object_array_add(list, row);
     }
-    json_object_object_add(state, "screen", json_object_new_string(screens[view->screen].name));
+    json_object *session = json_object_new_object(), *entries = json_object_new_array();
+    json_object_object_add(state, "screen", json_object_new_string(screens[attract() ? ATTRACT : view->screen].name));
+    for (int i = 0; i < player_count; i++) {
+        json_object *player = json_object_new_object(), *devices = json_object_new_array();
+        for (int j = 0; j < member_count; j++)
+            if (members[j].profile == players[i]) json_object_array_add(devices, json_object_new_int(members[j].device));
+        json_object_object_add(player, "profile", json_object_new_int(players[i]));
+        json_object_object_add(player, "name", json_object_new_string(profile_name(players[i])));
+        json_object_object_add(player, "pad", json_object_new_int(i + 1));
+        json_object_object_add(player, "devices", devices);
+        json_object_array_add(entries, player);
+    }
+    json_object_object_add(session, "players", entries);
+    json_object_object_add(session, "focus", focus == NO_DEVICE ? NULL : json_object_new_int(focus));
+    json_object_object_add(session, "picker", picker == NO_DEVICE ? NULL : json_object_new_int(picker));
+    json_object_object_add(state, "session", session);
     json_object_object_add(state, "rows", list);
     json_object_object_add(state, "selected", json_object_new_int(view->selected));
     json_object_object_add(state, "dashboard", json_object_new_boolean(dashboard_open));
@@ -1539,6 +1817,7 @@ static char *serialize_state(int count) {
         json_object_object_add(game, "key", json_object_new_string(key(i)));
         json_object_object_add(game, "title", json_object_new_string(games[i].title));
         json_object_object_add(game, "status", json_object_new_string(status(i)));
+        json_object_object_add(game, "owner", games[i].owner ? json_object_new_int(games[i].owner) : NULL);
         json_object_object_add(game, "stores", offers);
         json_object_array_add(list, game);
     }
@@ -1580,8 +1859,15 @@ static void settle(void) {
         if (!games[i].pid || !game_window(i) || games[i].closing || games[i].paused == pause || games[i].freezer) continue;
         freeze(i, pause);
     }
+    if (menu_told != (attract() || interactive())) {
+        menu_told = attract() || interactive();
+        tell_padd("menu %d", menu_told);
+        if (!menu_told) hold(repeating_device, repeating, 0);
+    }
+    if (!attract()) attract_since = (struct timespec){0};
+    else if (!attract_since.tv_sec && !attract_since.tv_nsec) clock_gettime(CLOCK_MONOTONIC, &attract_since);
     enum surface_mode wanted = HIDDEN;
-    if (interactive() || launching() || (notification_count && !output_width)) wanted = FULL;
+    if (attract() || interactive() || launching() || (notification_count && !output_width)) wanted = FULL;
     else if (notification_count) wanted = NOTIFICATIONS_ONLY;
     if (wanted != mode && wanted == HIDDEN) {
         free_buffers();
@@ -1632,15 +1918,14 @@ static int read_game_change(struct inotify_event *event) {
     return 0;
 }
 
-static void read_changes(int input_watch, int runtime_watch, int display_watch, int controllers_watch) {
+static void read_changes(int runtime_watch, int display_watch, int controllers_watch) {
     char buffer[BUFSIZ] __attribute__((aligned(__alignof__(struct inotify_event))));
     ssize_t count = read(watcher, buffer, sizeof buffer);
     for (char *at = buffer; count > 0 && at < buffer + count;) {
         struct inotify_event *event = (struct inotify_event *)at;
         at += sizeof *event + event->len;
         if (!event->len || read_game_change(event)) continue;
-        if (event->wd == input_watch) open_input(event->name);
-        else if (event->wd == runtime_watch && !strcmp(event->name, PIPEWIRE_SOCKET)) start_monitor();
+        if (event->wd == runtime_watch && !strcmp(event->name, PIPEWIRE_SOCKET)) start_monitor();
         else if (event->wd == display_watch && !strcmp(event->name, basename(DISPLAY_FILE))) {
             read_display();
         } else if (event->wd == controllers_watch && !strcmp(event->name, basename(CONTROLLERS_FILE))) {
@@ -1662,7 +1947,7 @@ static void on_toplevel_app_id(void *data, struct zwlr_foreign_toplevel_handle_v
     for (int i = 0; i < window_count; i++)
         if (windows[i].handle == handle) snprintf(windows[i].app_id, sizeof windows[i].app_id, "%s", app_id);
     for (int i = 0; i < game_count; i++)
-        if (games[i].pid && game_window(i) && game_window(i)->handle == handle) probe_rewind(i);
+        if (games[i].pid && game_window(i) && game_window(i)->handle == handle) probe_labels(i);
     changed = 1;
 }
 
@@ -1728,21 +2013,44 @@ static const struct wl_registry_listener registry_listener = {.global = on_globa
 
 static void directory_of(const char *path, char *directory) { snprintf(directory, PATH_MAX, "%.*s", (int)(strrchr(path, '/') - path), path); }
 
-static void scan_directory(const char *path, void (*found)(const char *)) {
-    DIR *directory = opendir(path);
-    for (struct dirent *entry; directory && (entry = readdir(directory));) found(entry->d_name);
-    if (directory) closedir(directory);
+static void reset_devices(void) {
+    read_controllers();
+    adopt_members();
+    picker = focus = NO_DEVICE;
+    guide_shown = 0;
+    applied_game = UNAPPLIED;
+    menu_told = -1;
+    seat_devices();
 }
 
-static void show_message(char *line, void *context) {
+static void know(int device) {
+    if (!device_of(device)) read_controllers();
+}
+
+static void connected(int device) {
+    know(device);
+    if (player_count && picker == NO_DEVICE && !int_at(device_of(device), "guide")) open_picker(device);
+}
+
+static void handle_message(char *line, void *context) {
+    char name[WORD_MAX + 1];
+    int first, second = NO_DEVICE, value;
     (void)context;
-    notify("%s", line);
+    if (!strncmp(line, NOTIFY_PREFIX, strlen(NOTIFY_PREFIX))) notify("%s", line + strlen(NOTIFY_PREFIX));
+    else if (!strcmp(line, "reset")) reset_devices();
+    else if (sscanf(line, "logout %d", &first) == 1) logout(first, NO_DEVICE);
+    else if (sscanf(line, "login %d %d", &first, &second) >= 1) login(first, second);
+    else if (sscanf(line, "connect %d", &first) == 1) connected(first);
+    else if (sscanf(line, "press %d %" STRINGIFY(WORD_MAX) "s %d", &first, name, &value) == 3) {
+        know(first);
+        hold(first, command_named(name), value);
+    }
 }
 
 static void read_messages(int fd) {
     static char pending[PIPE_BUF];
     static size_t length;
-    read_lines(fd, pending, sizeof pending, &length, show_message, NULL);
+    read_lines(fd, pending, sizeof pending, &length, handle_message, NULL);
 }
 
 static int numbers(const char *list, int *parsed, int max) {
@@ -1758,8 +2066,8 @@ static int numbers(const char *list, int *parsed, int max) {
 
 int main(void) {
     enum { WAYLAND, CHANGES, SIGNALS, REPEAT, NOTIFICATIONS, MESSAGES, SAVE, MONITOR, FIXED };
-    struct pollfd watched[FIXED + INPUTS_MAX + GAMES_MAX];
-    int jobs[GAMES_MAX], polled[INPUTS_MAX];
+    struct pollfd watched[FIXED + GAMES_MAX];
+    int jobs[GAMES_MAX];
     char stores_directory[PATH_MAX], display_directory[PATH_MAX], settings_directory[PATH_MAX], controllers_directory[PATH_MAX];
     sigset_t signals;
     signal(SIGPIPE, SIG_IGN);
@@ -1780,9 +2088,8 @@ int main(void) {
     directory_of(CONTROLLERS_FILE, controllers_directory);
     resolution_count = numbers(RESOLUTIONS, resolutions, RESOLUTIONS_MAX);
     sleep_choice_count = numbers(SLEEP_MINUTES, sleep_choices, SLEEP_CHOICES_MAX);
-    mkfifo(NOTIFY_FIFO, S_IRUSR | S_IWUSR);
+    mkfifo(OVERLAY_FIFO, S_IRUSR | S_IWUSR);
     watcher = inotify_init1(IN_CLOEXEC);
-    int input_watch = inotify_add_watch(watcher, INPUT_DIR, IN_CREATE);
     int runtime_watch = inotify_add_watch(watcher, getenv("XDG_RUNTIME_DIR"), IN_CREATE);
     inotify_add_watch(watcher, stores_directory, IN_CLOSE_WRITE | IN_MOVED_TO);
     inotify_add_watch(watcher, settings_directory, IN_MOVED_TO | IN_MASK_ADD);
@@ -1797,25 +2104,21 @@ int main(void) {
     watched[SIGNALS] = (struct pollfd){.fd = signalfd(-1, &signals, SFD_CLOEXEC), .events = POLLIN};
     watched[REPEAT] = (struct pollfd){.fd = repeat_timer, .events = POLLIN};
     watched[NOTIFICATIONS] = (struct pollfd){.fd = notification_timer, .events = POLLIN};
-    watched[MESSAGES] = (struct pollfd){.fd = open(NOTIFY_FIFO, O_RDWR | O_NONBLOCK | O_CLOEXEC), .events = POLLIN};
+    watched[MESSAGES] = (struct pollfd){.fd = open(OVERLAY_FIFO, O_RDWR | O_NONBLOCK | O_CLOEXEC), .events = POLLIN};
     watched[SAVE] = (struct pollfd){.fd = save_timer, .events = POLLIN};
-    scan_directory(INPUT_DIR, open_input);
+    splash = cairo_image_surface_create_from_png(SPLASH_IMAGE);
     read_stores();
     read_settings();
     read_display();
-    read_controllers();
+    load_session();
+    reset_devices();
     rescan();
     refresh();
     start_monitor();
     settle();
     for (;;) {
-        int count = FIXED, device_polls = 0, job_count = 0, was_interactive = interactive();
+        int count = FIXED, job_count = 0;
         watched[MONITOR] = (struct pollfd){.fd = monitor > 0 ? monitor_output : -1, .events = POLLIN};
-        for (int i = 0; i < device_count; i++) {
-            if (!devices[i].guide && !was_interactive) continue;
-            polled[device_polls++] = i;
-            watched[count++] = (struct pollfd){.fd = libevdev_get_fd(devices[i].device), .events = POLLIN};
-        }
         for (int i = 0; i < game_count; i++) {
             if (!games[i].job) continue;
             jobs[job_count++] = i;
@@ -1829,23 +2132,18 @@ int main(void) {
         if (wl_display_dispatch_pending(display) < 0) { fprintf(stderr, "overlay: lost the compositor\n"); return 1; }
         uint64_t expirations;
         struct signalfd_siginfo signal_info;
-        if (watched[CHANGES].revents) read_changes(input_watch, runtime_watch, display_watch, controllers_watch);
+        if (watched[CHANGES].revents) read_changes(runtime_watch, display_watch, controllers_watch);
         if (watched[SIGNALS].revents && read(watched[SIGNALS].fd, &signal_info, sizeof signal_info) > 0) {
             if (signal_info.ssi_signo == SIGUSR1) refresh();
             else reap();
         }
-        if (watched[REPEAT].revents && read(repeat_timer, &expirations, sizeof expirations) > 0) press(repeating);
+        if (watched[REPEAT].revents && read(repeat_timer, &expirations, sizeof expirations) > 0) press(repeating_device, repeating);
         if (watched[NOTIFICATIONS].revents && read(notification_timer, &expirations, sizeof expirations) > 0) expire_notifications();
         if (watched[MESSAGES].revents) read_messages(watched[MESSAGES].fd);
         if (watched[SAVE].revents && read(save_timer, &expirations, sizeof expirations) > 0) sample_screen();
         if (watched[MONITOR].revents) read_monitor();
-        for (int i = device_polls - 1; i >= 0; i--)
-            if (watched[FIXED + i].revents) read_input(polled[i], 0);
         for (int i = 0; i < job_count; i++)
-            if (watched[FIXED + device_polls + i].revents) read_job(jobs[i]);
-        if (!was_interactive && interactive())
-            for (int i = device_count - 1; i >= 0; i--)
-                if (!devices[i].guide) read_input(i, 1);
+            if (watched[FIXED + i].revents) read_job(jobs[i]);
         settle();
     }
 }

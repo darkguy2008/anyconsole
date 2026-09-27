@@ -11,9 +11,9 @@
 #include <wayland-client.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
+#include "anyconsole.h"
 #include "xdg-shell.h"
 
-#define SPLASH_PATH "/usr/share/anyconsole/splash.png"
 #define BYTES_PER_PIXEL 4
 #define MAX_DRM_DEVICES 16
 
@@ -21,8 +21,8 @@ static pixman_image_t *splash;
 
 static void load_splash(void) {
 	png_image png = {.version = PNG_IMAGE_VERSION};
-	if (!png_image_begin_read_from_file(&png, SPLASH_PATH)) {
-		fprintf(stderr, "splash: %s: %s\n", SPLASH_PATH, png.message);
+	if (!png_image_begin_read_from_file(&png, SPLASH_IMAGE)) {
+		fprintf(stderr, "splash: %s: %s\n", SPLASH_IMAGE, png.message);
 		exit(1);
 	}
 	png.format = PNG_FORMAT_BGRA;

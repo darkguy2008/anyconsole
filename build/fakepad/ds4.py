@@ -43,10 +43,8 @@ BUSES = {"usb": UsbPad, "bluetooth": BluetoothPad}
 
 
 def obey(pad, words):
-    if words == ["press"]:
-        pad.event(buttons={PS_BUTTON: True})
-    elif words == ["release"]:
-        pad.event(buttons={PS_BUTTON: False})
+    if words[0] in ("press", "release"):
+        pad.event(buttons={int(words[1]) if len(words) > 1 else PS_BUTTON: words[0] == "press"})
     elif words[0] == "battery":
         pad.battery.capacity = int(words[1])
         pad.event()

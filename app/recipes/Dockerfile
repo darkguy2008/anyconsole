@@ -85,7 +85,7 @@ ENTRYPOINT ["/retroarch/retroarch", "--verbose", "--config", "/retroarch/retroar
 
 # nes Nintendo Entertainment System
 FROM retroarch AS nes
-LABEL anyconsole.launch="nes fds unf unif"
+LABEL anyconsole.launch="nes fds unf unif" anyconsole.emulate="{\"pad\":\"digital\"}"
 COPY --from=fceumm /cores/fceumm_libretro.so /retroarch/core.so
 
 # msdos MS-DOS
@@ -96,7 +96,7 @@ COPY msdos.opt /retroarch/core.opt
 
 # snes Super Nintendo
 FROM retroarch AS snes
-LABEL anyconsole.launch="sfc smc fig swc bs"
+LABEL anyconsole.launch="sfc smc fig swc bs" anyconsole.emulate="{\"pad\":\"digital\"}"
 COPY --from=snes9x /cores/snes9x_libretro.so /retroarch/core.so
 
 # n64 Nintendo 64
@@ -106,33 +106,33 @@ COPY --from=parallel_n64 /cores/parallel_n64_libretro.so /retroarch/core.so
 
 # gba Game Boy Advance
 FROM retroarch AS gba
-LABEL anyconsole.launch="gba" anyconsole.bios="/system"
+LABEL anyconsole.launch="gba" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.bios="/system"
 COPY --from=mgba /cores/mgba_libretro.so /retroarch/core.so
 
 # gb Game Boy
 FROM retroarch AS gb
-LABEL anyconsole.launch="gb gbc dmg"
+LABEL anyconsole.launch="gb gbc dmg" anyconsole.emulate="{\"pad\":\"digital\"}"
 COPY --from=gambatte /cores/gambatte_libretro.so /retroarch/core.so
 
 # wsc WonderSwan Color
 FROM retroarch AS wsc
-LABEL anyconsole.launch="wsc ws pc2"
+LABEL anyconsole.launch="wsc ws pc2" anyconsole.emulate="{\"pad\":\"digital\"}"
 COPY --from=mednafen_wswan /cores/mednafen_wswan_libretro.so /retroarch/core.so
 
 # msx2 MSX2
 FROM retroarch AS msx2
-LABEL anyconsole.launch="m3u dsk mx2 rom cas"
+LABEL anyconsole.launch="m3u dsk mx2 rom cas" anyconsole.emulate="{\"pad\":\"digital\"}"
 COPY --from=bluemsx /cores/bluemsx_libretro.so /retroarch/core.so
 COPY --from=bluemsx /system /system
 
 # intellivision Intellivision
 FROM retroarch AS intellivision
-LABEL anyconsole.launch="int bin rom" anyconsole.bios="/system"
+LABEL anyconsole.launch="int bin rom" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.bios="/system"
 COPY --from=freeintv /cores/freeintv_libretro.so /retroarch/core.so
 
 # atari2600 Atari 2600
 FROM retroarch AS atari2600
-LABEL anyconsole.launch="a26 bin"
+LABEL anyconsole.launch="a26 bin" anyconsole.emulate="{\"pad\":\"digital\"}"
 COPY --from=stella2014 /cores/stella2014_libretro.so /retroarch/core.so
 
 # ps1 PlayStation
@@ -248,7 +248,7 @@ RUN mkdir /anycon \
 # win98 Windows 98
 FROM gpu AS win98
 RUN apt-get update && apt-get install -y --no-install-recommends qemu-system-x86 qemu-system-gui qemu-utils mtools dosfstools fdisk syslinux-common 7zip jq python3-evdev && rm -rf /var/lib/apt/lists/*
-LABEL anyconsole.launch="img iso" anyconsole.bios="/bios" anyconsole.install="/opt/win98/install" anyconsole.devices="/dev/kvm" anyconsole.touchpad="raw"
+LABEL anyconsole.launch="img iso" anyconsole.bios="/bios" anyconsole.install="/opt/win98/install" anyconsole.devices="/dev/kvm" anyconsole.touchpad="raw" anyconsole.shared="/shared"
 COPY --from=win98-download /usr/local/bin/patcher9x /usr/local/bin/
 COPY --from=win98-download /base /opt/win98/base
 COPY --from=win98-programs /anycon /opt/win98/base/anycon

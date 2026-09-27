@@ -37,6 +37,8 @@ case "${1:-status}" in
       *) exec "$0" help ;;
     esac ;;
   input) shift; api POST input "$(printf '%s\n' "$@")" ;;
+  login) api POST login "$2 ${3:-}" ;;
+  logout) api POST logout "$2" ;;
   volume) api POST volume "$2" ;;
   set) api POST settings "$2 ${3:-}" ;;
   update|reboot|poweroff) api POST "$1" ;;
@@ -79,7 +81,9 @@ usage: console [box address] <command>
   store add smb://[user:password@]host/share/path  add a game store
   store list  number every game store and show whether it is online
   store del <n>  remove the nth store listed by store list
-  input <line>...  send pad lines ("1 a 1", "1 guide 0"), events ("EV_KEY KEY_LEFTMETA 1"), "pair" or "forget <address>"
+  input <line>...  send remote pad lines ("1 a 1", "1 guide 0"), remote keyboard events ("EV_KEY KEY_LEFTMETA 1"), "pair" or "forget <address>"
+  login <profile> [device]  sign a profile in, optionally with a device id from state
+  logout <profile>  sign a profile out, closing the games it launched
   volume <percent>  set the output volume
   set display [label]  show the console on this display from state (none = Auto)
   set resolution <height>  render games and menus at this 16:9 height (0 = Auto)

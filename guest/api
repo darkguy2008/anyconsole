@@ -35,7 +35,9 @@ case "$REQUEST_METHOD $PATH_INFO" in
     esac ;;
   "DELETE /stores/"*) remove_store "${PATH_INFO#/stores/}" && reply 200 '{}' || reply 404 '{"error":"no such store"}' ;;
   "POST /settings") { body; echo; } | { read -r name value; settings "$name" "$value"; } && reply 200 '{}' || reply 400 '{"error":"no such setting or value"}' ;;
-  "POST /input") { body; echo; } > "$PAD_FIFO" && reply 200 '{}' ;;
+  "POST /input") { body; echo; } | while IFS= read -r line; do [ -z "$line" ] || printf '%s\n' "$line" > "$PAD_FIFO"; done && reply 200 '{}' ;;
+  "POST /login") printf 'login %s\n' "$(body)" > "$OVERLAY_FIFO" && reply 200 '{}' ;;
+  "POST /logout") printf 'logout %s\n' "$(body)" > "$OVERLAY_FIFO" && reply 200 '{}' ;;
   "POST /volume") wpctl set-volume -l "$VOLUME_LIMIT" @DEFAULT_AUDIO_SINK@ "$(body)%" && reply 200 '{}' || reply 409 '{"error":"no audio output"}' ;;
   *) reply 404 '{"error":"no such endpoint"}' ;;
 esac
