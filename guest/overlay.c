@@ -143,7 +143,7 @@ static struct row rows[ROWS_MAX];
 static struct device outputs[DEVICES_MAX], microphones[DEVICES_MAX];
 static char default_output[TEXT_MAX], default_microphone[TEXT_MAX], chosen_controller[TEXT_MAX], staged_mode[TEXT_MAX];
 static int output_count, microphone_count, volume = -1, mode_staged;
-static int players[PADS], player_count, menu_told = -1, focus = NO_DEVICE, picker = NO_DEVICE, repeating_device, guide_profile, applied_game = UNAPPLIED;
+static int players[PADS], player_count, menu_told = -1, focus = NO_DEVICE, picker = NO_DEVICE, previewed = NO_DEVICE, previewed_seat, repeating_device, guide_profile, applied_game = UNAPPLIED;
 static struct member members[INPUT_DEVICES_MAX];
 static int member_count;
 static struct view whois;
@@ -1337,9 +1337,13 @@ static void open_picker(int device) {
     changed = 1;
 }
 
+static int seat_for(int profile) {
+    return seat_of(profile) >= 0 ? seat_of(profile) : player_count < PADS ? player_count : -1;
+}
+
 static void login(int profile, int device) {
     if (profile < 1 || profile > PROFILES) return;
-    if (seat_of(profile) < 0 && player_count == PADS) { notify("Every pad is taken"); return; }
+    if (seat_for(profile) < 0) { notify("Every pad is taken"); return; }
     if (!player_count) {
         dashboard_open = 1;
         dashboard_depth = 1;
@@ -1361,6 +1365,7 @@ static void logout(int profile, int device) {
     for (int i = member_count - 1; i >= 0; i--) {
         if (members[i].profile != profile) continue;
         tell_padd("assign %d 0", members[i].device);
+        tell_padd("off %d", members[i].device);
         drop_member(i);
     }
     player_count--;
@@ -1916,6 +1921,14 @@ static void settle(void) {
         hide();
     } else if (wanted != mode) show(wanted);
     int count = build(top());
+    int profile = picker != NO_DEVICE && count ? rows[whois.selected].arg : 0;
+    int seat = profile ? seat_for(profile) + 1 : 0;
+    if (picker != previewed || seat != previewed_seat) {
+        if (previewed != NO_DEVICE && previewed != picker) tell_padd("preview %d 0", previewed);
+        if (picker != NO_DEVICE) tell_padd("preview %d %d", picker, seat);
+        previewed = picker;
+        previewed_seat = seat;
+    }
     char *serialized = serialize_state(count);
     if (width && (draw_pending || !written_state || strcmp(serialized, written_state))) draw(count);
     if (written_state && !strcmp(serialized, written_state)) free(serialized);
@@ -2071,7 +2084,8 @@ static void know(int device) {
 
 static void connected(int device) {
     know(device);
-    if (player_count && picker == NO_DEVICE && !int_at(device_of(device), "guide")) open_picker(device);
+    json_object *entry = device_of(device);
+    if (picker == NO_DEVICE && (int_at(entry, "bluetooth") || (player_count && !int_at(entry, "guide")))) open_picker(device);
 }
 
 static void handle_message(char *line, void *context) {

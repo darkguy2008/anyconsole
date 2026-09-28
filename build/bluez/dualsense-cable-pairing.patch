@@ -143,7 +143,43 @@ diff -ru a/plugins/sixaxis.c b/plugins/sixaxis.c
  		if (set_central_bdaddr(closure->fd, adapter_bdaddr,
  							closure->type) < 0)
  			goto out;
-@@ -435,7 +521,8 @@
+@@ -332,7 +418,7 @@
+ 			const struct cable_pairing *cp,
+ 			struct btd_adapter *adapter)
+ {
+-	bdaddr_t device_bdaddr;
++	bdaddr_t device_bdaddr, central_bdaddr;
+ 	const bdaddr_t *adapter_bdaddr;
+ 	struct btd_device *device;
+ 	struct authentication_closure *closure;
+@@ -340,13 +426,17 @@
+ 	if (get_device_bdaddr(fd, &device_bdaddr, cp->type) < 0)
+ 		return false;
+ 
++	adapter_bdaddr = btd_adapter_get_address(adapter);
++
+ 	/* This can happen if controller was plugged while already setup and
+ 	 * connected eg. to charge up battery. */
+ 	device = btd_adapter_find_device(adapter, &device_bdaddr,
+ 							BDADDR_BREDR);
+ 	if (device && btd_device_has_uuid(device, HID_UUID) &&
+ 			(btd_device_is_connected(device) ||
+-			 btd_device_is_trusted(device))) {
++			 (btd_device_is_trusted(device) &&
++			  !get_central_bdaddr(fd, &central_bdaddr, cp->type) &&
++			  !bacmp(&central_bdaddr, adapter_bdaddr)))) {
+ 		char device_addr[18];
+ 		ba2str(&device_bdaddr, device_addr);
+ 		DBG("device %s already known, skipping", device_addr);
+@@ -377,7 +467,6 @@
+ 	closure->fd = fd;
+ 	bacpy(&closure->bdaddr, &device_bdaddr);
+ 	closure->type = cp->type;
+-	adapter_bdaddr = btd_adapter_get_address(adapter);
+ 	closure->auth_id = btd_request_authorization_cable_configured(
+ 					adapter_bdaddr, &device_bdaddr,
+ 					HID_UUID, agent_auth_cb, closure);
+@@ -435,7 +524,8 @@
  
  	cp = get_pairing_type_for_device(udevice, &bus, &sysfs_path);
  	if (!cp || (cp->type != CABLE_PAIRING_SIXAXIS &&

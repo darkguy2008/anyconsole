@@ -312,9 +312,7 @@ play_wireless_controller() {
   plug_fakepad bluetooth
   expect "$(has_fakepad bluetooth)"
   pad=$(device_id "$FAKEPAD_NAME")
-  fakepad bluetooth press
   expect ".screen == \"whois\" and .session.picker == $pad and (.guide | not)"
-  fakepad bluetooth release
   fakepad bluetooth press $FAKEPAD_CROSS
   fakepad bluetooth release $FAKEPAD_CROSS
   expect "(.screen == \"whois\" | not) and (.session.players[0].devices | index($pad) != null) and ([.controllers.devices[] | select(.id == $pad) | .pad] == [1])"
