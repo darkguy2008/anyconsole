@@ -527,14 +527,13 @@ expect '.rewind.states >= 1'
 emulate_keyboard_with_pad
 wait_for $STEP_SECONDS guest "grep -q 'DOSBOX STATUS\] Program: KEEN1 ' $(game_log commander-keen/msdos)"
 log ok "DOSBox Pure started the only executable, KEEN1"
+snapshot keen
+rewind_to_older_state commander-keen/msdos
 send "1 a 1"
 wait_for $STEP_SECONDS input_holds $INPUT_NODES "$KEYBOARD_NAME" KEY_ENTER 1
 send "1 a 0"
 wait_for $STEP_SECONDS input_holds $INPUT_NODES "$KEYBOARD_NAME" KEY_ENTER 0
 log ok "the pad's A pressed and released Enter on the virtual keyboard"
-expect '.rewind.states >= 2'
-snapshot keen
-rewind_to_older_state commander-keen/msdos
 key KEY_LEFTMETA
 expect ".guide and ($(status_of commander-keen/msdos paused))"
 tap guide
