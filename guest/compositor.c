@@ -61,6 +61,7 @@
 #define LAYER_SHELL_VERSION 4
 #define USEC_PER_MSEC 1000
 #define CORNERS 4
+#define GAME_REFRESH_MHZ 60000
 
 enum filter { NEAREST, LINEAR, PIXEL };
 static const char *filters[] = {[NEAREST] = "nearest", [LINEAR] = "linear", [PIXEL] = "pixel"};
@@ -145,7 +146,8 @@ static struct wlr_layer_surface_v1 *overlay;
 static struct wl_listener overlay_commit, overlay_destroy;
 static struct wlr_swapchain *canvas_chain;
 static struct program programs[sizeof sampler_prefixes / sizeof *sampler_prefixes];
-static char pinned[TEXT_MAX], *written_state;
+static char pinned[TEXT_MAX], chosen_mode[TEXT_MAX], *written_state;
+static struct wlr_output_mode *applied_mode;
 static int resolution, canvas_width, canvas_height, started, stopping, dirty;
 static unsigned connections;
 static double pointer_x, pointer_y;
@@ -252,6 +254,8 @@ static int start_gpus(void) {
     return 1;
 }
 
+static void name_mode(struct wlr_output_mode *mode, char name[TEXT_MAX]) { snprintf(name, TEXT_MAX, "%dx%d@%d", mode->width, mode->height, mode->refresh); }
+
 static const char *label(struct wlr_output *output) { return output->description ? output->description : output->name; }
 
 static int is_pinned(struct display *entry) { return *pinned && !strcmp(label(entry->output), pinned); }
@@ -332,6 +336,19 @@ static void write_state(void) {
         json_object_object_add(placement, "width", json_object_new_int(box.width));
         json_object_object_add(placement, "height", json_object_new_int(box.height));
         json_object_object_add(state, "area_box", placement);
+        json_object *modes = json_object_new_array();
+        struct wlr_output_mode *mode;
+        char name[TEXT_MAX];
+        wl_list_for_each(mode, &active->output->modes, link) {
+            name_mode(mode, name);
+            int known = 0;
+            for (size_t i = 0; i < json_object_array_length(modes); i++)
+                known |= !strcmp(json_object_get_string(json_object_array_get_idx(modes, i)), name);
+            if (!known) json_object_array_add(modes, json_object_new_string(name));
+        }
+        json_object_object_add(state, "modes", modes);
+        name_mode(active->output->current_mode, name);
+        json_object_object_add(state, "mode", json_object_new_string(name));
     }
     json_object_object_add(state, "displays", list);
     json_object_object_add(state, "display", active ? json_object_new_string(label(active->output)) : NULL);
@@ -370,14 +387,31 @@ static void update_canvas(void) {
     redraw();
 }
 
+static struct wlr_output_mode *display_mode(struct wlr_output *output) {
+    struct wlr_output_mode *mode, *preferred = wlr_output_preferred_mode(output), *best = preferred;
+    char name[TEXT_MAX];
+    wl_list_for_each(mode, &output->modes, link) {
+        name_mode(mode, name);
+        if (!strcmp(name, chosen_mode)) return mode;
+        if (mode->width == preferred->width && mode->height == preferred->height &&
+            abs(mode->refresh - GAME_REFRESH_MHZ) < abs(best->refresh - GAME_REFRESH_MHZ))
+            best = mode;
+    }
+    return best;
+}
+
 static void activate(struct display *wanted) {
     struct display *entry;
     wl_list_for_each(entry, &displays, link) {
         struct wlr_output_state state;
-        struct wlr_output_mode *mode = wlr_output_preferred_mode(entry->output);
+        struct wlr_output_mode *mode = entry == wanted ? display_mode(entry->output) : NULL;
         wlr_output_state_init(&state);
         wlr_output_state_set_enabled(&state, entry == wanted);
-        if (entry == wanted && mode) wlr_output_state_set_mode(&state, mode);
+        if (mode) {
+            applied_mode = mode;
+            wlr_output_state_set_mode(&state, mode);
+            if (!wlr_output_test_state(entry->output, &state)) wlr_output_state_set_mode(&state, wlr_output_preferred_mode(entry->output));
+        }
         if (!wlr_output_commit_state(entry->output, &state)) fprintf(stderr, "compositor: could not configure %s\n", entry->output->name);
         wlr_output_state_finish(&state);
         if (entry == wanted) wlr_output_layout_add_auto(layout, entry->output);
@@ -407,7 +441,7 @@ static void choose_display(void) {
         return;
     }
     struct display *wanted = pending && active ? active : best;
-    if (wanted != active) activate(wanted);
+    if (wanted != active || (wanted && display_mode(wanted->output) != applied_mode)) activate(wanted);
     update_canvas();
     write_state();
 }
@@ -827,6 +861,7 @@ static void load_settings(void) {
     json_object *settings = json_object_from_file(SETTINGS_FILE), *field;
     snprintf(pinned, sizeof pinned, "%s", json_object_object_get_ex(settings, "display", &field) ? json_object_get_string(field) : "");
     resolution = json_object_object_get_ex(settings, "resolution", &field) ? json_object_get_int(field) : 0;
+    snprintf(chosen_mode, sizeof chosen_mode, "%s", json_object_object_get_ex(settings, "mode", &field) ? json_object_get_string(field) : "");
     json_object_put(settings);
 }
 

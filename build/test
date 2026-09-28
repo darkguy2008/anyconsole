@@ -156,7 +156,7 @@ open_store() {
 change_resolution_in_settings() {
   choose Settings
   expect '.screen == "settings"'
-  choose Resolution
+  choose "Game resolution"
   tap dpright
   expect '.settings.resolution == 720 and .display.canvas == "1280x720"'
   tap dpright
@@ -166,6 +166,31 @@ change_resolution_in_settings() {
   expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
   ! api POST settings "resolution 1" 2>/dev/null || { log FAIL "accepted a resolution outside RESOLUTIONS" >&2; exit 1; }
   log ok "rejected a resolution outside RESOLUTIONS"
+  tap b
+  expect '.screen == "home"'
+}
+
+stage_mode() {
+  highlight "Display resolution"
+  for tap in $(seq $taps); do tap dpright; done
+}
+
+stage_display_mode_until_saved() {
+  read -r auto taps chosen <<MODES
+$(state | jq -r '.display.mode as $mode | ([.display.modes[] | . != $mode] | index(true)) as $index | "\($mode) \($index + 1) \(.display.modes[$index])"')
+MODES
+  choose Settings
+  stage_mode
+  expect "any(.rows[]; .label == \"Save\") and .display.mode == \"$auto\" and (.settings.mode // \"\") == \"\""
+  tap b
+  expect ".screen == \"home\" and .display.mode == \"$auto\" and (.settings.mode // \"\") == \"\""
+  choose Settings
+  expect '.screen == "settings" and all(.rows[]; .label != "Save")'
+  stage_mode
+  choose Save
+  expect ".settings.mode == \"$chosen\" and .display.mode == \"$chosen\" and all(.rows[]; .label != \"Save\") and .rows[.selected].label == \"Display resolution\""
+  api POST settings "mode" >/dev/null
+  expect ".settings.mode == \"\" and .display.mode == \"$auto\""
   tap b
   expect '.screen == "home"'
 }
@@ -398,6 +423,9 @@ snapshot home
 wait_for $STEP_SECONDS guest ". /etc/profile; WAYLAND_DISPLAY=wayland-0 grim /tmp/home.png && [ -s /tmp/home.png ]"
 log ok "grim captures the idle screen"
 change_resolution_in_settings
+stage_display_mode_until_saved
+wait_for $STEP_SECONDS guest "! grep -q '^snd_pcsp ' /proc/modules && ! grep -q 'BlueZ SPA plugin is missing' $LOG_DIR/pipewire.log"
+log ok "the PC speaker is no audio output and PipeWire loaded its Bluetooth plugin"
 hotplug_controllers
 
 api POST stores "$TEST_STORE_URL" >/dev/null
