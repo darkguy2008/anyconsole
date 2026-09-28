@@ -129,6 +129,7 @@ static const struct binding keyboard_pad_bindings[] = {
     {"x", KEY_A}, {"y", KEY_S}, {"leftshoulder", KEY_Q}, {"rightshoulder", KEY_W}, {"start", KEY_ENTER}, {"back", KEY_RIGHTSHIFT},
 };
 static const struct binding mouse_pad_bindings[] = {{"a", BTN_LEFT}, {"b", BTN_RIGHT}};
+static const struct { Uint8 red, green, blue; } seat_colours[PADS] = {{0, 0, 255}, {255, 0, 0}, {0, 255, 0}, {255, 0, 255}};
 
 enum mode { ANALOG, DIGITAL, KEYS, POINTER, DESKTOP, MODE_COUNT };
 static const char *const modes[] = {[ANALOG] = "analog", [DIGITAL] = "digital", [KEYS] = "keyboard", [POINTER] = "mouse", [DESKTOP] = "keyboard-mouse"};
@@ -900,12 +901,14 @@ static json_object *controller(const char *name, const char *address, const char
 
 static json_object *device_entry(struct device *device) {
     json_object *entry = json_object_new_object(), *allowed = json_object_new_array();
+    struct pad *controller_pad = pad_with_input(device);
     for (enum mode mode = ANALOG; mode < MODE_COUNT; mode++)
         if (kinds[device->kind].modes & MODE(mode)) json_object_array_add(allowed, json_object_new_string(modes[mode]));
     json_object_object_add(entry, "id", json_object_new_int(device->id));
     json_object_object_add(entry, "name", json_object_new_string(device->name));
     json_object_object_add(entry, "kind", json_object_new_string(kinds[device->kind].name));
     json_object_object_add(entry, "guide", json_object_new_boolean(device->guide));
+    json_object_object_add(entry, "bluetooth", json_object_new_boolean(controller_pad && controller_pad->bus == BUS_BLUETOOTH));
     json_object_object_add(entry, "pad", device->pad == NO_PAD ? NULL : json_object_new_int(device->pad + 1));
     json_object_object_add(entry, "mode", json_object_new_string(modes[device->mode]));
     json_object_object_add(entry, "native", json_object_new_string(modes[kinds[device->kind].native]));
@@ -993,14 +996,17 @@ static void call(const char *path, const char *interface, const char *method, sd
     if (error < 0) fprintf(stderr, "padd: %s: %s\n", method, strerror(-error));
 }
 
+static void power_off(struct bluetooth_device *device) {
+    if (device) call(device->path, DEVICE_INTERFACE, "Disconnect", NULL, "");
+}
+
 static void schedule_sleep(void) {
     time_t current = now(), earliest = 0;
     for (int i = 0; sleep_minutes && i < pad_count; i++) {
-        struct bluetooth_device *device = known_address(pads[i].address);
         time_t deadline = pads[i].active + sleep_minutes * SECONDS_PER_MINUTE;
         if (pads[i].bus != BUS_BLUETOOTH) continue;
         if (deadline > current) earliest = earliest && earliest < deadline ? earliest : deadline;
-        else if (device) call(device->path, DEVICE_INTERFACE, "Disconnect", NULL, "");
+        else power_off(known_address(pads[i].address));
     }
     timerfd_settime(watched[SLEEP].fd, 0, &(struct itimerspec){.it_value.tv_sec = earliest ? earliest - current : 0}, NULL);
 }
@@ -1323,6 +1329,12 @@ static void process_bus(void) {
     open_bus();
 }
 
+static void show_seat(SDL_GameController *controller, int seat) {
+    if (seat == NO_PAD || SDL_GameControllerGetType(controller) == SDL_CONTROLLER_TYPE_PS5) SDL_GameControllerSetLED(controller, 0, 0, 0);
+    else SDL_GameControllerSetLED(controller, seat_colours[seat].red, seat_colours[seat].green, seat_colours[seat].blue);
+    SDL_GameControllerSetPlayerIndex(controller, seat);
+}
+
 static void assign(struct device *device, int seat) {
     struct pad *controller_pad = pad_with_input(device);
     if (device->pad == seat) return;
@@ -1330,7 +1342,7 @@ static void assign(struct device *device, int seat) {
     forget_motion(controller_pad);
     device->pad = seat;
     if (controller_pad) {
-        SDL_GameControllerSetPlayerIndex(controller_pad->controller, seat);
+        show_seat(controller_pad->controller, seat);
         touched(controller_pad);
     }
     write_controllers();
@@ -1404,6 +1416,8 @@ static struct device *remote_pad(int number) {
     return remote_device(&remote_pads[number - 1], name, PAD, 1);
 }
 
+static void detach(SDL_JoystickID instance);
+
 static void command(char *line) {
     char words[3][WORD_MAX + 1];
     int count = sscanf(line, "%" STRINGIFY(WORD_MAX) "s %" STRINGIFY(WORD_MAX) "s %" STRINGIFY(WORD_MAX) "s", words[0], words[1], words[2]);
@@ -1417,6 +1431,13 @@ static void command(char *line) {
         if (changed) write_controllers();
     } else if (count == 2 && !strcmp(words[0], "forget")) {
         forget(words[1]);
+    } else if (count == 2 && !strcmp(words[0], "off")) {
+        struct pad *controller_pad = pad_with_input(device_with_id(atoi(words[1])));
+        if (controller_pad && controller_pad->bus == BUS_BLUETOOTH) {
+            struct bluetooth_device *bluetooth = known_address(controller_pad->address);
+            detach(controller_pad->instance);
+            power_off(bluetooth);
+        }
     } else if (count == 2 && !strcmp(words[0], "touchpad")) {
         touchpad_pointer = !strcmp(words[1], "pointer");
     } else if (count == 2 && !strcmp(words[0], "game")) {
@@ -1427,6 +1448,9 @@ static void command(char *line) {
         set_pads(atoi(words[1]));
     } else if (device && !strcmp(words[0], "assign") && atoi(words[2]) >= 0 && atoi(words[2]) <= PADS) {
         assign(device, atoi(words[2]) - 1);
+    } else if (device && !strcmp(words[0], "preview") && atoi(words[2]) >= 0 && atoi(words[2]) <= PADS) {
+        struct pad *controller_pad = pad_with_input(device);
+        if (controller_pad) show_seat(controller_pad->controller, atoi(words[2]) ? atoi(words[2]) - 1 : device->pad);
     } else if (device && !strcmp(words[0], "mode")) {
         set_mode(device, words[2]);
     } else if (count == 3 && (remote = remote_pad(atoi(words[0])))) {
@@ -1576,7 +1600,7 @@ static void attach(int index) {
     if (!game_controller) { fprintf(stderr, "%s: %s\n", SDL_JoystickNameForIndex(index), SDL_GetError()); return; }
     struct device *input = new_device(SDL_GameControllerName(game_controller), PAD, SDL_GameControllerHasButton(game_controller, SDL_CONTROLLER_BUTTON_GUIDE));
     if (!input) { SDL_GameControllerClose(game_controller); return; }
-    SDL_GameControllerSetPlayerIndex(game_controller, NO_PAD);
+    show_seat(game_controller, NO_PAD);
     struct pad *controller_pad = &pads[pad_count++];
     *controller_pad = (struct pad){.controller = game_controller, .instance = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(game_controller)),
                                    .input = input, .battery = NO_BATTERY, .level = SDL_JoystickCurrentPowerLevel(SDL_GameControllerGetJoystick(game_controller))};
