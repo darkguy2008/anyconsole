@@ -48,6 +48,8 @@ prepare() {
 
 route_touchpad() { echo "touchpad ${1:-pointer}" > "$PAD_FIFO"; }
 
+screen_state() { if [ -e "$GAMES_DIR/$1/$2/$SCREEN_FILE" ]; then echo on; else echo off; fi; }
+
 platform_access() {
   bios=$(label_of "$image" "$BIOS_LABEL")
   [ -z "$bios" ] || { mkdir -p "$BIOS_DIR/$1"; echo "-v $BIOS_DIR/$1:$bios:ro"; }
@@ -145,7 +147,7 @@ run() {
   exec docker run --rm -i --label "$GAME_LABEL=$1/$2" $SANDBOX $(platform_access "$2") $shared \
     --device /dev/dri --device-cgroup-rule 'c 13:* rw' -v "$PAD_NODES:/dev/input:ro" \
     -v "$3:/run/wayland" -v "$4:/states" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
-    -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PADS="$PADS" -e PAD_NAME="$PAD_NAME" -e MOTION_NAME="$MOTION_NAME" \
+    -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PADS="$PADS" -e PAD_NAME="$PAD_NAME" -e MOTION_NAME="$MOTION_NAME" -e MICROPHONE="$MICROPHONE_NODE" -e SCREEN="$(screen_state "$1" "$2")" \
     -e GAME_CONFIG="$(jq -c --arg platform "$2" '.[$platform] // {}' "$GAMES_DIR/$1/manifest.json")" \
     -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
     -v "$rom:/game:ro" -v "$saves:/saves" "$GAME_IMAGE/$2" $video "/game/$file"
@@ -156,8 +158,11 @@ containers() { docker ps -q --filter "label=$GAME_LABEL${1:+=$1/$2}"; }
 pause() { containers "$1" "$2" | xargs -r docker pause >/dev/null; }
 
 resume() {
-  containers "$1" "$2" | xargs -r docker unpause >/dev/null
-  route_touchpad "$(label "$2" "$TOUCHPAD_LABEL")"
+  image=$(image_config "$2") running=$(containers "$1" "$2")
+  printf '%s\n' $running | xargs -r docker unpause >/dev/null
+  route_touchpad "$(label_of "$image" "$TOUCHPAD_LABEL")"
+  hook=$(label_of "$image" "$SCREEN_LABEL")
+  [ -z "$hook" ] || printf '%s\n' $running | xargs -r -I{} docker exec {} "$hook" "$(screen_state "$1" "$2")"
 }
 
 stop() { containers | xargs -r docker rm -f >/dev/null; }
@@ -172,7 +177,7 @@ usage: games <command>
   uninstall <slug> <platform>     delete an installed game, keeping every profile's saves
   run <slug> <platform> <wayland dir> <states dir> <profile>  play an installed game in its sandbox with the profile's saves
   pause <slug> <platform>         freeze a running game
-  resume <slug> <platform>        unfreeze a running game
+  resume <slug> <platform>        unfreeze a running game and show its second screen if chosen
   stop                            remove every running game container
   labels <platform>               print the labels of the platform's image as JSON
 USAGE

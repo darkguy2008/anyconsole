@@ -194,7 +194,8 @@ RUN appimage /cemu
 
 # wiiu Nintendo Wii U
 FROM x11 AS wiiu
-LABEL anyconsole.launch="wux wud iso rpx wua" anyconsole.bios="/bios"
+RUN apt-get update && apt-get install -y --no-install-recommends xdotool && rm -rf /var/lib/apt/lists/*
+LABEL anyconsole.launch="wux wud iso rpx wua" anyconsole.bios="/bios" anyconsole.screen="/opt/cemu/screen"
 COPY --from=cemu-download /cemu /opt/cemu
 COPY cemu/ /opt/cemu/
 ENV XDG_CONFIG_HOME=/engine XDG_DATA_HOME=/engine XDG_CACHE_HOME=/engine GDK_BACKEND=x11

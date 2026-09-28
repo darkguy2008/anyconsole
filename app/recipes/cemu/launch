@@ -4,6 +4,7 @@ GAMEPAD_MAPPING="1:1 2:0 3:3 4:2 5:9 6:10 7:42 8:43 9:6 10:4 11:11 12:12 13:13 1
 PRO_HOME_BUTTON=11
 GAMEPAD="Wii U GamePad"
 PRO_CONTROLLER="Wii U Pro Controller"
+FULL_VOLUME=100
 CEMU=$XDG_CONFIG_HOME/Cemu
 MLC=/saves/mlc01
 
@@ -19,6 +20,25 @@ controller_profile() {
   printf '</mappings>\n</controller>\n</emulated_controller>\n'
 }
 
+settings() {
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<content>
+	<Graphic>
+		<api>1</api>
+		<VSync>1</VSync>
+	</Graphic>
+	<Audio>
+		<api>3</api>
+		<TVDevice>default</TVDevice>
+		<InputDevice>$MICROPHONE</InputDevice>
+		<InputVolume>$FULL_VOLUME</InputVolume>
+	</Audio>
+$(/opt/cemu/screen settings "$SCREEN")
+</content>
+EOF
+}
+
 controller_profiles() {
   guid=$(joystick-guid)
   controller_profile "$GAMEPAD" 0 "$guid" > "$CEMU/controllerProfiles/controller0.xml"
@@ -28,6 +48,6 @@ controller_profiles() {
 mkdir -p "$CEMU/controllerProfiles"
 [ -d "$MLC" ] || if [ -d /bios/mlc01 ]; then cp -R /bios/mlc01 "$MLC"; else mkdir -p "$MLC"; fi
 ln -sf /bios/keys.txt "$CEMU/keys.txt"
-cp /opt/cemu/settings.xml "$CEMU/settings.xml"
+settings > "$CEMU/settings.xml"
 controller_profiles
-exec xwayland-run -fullscreen -geometry "$CANVAS" -- /opt/cemu/AppRun -f -g "$1" -m "$MLC"
+exec xwayland-run -fullscreen -geometry "$CANVAS" -- sh -c '/opt/cemu/screen environment && exec "$@"' sh /opt/cemu/AppRun -f -g "$1" -m "$MLC"

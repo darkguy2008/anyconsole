@@ -10,7 +10,10 @@
 #include <limits.h>
 #include <linux/uinput.h>
 #include <math.h>
+#include <opus/opus.h>
 #include <poll.h>
+#include <signal.h>
+#include <spawn.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,12 +22,15 @@
 #include <strings.h>
 #include <sys/inotify.h>
 #include <sys/ioctl.h>
+#include <sys/pidfd.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/timerfd.h>
+#include <sys/wait.h>
 #include <systemd/sd-bus.h>
 #include <time.h>
 #include <unistd.h>
+#include <zlib.h>
 #include "anyconsole.h"
 
 #define DEVICES "/dev/input"
@@ -42,6 +48,36 @@
 #define PAD_VENDOR 0x054c
 #define PAD_PRODUCT 0x0ce6
 #define PAD_VERSION 0x8111
+#define INPUT_HEADER 0xa1
+#define OUTPUT_HEADER 0xa2
+#define REPORT_CRC_SIZE 4
+#define SEQUENCE_SHIFT 4
+#define SEQUENCE_MASK 0x0f
+#define SUBPACKET_FLAG 0x80
+#define SPEAKER_REPORT 0x36
+#define SPEAKER_REPORT_SIZE 398
+#define AUDIO_CONTROL_SUBPACKET (0x11 | SUBPACKET_FLAG)
+#define SUBPACKET_DATA 4
+#define STATE_REPORT 0x31
+#define MICROPHONE_REPORT_SIZE 78
+#define MUTE_STATUS_BYTE 55
+#define MUTE_STATUS_BIT 0x04
+#define MICROPHONE_OPUS_OFFSET 3
+#define MICROPHONE_OPUS_SIZE (MICROPHONE_REPORT_SIZE - REPORT_CRC_SIZE - MICROPHONE_OPUS_OFFSET)
+#define MICROPHONE_CHANNELS 1
+#define AUDIO_RATE 48000
+#define AUDIO_FRAME_MS 10
+#define AUDIO_FRAME_SAMPLES (AUDIO_RATE * AUDIO_FRAME_MS / MSEC_PER_SEC)
+#define TUNNEL_CONFIG \
+    "context.spa-libs = { audio.convert.* = audioconvert/libspa-audioconvert support.* = support/libspa-support }\n" \
+    "context.modules = [\n" \
+    "  { name = libpipewire-module-protocol-native }\n" \
+    "  { name = libpipewire-module-client-node }\n" \
+    "  { name = libpipewire-module-adapter }\n" \
+    "  { name = libpipewire-module-pipe-tunnel args = { tunnel.mode = source pipe.filename = \"%s\" audio.format = S16LE\n" \
+    "    audio.rate = %d audio.channels = %d audio.position = [ MONO ] node.virtual = false node.name = \"%s\" node.description = \"%s\"\n" \
+    "    stream.props = { api.bluez5.address = \"%s\" } } }\n" \
+    "]\n"
 #define AXIS_REACH (AXIS_MAX / STICK_REACH_DIVISOR)
 #define SDL_AXIS_REACH (SDL_JOYSTICK_AXIS_MAX / STICK_REACH_DIVISOR)
 #define TRIGGER_PRESS (AXIS_MAX / 2)
@@ -54,6 +90,8 @@
 #define DEGREES_PER_RADIAN (180 / M_PI)
 #define SENSOR_AXES SDL_arraysize(((SDL_ControllerSensorEvent){0}).data)
 #define GAIN_MAX UINT16_MAX
+#define BLOW_SEAT 0
+#define BLOW_AMPLITUDE 1.0
 #define POINTER_TICKS_PER_SECOND 60
 #define POINTER_CROSSING_SECONDS 1.5
 #define SCROLL_STEPS_PER_SECOND 10
@@ -64,6 +102,7 @@
 #define SECONDS_PER_MINUTE 60
 #define USEC_PER_SEC 1000000
 #define USEC_PER_MSEC 1000
+#define MSEC_PER_SEC 1000
 #define NSEC_PER_USEC 1000
 #define NSEC_PER_MSEC (NSEC_PER_USEC * USEC_PER_MSEC)
 #define NSEC_PER_SEC (NSEC_PER_USEC * USEC_PER_SEC)
@@ -73,6 +112,7 @@
 #define BLUEZ_ROOT "/org/bluez"
 #define ADAPTER_INTERFACE BLUEZ ".Adapter1"
 #define DEVICE_INTERFACE BLUEZ ".Device1"
+#define INPUT_INTERFACE BLUEZ ".Input1"
 #define AGENT_INTERFACE BLUEZ ".Agent1"
 #define AGENT_MANAGER_INTERFACE BLUEZ ".AgentManager1"
 #define REJECTED BLUEZ ".Error.Rejected"
@@ -141,8 +181,9 @@ static const struct { const char *name; enum mode native; unsigned modes; } kind
     [MOUSE] = {"mouse", POINTER, MODE(POINTER) | MODE(ANALOG)},
 };
 
-enum source { COMMANDS, HOTPLUG, SETTINGS, PAIRING, SLEEP, POINTING, RESTING, BUS, FIXED_SOURCES, CAPTURED = FIXED_SOURCES, PHYSICAL_PAD, VIRTUAL_PAD };
-#define WATCHED_MAX (FIXED_SOURCES + CAPTURED_MAX + PHYSICAL_PADS_MAX + PADS)
+enum source { COMMANDS, HOTPLUG, SETTINGS, PAIRING, SLEEP, POINTING, RESTING, BUS, BLOW, SPEAKER, FIXED_SOURCES, CAPTURED = FIXED_SOURCES, VIRTUAL_PAD, PHYSICAL_PAD, MICROPHONE, TUNNEL };
+#define WATCHES_PER_PAD (TUNNEL - PHYSICAL_PAD + 1)
+#define WATCHED_MAX (FIXED_SOURCES + CAPTURED_MAX + WATCHES_PER_PAD * PHYSICAL_PADS_MAX + PADS)
 
 enum pairing { NOT_PAIRING, SEARCHING, BONDING };
 
@@ -176,6 +217,9 @@ struct pad {
     int clicked;
     SDL_JoystickPowerLevel level;
     time_t active;
+    int hidraw, microphone, fifo, sequence, muted;
+    pid_t tunnel;
+    OpusDecoder *decoder;
 };
 
 struct bluetooth_device {
@@ -196,7 +240,7 @@ static struct pollfd watched[WATCHED_MAX];
 static struct watch watches[WATCHED_MAX];
 static int watched_count;
 static struct pad pads[PHYSICAL_PADS_MAX];
-static int pad_count, sleep_minutes, touchpad_pointer = 1;
+static int pad_count, sleep_minutes, touchpad_pointer = 1, blowing, blow_sent;
 static struct bluetooth_device known[BLUETOOTH_DEVICES_MAX];
 static int known_count;
 static char adapter[PATH_MAX], target[ADDRESS_SIZE], armed[ADDRESS_SIZE], offered[PHYSICAL_PADS_MAX][ADDRESS_SIZE];
@@ -428,6 +472,40 @@ static int hat(int seat, unsigned short code) {
     return value;
 }
 
+static int spawn_child(char *const argv[], int quiet, pid_t *child) {
+    posix_spawn_file_actions_t actions;
+    pid_t pid;
+    posix_spawn_file_actions_init(&actions);
+    if (quiet) posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    int failed = posix_spawnp(&pid, argv[0], &actions, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (failed) { fprintf(stderr, "padd: %s: %s\n", argv[0], strerror(failed)); return -1; }
+    if (child) *child = pid;
+    return pidfd_open(pid, 0);
+}
+
+static void reap(int pidfd, const char *name) {
+    siginfo_t info = {0};
+    waitid(P_PIDFD, pidfd, &info, WEXITED);
+    if (info.si_status) fprintf(stderr, "padd: %s exited with %d\n", name, info.si_status);
+}
+
+static void send_blow(int on) {
+    char params[PATH_MAX];
+    blowing = on;
+    if (watched[BLOW].fd >= 0 || blowing == blow_sent) return;
+    snprintf(params, sizeof params, "{ params = [ \"%s:Ampl\" %f ] }", BLOW_NODE, blowing * BLOW_AMPLITUDE);
+    watched[BLOW].fd = spawn_child((char *[]){"pw-cli", "set-param", MICROPHONE_NODE, "Props", params, NULL}, 1, NULL);
+    if (watched[BLOW].fd >= 0) blow_sent = blowing;
+}
+
+static void sent_blow(int fd) {
+    reap(fd, "pw-cli");
+    close(fd);
+    watched[BLOW].fd = -1;
+    send_blow(blowing);
+}
+
 static void sync_control(int seat, unsigned i) {
     const struct control *c = &controls[i];
     int value = rest(i);
@@ -437,6 +515,8 @@ static void sync_control(int seat, unsigned i) {
     }
     if (value == emitted[seat][i]) return;
     emitted[seat][i] = value;
+    if (seat == BLOW_SEAT && (c->code == BTN_THUMBL || c->code == BTN_THUMBR))
+        send_blow(emitted[seat][control_index(EV_KEY, BTN_THUMBL)] && emitted[seat][control_index(EV_KEY, BTN_THUMBR)]);
     if (c->type == EV_KEY) libevdev_uinput_write_event(pad[seat], EV_KEY, c->code, value);
     else if (c->direction) libevdev_uinput_write_event(pad[seat], EV_ABS, c->code, hat(seat, c->code));
     else {
@@ -484,6 +564,7 @@ static void unplug(int seat) {
     free(effects[seat]);
     effects[seat] = NULL;
     effect_count[seat] = 0;
+    if (seat == BLOW_SEAT) send_blow(0);
 }
 
 static unsigned short bound(const struct binding *bindings, size_t count, const char *control) {
@@ -882,10 +963,14 @@ static struct bluetooth_device *known_address(const char *address) {
     return NULL;
 }
 
+static void replace(char *text, char from, char to) {
+    for (char *at = strchr(text, from); at; at = strchr(at, from)) *at = to;
+}
+
 static void address_of(const char *path, char *address) {
     const char *name = strrchr(path, '/');
     snprintf(address, ADDRESS_SIZE, "%s", name && !strncmp(name, DEVICE_PATH_PREFIX, strlen(DEVICE_PATH_PREFIX)) ? name + strlen(DEVICE_PATH_PREFIX) : "");
-    for (char *at = strchr(address, '_'); at; at = strchr(at, '_')) *at = ':';
+    replace(address, '_', ':');
 }
 
 static json_object *controller(const char *name, const char *address, const char *link, int battery, int charging, int paired) {
@@ -920,9 +1005,10 @@ static void write_controllers(void) {
     json_object *state = json_object_new_object(), *list = json_object_new_array(), *inputs = json_object_new_array();
     for (int i = 0; i < pad_count; i++) {
         struct bluetooth_device *device = known_address(pads[i].address);
-        json_object_array_add(list, controller(SDL_GameControllerName(pads[i].controller), pads[i].address,
-                                               pads[i].bus == BUS_BLUETOOTH ? "bluetooth" : "wired", pads[i].battery, pads[i].charging,
-                                               device && device->trusted));
+        json_object *entry = controller(SDL_GameControllerName(pads[i].controller), pads[i].address,
+                                        pads[i].bus == BUS_BLUETOOTH ? "bluetooth" : "wired", pads[i].battery, pads[i].charging, device && device->trusted);
+        json_object_object_add(entry, "muted", json_object_new_boolean(pads[i].muted));
+        json_object_array_add(list, entry);
     }
     for (int i = 0; i < known_count; i++)
         if (known[i].trusted && !pad_with_address(known[i].address))
@@ -988,16 +1074,16 @@ static void reannounce(struct pad *controller_pad) {
     udev_enumerate_unref(nodes);
 }
 
-static void call(const char *path, const char *interface, const char *method, sd_bus_message_handler_t done, const char *types, ...) {
+static void call(const char *path, const char *interface, const char *method, sd_bus_message_handler_t done, void *userdata, const char *types, ...) {
     va_list arguments;
     va_start(arguments, types);
-    int error = sd_bus_call_method_asyncv(bus, NULL, BLUEZ, path, interface, method, done, NULL, types, arguments);
+    int error = sd_bus_call_method_asyncv(bus, NULL, BLUEZ, path, interface, method, done, userdata, types, arguments);
     va_end(arguments);
     if (error < 0) fprintf(stderr, "padd: %s: %s\n", method, strerror(-error));
 }
 
 static void power_off(struct bluetooth_device *device) {
-    if (device) call(device->path, DEVICE_INTERFACE, "Disconnect", NULL, "");
+    if (device) call(device->path, DEVICE_INTERFACE, "Disconnect", NULL, NULL, "");
 }
 
 static void schedule_sleep(void) {
@@ -1020,12 +1106,12 @@ static void read_sleep(void) {
 
 static void trust(struct bluetooth_device *device) {
     device->trusted = 1;
-    call(device->path, PROPERTIES_INTERFACE, "Set", NULL, "ssv", DEVICE_INTERFACE, "Trusted", "b", 1);
+    call(device->path, PROPERTIES_INTERFACE, "Set", NULL, NULL, "ssv", DEVICE_INTERFACE, "Trusted", "b", 1);
 }
 
 static void stop_pairing(void) {
     if (pairing == NOT_PAIRING) return;
-    if (pairing == SEARCHING && *adapter) call(adapter, ADAPTER_INTERFACE, "StopDiscovery", NULL, "");
+    if (pairing == SEARCHING && *adapter) call(adapter, ADAPTER_INTERFACE, "StopDiscovery", NULL, NULL, "");
     pairing = NOT_PAIRING;
     *target = '\0';
     timerfd_settime(watched[PAIRING].fd, 0, &(struct itimerspec){0}, NULL);
@@ -1041,7 +1127,7 @@ static int on_paired(sd_bus_message *reply, void *data, sd_bus_error *error) {
         return 0;
     }
     trust(device);
-    call(device->path, DEVICE_INTERFACE, "Connect", NULL, "");
+    call(device->path, DEVICE_INTERFACE, "Connect", NULL, NULL, "");
     notify("Paired %s", device->name);
     stop_pairing();
     return 0;
@@ -1049,24 +1135,24 @@ static int on_paired(sd_bus_message *reply, void *data, sd_bus_error *error) {
 
 static void consider(struct bluetooth_device *device) {
     if (pairing != SEARCHING || !device || !device->seen || device->paired || strcmp(device->icon, GAMEPAD_ICON)) return;
-    call(adapter, ADAPTER_INTERFACE, "StopDiscovery", NULL, "");
+    call(adapter, ADAPTER_INTERFACE, "StopDiscovery", NULL, NULL, "");
     pairing = BONDING;
     snprintf(target, sizeof target, "%s", device->address);
-    call(device->path, DEVICE_INTERFACE, "Pair", on_paired, "");
+    call(device->path, DEVICE_INTERFACE, "Pair", on_paired, NULL, "");
 }
 
 static void start_pairing(void) {
     if (!*adapter) { notify("No Bluetooth adapter"); return; }
     pairing = SEARCHING;
     for (int i = 0; i < known_count; i++) known[i].seen = 0;
-    call(adapter, ADAPTER_INTERFACE, "StartDiscovery", NULL, "");
+    call(adapter, ADAPTER_INTERFACE, "StartDiscovery", NULL, NULL, "");
     timerfd_settime(watched[PAIRING].fd, 0, &(struct itimerspec){.it_value.tv_sec = PAIRING_SECONDS}, NULL);
     write_controllers();
 }
 
 static void forget(const char *address) {
     struct bluetooth_device *device = known_address(address);
-    if (device && *adapter) call(adapter, ADAPTER_INTERFACE, "RemoveDevice", NULL, "o", device->path);
+    if (device && *adapter) call(adapter, ADAPTER_INTERFACE, "RemoveDevice", NULL, NULL, "o", device->path);
 }
 
 static int offered_index(const char *address) {
@@ -1277,9 +1363,9 @@ static void forget_bluez(void) {
 
 static void bluez_up(void) {
     forget_bluez();
-    call(BLUEZ_ROOT, AGENT_MANAGER_INTERFACE, "RegisterAgent", NULL, "os", AGENT_PATH, AGENT_CAPABILITY);
-    call(BLUEZ_ROOT, AGENT_MANAGER_INTERFACE, "RequestDefaultAgent", NULL, "o", AGENT_PATH);
-    call("/", OBJECT_MANAGER_INTERFACE, "GetManagedObjects", on_objects, "");
+    call(BLUEZ_ROOT, AGENT_MANAGER_INTERFACE, "RegisterAgent", NULL, NULL, "os", AGENT_PATH, AGENT_CAPABILITY);
+    call(BLUEZ_ROOT, AGENT_MANAGER_INTERFACE, "RequestDefaultAgent", NULL, NULL, "o", AGENT_PATH);
+    call("/", OBJECT_MANAGER_INTERFACE, "GetManagedObjects", on_objects, NULL, "");
 }
 
 static void bluez_down(void) {
@@ -1490,11 +1576,6 @@ static void read_commands(int fd) {
     if (length == sizeof pending) length = 0;
 }
 
-static void drain(int fd) {
-    char buffer[BUFSIZ];
-    while (read(fd, buffer, sizeof buffer) > 0) {}
-}
-
 static int expired(int timer) {
     uint64_t expirations;
     return read(timer, &expirations, sizeof expirations) > 0;
@@ -1592,6 +1673,135 @@ static void drive_axis(struct pad *source, SDL_GameControllerAxis axis) {
     pad_input(source->input, axis_control[vertical], axis_value(y * gain));
 }
 
+static void put_crc(unsigned char *at, unsigned char header, const unsigned char *report, size_t size) {
+    uint32_t crc = crc32(crc32(0, &header, 1), report, size - REPORT_CRC_SIZE);
+    for (int i = 0; i < REPORT_CRC_SIZE; i++) at[i] = crc >> (i * CHAR_BIT);
+}
+
+static int valid_crc(const unsigned char *report, size_t size) {
+    unsigned char expected[REPORT_CRC_SIZE];
+    put_crc(expected, INPUT_HEADER, report, size);
+    return !memcmp(expected, report + size - REPORT_CRC_SIZE, REPORT_CRC_SIZE);
+}
+
+static void microphone_path(struct pad *controller_pad, char *path, const char *suffix) {
+    snprintf(path, PATH_MAX, MICROPHONES_DIR "/%s.%s", controller_pad->address, suffix);
+}
+
+static void speak(void) {
+    static const unsigned char audio_control[] = {0x7f, 0x46, 0x1f, 0x64, 0x28, 0x1d};
+    int speaking = 0;
+    for (int i = 0; i < pad_count; i++) {
+        if (pads[i].microphone < 0) continue;
+        unsigned char report[SPEAKER_REPORT_SIZE] = {SPEAKER_REPORT, (pads[i].sequence++ & SEQUENCE_MASK) << SEQUENCE_SHIFT, AUDIO_CONTROL_SUBPACKET, sizeof audio_control};
+        memcpy(report + SUBPACKET_DATA, audio_control, sizeof audio_control);
+        put_crc(report + sizeof report - REPORT_CRC_SIZE, OUTPUT_HEADER, report, sizeof report);
+        if (write(pads[i].hidraw, report, sizeof report) < 0 && errno != EAGAIN) perror("padd: speaker");
+        speaking = 1;
+    }
+    if (!speaking) timerfd_settime(watched[SPEAKER].fd, 0, &(struct itimerspec){0}, NULL);
+}
+
+static void read_state(int index) {
+    unsigned char report[BUFSIZ];
+    struct pad *controller_pad = pad_of(watches[index].pad);
+    for (ssize_t size; (size = read(watched[index].fd, report, sizeof report)) > 0;) {
+        if (!controller_pad || controller_pad->microphone < 0 || size != MICROPHONE_REPORT_SIZE || report[0] != STATE_REPORT) continue;
+        int muted = !!(report[MUTE_STATUS_BYTE] & MUTE_STATUS_BIT);
+        if (muted == controller_pad->muted) continue;
+        controller_pad->muted = muted;
+        write_controllers();
+    }
+}
+
+static void start_tunnel(struct pad *controller_pad) {
+    char config[PATH_MAX], fifo[PATH_MAX], name[NAME_MAX + 1];
+    microphone_path(controller_pad, config, "conf");
+    microphone_path(controller_pad, fifo, "fifo");
+    snprintf(name, sizeof name, "dualsense_microphone.%s", controller_pad->address);
+    replace(name, ':', '_');
+    FILE *file = fopen(config, "w");
+    if (!file || (mkfifo(fifo, S_IRUSR | S_IWUSR) < 0 && errno != EEXIST)) { perror(fifo); if (file) fclose(file); return; }
+    fprintf(file, TUNNEL_CONFIG, fifo, AUDIO_RATE, MICROPHONE_CHANNELS, name, SDL_GameControllerName(controller_pad->controller), controller_pad->address);
+    fclose(file);
+    struct watch *exit_watch = watch(spawn_child((char *[]){"pipewire", "-c", config, NULL}, 0, &controller_pad->tunnel), TUNNEL);
+    if (exit_watch) exit_watch->pad = controller_pad->instance;
+}
+
+static void reap_tunnel(int index) {
+    struct pad *controller_pad = pad_of(watches[index].pad);
+    reap(watched[index].fd, "microphone tunnel");
+    if (controller_pad) controller_pad->tunnel = 0;
+    unwatch(index);
+}
+
+static int acquired_microphone(sd_bus_message *reply, void *userdata, sd_bus_error *error) {
+    struct pad *controller_pad = pad_of((SDL_JoystickID)(intptr_t)userdata);
+    int fd, status;
+    (void)error;
+    if (!controller_pad || controller_pad->microphone >= 0) return 0;
+    if (sd_bus_message_is_method_error(reply, NULL) || sd_bus_message_read(reply, "h", &fd) < 0) {
+        fprintf(stderr, "padd: AcquireMicrophone: %s\n", sd_bus_message_get_error(reply) ? sd_bus_message_get_error(reply)->message : "no fd");
+        return 0;
+    }
+    controller_pad->decoder = opus_decoder_create(AUDIO_RATE, MICROPHONE_CHANNELS, &status);
+    if (!controller_pad->decoder) { fprintf(stderr, "padd: opus: %s\n", opus_strerror(status)); return 0; }
+    controller_pad->microphone = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+    struct watch *frames = watch(controller_pad->microphone, MICROPHONE);
+    if (frames) frames->pad = controller_pad->instance;
+    start_tunnel(controller_pad);
+    struct timespec period = {.tv_nsec = AUDIO_FRAME_MS * NSEC_PER_MSEC};
+    timerfd_settime(watched[SPEAKER].fd, 0, &(struct itimerspec){.it_value = period, .it_interval = period}, NULL);
+    return 0;
+}
+
+static void start_microphone(struct pad *controller_pad) {
+    struct bluetooth_device *device = known_address(controller_pad->address);
+    if (controller_pad->bus != BUS_BLUETOOTH || SDL_GameControllerGetType(controller_pad->controller) != SDL_CONTROLLER_TYPE_PS5 || !device || !bus) return;
+    call(device->path, INPUT_INTERFACE, "AcquireMicrophone", acquired_microphone, (void *)(intptr_t)controller_pad->instance, "");
+}
+
+static void unwatch_pad(enum source source, SDL_JoystickID instance) {
+    for (int i = watched_count - 1; i >= FIXED_SOURCES; i--)
+        if (watches[i].source == source && watches[i].pad == instance) unwatch(i);
+}
+
+static void stop_microphone(struct pad *controller_pad) {
+    char path[PATH_MAX];
+    unwatch_pad(MICROPHONE, controller_pad->instance);
+    if (controller_pad->fifo >= 0) close(controller_pad->fifo);
+    if (controller_pad->tunnel) kill(controller_pad->tunnel, SIGTERM);
+    opus_decoder_destroy(controller_pad->decoder);
+    microphone_path(controller_pad, path, "conf");
+    unlink(path);
+    microphone_path(controller_pad, path, "fifo");
+    unlink(path);
+    controller_pad->microphone = controller_pad->fifo = -1;
+    controller_pad->muted = 0;
+    controller_pad->decoder = NULL;
+}
+
+static void hear(int index) {
+    char fifo[PATH_MAX];
+    unsigned char frame[MICROPHONE_REPORT_SIZE];
+    opus_int16 samples[AUDIO_FRAME_SAMPLES];
+    struct pad *controller_pad = pad_of(watches[index].pad);
+    ssize_t size = read(watched[index].fd, frame, sizeof frame);
+    if (!controller_pad || size <= 0) { if (controller_pad) stop_microphone(controller_pad); else unwatch(index); return; }
+    if (size != sizeof frame || !valid_crc(frame, sizeof frame)) return;
+    int count = opus_decode(controller_pad->decoder, frame + MICROPHONE_OPUS_OFFSET, MICROPHONE_OPUS_SIZE, samples, AUDIO_FRAME_SAMPLES, 0);
+    if (count <= 0) return;
+    if (controller_pad->muted) memset(samples, 0, count * sizeof *samples);
+    if (controller_pad->fifo < 0) {
+        microphone_path(controller_pad, fifo, "fifo");
+        controller_pad->fifo = open(fifo, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    }
+    if (controller_pad->fifo >= 0 && write(controller_pad->fifo, samples, count * sizeof *samples) < 0 && errno != EAGAIN) {
+        close(controller_pad->fifo);
+        controller_pad->fifo = -1;
+    }
+}
+
 static void attach(int index) {
     const char *path = SDL_JoystickPathForIndex(index);
     if (path && is_virtual(path)) return;
@@ -1603,13 +1813,16 @@ static void attach(int index) {
     show_seat(game_controller, NO_PAD);
     struct pad *controller_pad = &pads[pad_count++];
     *controller_pad = (struct pad){.controller = game_controller, .instance = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(game_controller)),
-                                   .input = input, .battery = NO_BATTERY, .level = SDL_JoystickCurrentPowerLevel(SDL_GameControllerGetJoystick(game_controller))};
+                                   .input = input, .battery = NO_BATTERY, .level = SDL_JoystickCurrentPowerLevel(SDL_GameControllerGetJoystick(game_controller)),
+                                   .microphone = -1, .fifo = -1};
     identify(controller_pad, path);
     read_battery(controller_pad);
     touched(controller_pad);
     notify("Connected %s", SDL_GameControllerName(game_controller));
-    struct watch *physical = watch(open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC), PHYSICAL_PAD);
+    controller_pad->hidraw = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    struct watch *physical = watch(controller_pad->hidraw, PHYSICAL_PAD);
     if (physical) physical->pad = controller_pad->instance;
+    start_microphone(controller_pad);
     announce(input);
     schedule_sleep();
 }
@@ -1618,9 +1831,9 @@ static void detach(SDL_JoystickID instance) {
     struct pad *controller_pad = pad_of(instance);
     if (!controller_pad) return;
     notify("Disconnected %s", SDL_GameControllerName(controller_pad->controller));
-    for (int i = 0; i < watched_count; i++)
-        if (watches[i].source == PHYSICAL_PAD && watches[i].pad == instance) { unwatch(i); break; }
+    unwatch_pad(PHYSICAL_PAD, instance);
     withdraw(controller_pad->address);
+    stop_microphone(controller_pad);
     forget_motion(controller_pad);
     free_device(controller_pad->input);
     udev_device_unref(controller_pad->hid);
@@ -1706,12 +1919,13 @@ int main(void) {
         [COMMANDS] = open(PAD_FIFO, O_RDWR | O_NONBLOCK | O_CLOEXEC), [HOTPLUG] = monitor ? udev_monitor_get_fd(monitor) : -1,
         [SETTINGS] = inotify_init1(IN_NONBLOCK | IN_CLOEXEC), [PAIRING] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC),
         [SLEEP] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC), [POINTING] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC),
-        [RESTING] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC), [BUS] = -1};
+        [RESTING] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC), [BUS] = -1, [BLOW] = -1,
+        [SPEAKER] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)};
     snprintf(settings_directory, sizeof settings_directory, "%.*s", (int)(strrchr(SETTINGS_FILE, '/') - SETTINGS_FILE), SETTINGS_FILE);
     for (enum source source = COMMANDS; source < FIXED_SOURCES; source++) {
         watched[source] = (struct pollfd){.fd = fixed[source], .events = POLLIN};
         watches[source].source = source;
-        if (source != BUS && fixed[source] < 0) { perror("padd"); return 1; }
+        if (source != BUS && source != BLOW && fixed[source] < 0) { perror("padd"); return 1; }
     }
     watched_count = FIXED_SOURCES;
     if (inotify_add_watch(fixed[SETTINGS], settings_directory, IN_MOVED_TO) < 0) { perror(settings_directory); return 1; }
@@ -1748,10 +1962,14 @@ int main(void) {
             case POINTING: if (expired(watched[i].fd)) tick_pointer(); break;
             case RESTING: if (expired(watched[i].fd)) rest_mice(); break;
             case BUS: break;
+            case BLOW: sent_blow(watched[i].fd); break;
+            case SPEAKER: if (expired(watched[i].fd)) speak(); break;
+            case MICROPHONE: hear(i); break;
+            case TUNNEL: reap_tunnel(i); break;
             case CAPTURED: pass_through(i); break;
             case PHYSICAL_PAD:
                 if (watched[i].revents & (POLLERR | POLLHUP)) unwatch(i);
-                else drain(watched[i].fd);
+                else read_state(i);
                 break;
             case VIRTUAL_PAD: read_feedback(i); break;
             }
