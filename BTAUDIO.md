@@ -2,10 +2,11 @@
 
 Goal: the DualSense's built-in mic as a live PipeWire source while the pad is on Bluetooth, e.g. for Wii U "blow into the GamePad mic" in Cemu. Over USB it already works: snd-usb-audio ships, and the pad's mic is an ordinary ALSA source.
 
-Status: **trigger found, not built yet**. On an anyconsole box, the pad started sending mic frames (type 2, Opus sequence 00–07, TOC `0xD4`, CRC-valid) as soon as it received a sustained `0x36` speaker stream. The test replayed 600 PS5 `0x36` reports (394 bytes + CRC-32 seeded `0xA2`, sequence nibble rewritten) to hidraw, one per ~10 ms, clocked off the pad's input reports. About 80 ms later the pad disconnected. The likely cause is phantom input from the mic frames reaching a Guide, then Log out, which powers Bluetooth pads off; that's unproven.
-- The `91 01 02` enable report alone, the `0x17` sub-packet and the auth challenge do not start the mic; the speaker stream does.
-- Whoever owns the pad's output reports has to keep the `0x36` stream going every 10 ms for as long as the mic is wanted.
-- Replay tool: `~/_research/ds5probe/ds5replay(.c)`. Replay file: `~/_research/ds5scan/ds5-replay36.bin`. Captured frames: `bt-mic-frames-233.raw` (outside the repo).
+Status: **built and verified on hardware** (box v112, DualSense on Bluetooth). Talking into the pad moves the "DualSense Wireless Controller" source from ~100 to ~4000 mean level, and no mic frame reaches the pad's input.
+- `build/bluez/dualsense-microphone.patch`: `hidp_recv_intr_data` never hands DualSense `0x31` type-2 frames to uhid (so hid-playstation and SDL never see them) and forwards them to whoever called `org.bluez.Input1.AcquireMicrophone()` (returns a SOCK_SEQPACKET fd).
+- The trigger is report `0x36` carrying only sub-packet `0x11` (audio control, `7f 46 1f 64 28 1d` as the PS5 sends it), every 10 ms. A silent speaker frame alone does not start the mic; the `0x17` sub-packet, the `91 01 02` enable and the auth challenge don't either.
+- padd (`guest/padd.c`): for each Bluetooth DualSense it acquires the fd, sends the `0x36` keep-alive from a 10 ms timer, checks each frame's CRC, decodes the Opus (bytes 3–73, 48 kHz stereo) to mono, and writes it into the FIFO of a per-pad `pipewire -c` process running `libpipewire-module-pipe-tunnel` in source mode (it does the clock-drift rate matching). Config and FIFO live in `MICROPHONES_DIR`; everything goes away when the pad disconnects.
+- Probe tools used to find this: `~/_research/ds5probe/ds5replay(.c)`, captured frames in `~/_research/ds5scan/` (outside the repo).
 
 ## Verified facts
 
@@ -62,20 +63,6 @@ Around it the PS5 also sends:
 - hidraw does receive type-2 frames.
 - The box kernel (Alpine lts 6.18) has no HID-BPF.
 - BlueZ's UserspaceHID defaults to true: bluetoothd reads the pad's Bluetooth HID link (`hidp_recv_intr_data`) and feeds uhid. That makes it the single place where the two kinds of report can be split apart.
-
-## Chosen design
-1. Extend `build/bluez/dualsense-cable-pairing.patch` (BlueZ 5.87 is built from source) so `hidp_recv_intr_data` diverts DualSense `0x31` type-2 frames away from uhid. padd receives them over an fd from a small new BlueZ D-Bus call, the same way `MediaTransport1.Acquire` hands out audio.
-   - Rejected alternative: patch both hid-playstation and SDL. It needs two more source builds, including an out-of-tree kernel module per Alpine kernel.
-2. While the mic is wanted, padd keeps a `0x36` report stream going to the pad every 10 ms (a silent Opus speaker packet is enough to test first). That makes the pad send mic frames.
-3. padd decodes the Opus with libopus (1.5.2 ships on the box): `opus_decoder_create(48000, 2)`, then downmix to mono.
-4. padd publishes each pad as a `pw_stream` with media.class Audio/Source, created on connect and removed on disconnect.
-   - It must not set `node.virtual`: the Microphone picker and `guest/find-real-default-source.lua` only accept sources with `node.virtual` unset.
-   - Handle clock drift with PipeWire's rate control (`SPA_PROP_rate`), as its tunnel modules do.
-5. The source then appears in the Guide Microphone picker, under the "anyconsole microphone" virtual source that mixes in the L3+R3 blow tone.
-
-## How to resume
-1. Confirm that a silent `0x36` stream (Opus silence `F4 FF FE` + zeros) starts the mic, and find the minimal `0x36` content needed. The captures' header sub-packets are `0x10` common, `0x11` audio control and `0x12` haptics.
-2. Build the design above and verify it on hardware: decoded audio from the live pad, no phantom input, and the Mute button still mutes.
 
 Analysis scripts (not in the repo; rebuild them from this description if they're gone):
 - a scanner that walks `.cfax` files for CRC-valid HID frames with their L2CAP framing (frame size, length, CID, header byte)

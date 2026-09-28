@@ -1,0 +1,35 @@
+#!/bin/sh
+set -eu
+INSET_DIVISOR=3
+X11_ENVIRONMENT=/tmp/x11
+GAMEPAD_TITLE="GamePad View"
+WIDTH=${CANVAS%x*}
+HEIGHT=${CANVAS#*x}
+INSET_WIDTH=$((WIDTH / INSET_DIVISOR))
+INSET_HEIGHT=$((HEIGHT / INSET_DIVISOR))
+
+position() {
+  case $1 in
+    on) echo "$((WIDTH - INSET_WIDTH)) $((HEIGHT - INSET_HEIGHT))" ;;
+    off) echo "$WIDTH $HEIGHT" ;;
+  esac
+}
+
+settings() {
+  set -- $(position "$1")
+  printf '<open_pad>true</open_pad>\n<pad_position><x>%s</x><y>%s</y></pad_position>\n<pad_size><x>%s</x><y>%s</y></pad_size>\n' \
+    "$1" "$2" "$INSET_WIDTH" "$INSET_HEIGHT"
+}
+
+show() {
+  set -a
+  . $X11_ENVIRONMENT
+  xdotool search --name "$GAMEPAD_TITLE" windowmove %@ $(position "$1") windowraise %@
+}
+
+case "${1:-}" in
+  settings) settings "$2" ;;
+  environment) printf 'DISPLAY=%s\nXAUTHORITY=%s\n' "$DISPLAY" "$XAUTHORITY" > $X11_ENVIRONMENT ;;
+  on|off) show "$1" ;;
+  *) echo "usage: screen settings on|off | environment | on|off" >&2; exit 1 ;;
+esac

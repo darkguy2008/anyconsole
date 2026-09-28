@@ -9,7 +9,7 @@ EGL_VENDORS=/usr/share/glvnd/egl_vendor.d
 VULKAN_DRIVERS=/usr/share/vulkan/icd.d
 SOFTWARE_VULKAN_DRIVER=lvp_icd.json
 UDEV="/usr/bin/udevadm $LIBDIR/systemd/libsystemd-shared-*.so"
-AUDIO="/usr/bin/pipewire /usr/bin/pipewire-pulse /usr/bin/wireplumber /usr/bin/wpctl /usr/bin/pw-dump"
+AUDIO="/usr/bin/pipewire /usr/bin/pipewire-pulse /usr/bin/wireplumber /usr/bin/wpctl /usr/bin/pw-dump /usr/bin/pw-cli"
 AUDIO_PLUGINS="$LIBDIR/pipewire-0.3 $LIBDIR/spa-0.2 $LIBDIR/wireplumber-0.5"
 DOCKER="/usr/bin/dockerd /usr/bin/docker /usr/bin/containerd /usr/bin/containerd-shim-runc-v2 /usr/bin/runc /usr/libexec/docker/docker-init"
 DOCKER_PLUGINS=/usr/libexec/docker/cli-plugins
@@ -24,7 +24,7 @@ CFLAGS="-O2 -Wall -Wextra -Werror -I/tmp"
 make_skeleton() {
   mkdir -p $ROOTFS/etc $ROOTFS/proc $ROOTFS/sys $ROOTFS/dev $ROOTFS/run $ROOTFS/tmp \
     $ROOTFS/mnt $ROOTFS/data $ROOTFS/boot/efi $ROOTFS/usr/share/terminfo/l $ROOTFS/usr/lib $ROOTFS/var/lib \
-    $ROOTFS/www/cgi-bin $ROOTFS/opt $ROOTFS/usr/share/anyconsole $ROOTFS/etc/docker $ROOTFS/etc/bluetooth $ROOTFS/etc/pipewire/pipewire.conf.d $ROOTFS/etc/wireplumber/wireplumber.conf.d $ROOTFS/usr/local/share/wireplumber/scripts/device $ROOTFS/etc/modprobe.d
+    $ROOTFS/www/cgi-bin $ROOTFS/opt $ROOTFS/usr/share/anyconsole $ROOTFS/etc/docker $ROOTFS/etc/bluetooth $ROOTFS/etc/pipewire/pipewire.conf.d $ROOTFS/etc/wireplumber/wireplumber.conf.d $ROOTFS/usr/local/share/wireplumber/scripts/device $ROOTFS/usr/local/share/wireplumber/scripts/default-nodes $ROOTFS/etc/modprobe.d
   ln -s /run $ROOTFS/var/run
 }
 
@@ -51,7 +51,7 @@ dlopened() {
   } | sort -u | while read -r library; do [ ! -e "$LIBDIR/$library" ] || echo "$LIBDIR/$library"; done
 }
 
-build_padd() { gcc $CFLAGS -o /bin/padd /src/guest/padd.c $(sdl2-config --cflags --libs) $(pkg-config --cflags --libs libevdev libsystemd libudev json-c) -lm; }
+build_padd() { gcc $CFLAGS -o /bin/padd /src/guest/padd.c $(sdl2-config --cflags --libs) $(pkg-config --cflags --libs libevdev libsystemd libudev json-c opus zlib) -lm; }
 
 generate_protocol() {
   wayland-scanner client-header "$1" "/tmp/$(basename "$1" .xml).h"
@@ -140,9 +140,10 @@ install_system() {
   cp /src/guest/daemon.json $ROOTFS/etc/docker/
   cp /src/guest/bluez-input.conf $ROOTFS/etc/bluetooth/input.conf
   cp /src/guest/gamecontrollerdb.txt "$ROOTFS$CONTROLLER_MAPPINGS"
-  cp /src/guest/pipewire.conf $ROOTFS/etc/pipewire/pipewire.conf.d/anyconsole.conf
+  sed -e "s/@MICROPHONE_NODE@/$MICROPHONE_NODE/g" -e "s/@BLOW_NODE@/$BLOW_NODE/g" /src/guest/pipewire.conf > $ROOTFS/etc/pipewire/pipewire.conf.d/anyconsole.conf
   cp /src/guest/wireplumber.conf $ROOTFS/etc/wireplumber/wireplumber.conf.d/anyconsole.conf
   cp /src/guest/find-detected-profile.lua $ROOTFS/usr/local/share/wireplumber/scripts/device/
+  cp /src/guest/find-real-default-source.lua $ROOTFS/usr/local/share/wireplumber/scripts/default-nodes/
   printf 'blacklist snd_pcsp\n' > $ROOTFS/etc/modprobe.d/anyconsole.conf
   cp /src/guest/api $ROOTFS/www/cgi-bin/
   printf 'VERSION=%s\n' "$VERSION" > $ROOTFS/etc/anyconsole-release

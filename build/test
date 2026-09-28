@@ -40,6 +40,7 @@ state() { api GET state; }
 log() { echo "$1 +$(($(date +%s) - STARTED))s: $2"; }
 diagnose() {
   guest "cat $STATE_FILE /tmp/install.log; echo; for log in $LOG_DIR/*.log; do echo \"== \$log\"; tail -n 15 \"\$log\"; done" >&2 || true
+  guest ". /etc/profile; wpctl status; pw-dump | jq -c '.[] | select(.info.props[\"media.class\"]? == \"Audio/Source\") | {id, props: [.info.params.Props[]? | {channelVolumes, softVolumes, volume}]}'" >&2 || true
 }
 wait_for() {
   attempts=$(($1 * POLLS_PER_SECOND)) attempt=0
@@ -342,6 +343,35 @@ hotplug_controllers() {
   log ok "rejected a sleep outside SLEEP_MINUTES"
 }
 
+blow_amplitude() {
+  guest ". /etc/profile; pw-dump | jq -e --arg control '$BLOW_NODE:Ampl' '[.[] | select(.info.props[\"node.name\"]? == \"${MICROPHONE_NODE}_input\") | .info.params.Props[].params // empty | select(index(\$control) != null) | .[index(\$control) + 1]] == [$1]'"
+}
+
+blow_into_microphone() {
+  wait_for $STEP_SECONDS guest ". /etc/profile; source=\$(wpctl inspect @DEFAULT_AUDIO_SOURCE@) && echo \"\$source\" | grep -q 'media.class = \"Audio/Source\"' && ! echo \"\$source\" | grep -q 'node.virtual = \"true\"'"
+  log ok "the default microphone is a real device"
+  send "1 leftstick 1" "1 rightstick 1"
+  wait_for $STEP_SECONDS blow_amplitude 1
+  log ok "holding L3+R3 blows into $MICROPHONE_NODE"
+  send "1 rightstick 0"
+  wait_for $STEP_SECONDS blow_amplitude 0
+  send "1 leftstick 0"
+  log ok "letting go of a stick stops blowing"
+  tap guide
+  expect '.guide and .audio.microphone != "" and .audio.microphone_volume == 100'
+  highlight "Microphone volume"
+  tap dpleft
+  expect '.audio.microphone_volume < 100'
+  tap dpright
+  expect '.audio.microphone_volume == 100'
+  guest ". /etc/profile; wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 1"
+  expect ".audio.microphone_muted and ($(row_value "Microphone volume")) == \"Muted\""
+  guest ". /etc/profile; wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0"
+  expect "(.audio.microphone_muted | not) and ($(row_value "Microphone volume")) == \"100%\""
+  tap guide
+  expect '.guide | not'
+}
+
 sign_in_from_attract() {
   expect '.screen == "attract" and (.session.players | length) == 0'
   snapshot attract
@@ -485,6 +515,7 @@ expect ".display.canvas == $AREA_SIZE and .display.frame == .display.canvas and 
 wait_for $STEP_SECONDS guest ". /etc/profile; pw-dump | jq -e '[.[] | select(.info.props[\"media.class\"]? == \"Stream/Output/Audio\" and .info.state == \"running\")] | length == 1'"
 log ok "the game plays sound into PipeWire"
 remember_guide_position
+blow_into_microphone
 change_emulation
 second_player_joins_and_leaves alter-ego/nes
 

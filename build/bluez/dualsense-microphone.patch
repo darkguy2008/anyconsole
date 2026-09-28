@@ -1,0 +1,153 @@
+--- a/profiles/input/device.c	2026-09-28 01:26:11
++++ b/profiles/input/device.c	2026-09-28 01:26:11
+@@ -21,6 +21,7 @@
+ #include <unistd.h>
+ #include <sys/ioctl.h>
+ #include <sys/uio.h>
++#include <sys/socket.h>
+ 
+ #include "bluetooth/bluetooth.h"
+ #include "bluetooth/hidp.h"
+@@ -51,6 +52,13 @@
+ 
+ #define INPUT_INTERFACE "org.bluez.Input1"
+ 
++#define DUALSENSE_VENDOR 0x054c
++#define DUALSENSE_PRODUCT 0x0ce6
++#define DUALSENSE_EDGE_PRODUCT 0x0df2
++#define DUALSENSE_REPORT 0x31
++#define DUALSENSE_REPORT_TYPE_MASK 0x0f
++#define DUALSENSE_MICROPHONE_TYPE 0x02
++
+ enum reconnect_mode_t {
+ 	RECONNECT_NONE = 0,
+ 	RECONNECT_DEVICE,
+@@ -87,6 +95,7 @@
+ 	bool			virtual_cable_unplug;
+ 	uint8_t			type;
+ 	unsigned int		idle_timer;
++	int			microphone_fd;
+ };
+ 
+ static int idle_timeout = 0;
+@@ -129,10 +138,18 @@
+ {
+ 	/* HIDP is classic only; so consider it bonded if BDADDR_BREDR is */
+ 	return device_is_bonded(idev->device, BDADDR_BREDR);
++}
++
++static void close_microphone(struct input_device *idev)
++{
++	if (idev->microphone_fd >= 0)
++		close(idev->microphone_fd);
++	idev->microphone_fd = -1;
+ }
+ 
+ static void input_device_free(struct input_device *idev)
+ {
++	close_microphone(idev);
+ 	bt_uhid_unref(idev->uhid);
+ 	btd_service_unref(idev->service);
+ 	btd_device_unref(idev->device);
+@@ -349,6 +366,35 @@
+ 	DBG("HID report (%zu bytes)", size);
+ 
+ 	return true;
++}
++
++static bool is_dualsense(struct input_device *idev)
++{
++	uint16_t product = btd_device_get_product(idev->device);
++
++	return btd_device_get_vendor(idev->device) == DUALSENSE_VENDOR &&
++		(product == DUALSENSE_PRODUCT ||
++		 product == DUALSENSE_EDGE_PRODUCT);
++}
++
++static bool is_microphone_frame(struct input_device *idev,
++					const uint8_t *report, size_t size)
++{
++	return size > 1 && report[0] == DUALSENSE_REPORT &&
++		(report[1] & DUALSENSE_REPORT_TYPE_MASK) ==
++						DUALSENSE_MICROPHONE_TYPE &&
++		is_dualsense(idev);
++}
++
++static void send_microphone_frame(struct input_device *idev,
++					const uint8_t *report, size_t size)
++{
++	if (idev->microphone_fd < 0)
++		return;
++
++	if (send(idev->microphone_fd, report, size,
++				MSG_DONTWAIT | MSG_NOSIGNAL) < 0 && errno != EAGAIN)
++		close_microphone(idev);
+ }
+ 
+ static bool hidp_recv_intr_data(GIOChannel *chan, struct input_device *idev)
+@@ -381,6 +427,11 @@
+ 
+ 	if (len < 2) {
+ 		DBG("received empty HID report");
++		return true;
++	}
++
++	if (is_microphone_frame(idev, data + 1, len - 1)) {
++		send_microphone_frame(idev, data + 1, len - 1);
+ 		return true;
+ 	}
+ 
+@@ -1504,6 +1555,7 @@
+ 	idev->device = btd_device_ref(device);
+ 	idev->path = g_strdup(path);
+ 	idev->type = bt_uhid_icon_to_type(btd_device_get_icon(device));
++	idev->microphone_fd = -1;
+ 
+ 	input_device_update_rec(idev);
+ 
+@@ -1520,8 +1572,36 @@
+ 	dbus_message_iter_append_basic(iter, DBUS_TYPE_STRING, &str_mode);
+ 
+ 	return TRUE;
++}
++
++static DBusMessage *acquire_microphone(DBusConnection *conn,
++					DBusMessage *msg, void *data)
++{
++	struct input_device *idev = data;
++	DBusMessage *reply;
++	int fds[2];
++
++	if (!is_dualsense(idev))
++		return btd_error_not_supported(msg);
++
++	if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, fds) < 0)
++		return btd_error_failed(msg, strerror(errno));
++
++	close_microphone(idev);
++	idev->microphone_fd = fds[0];
++	reply = g_dbus_create_reply(msg, DBUS_TYPE_UNIX_FD, &fds[1],
++							DBUS_TYPE_INVALID);
++	close(fds[1]);
++
++	return reply;
+ }
+ 
++static const GDBusMethodTable input_methods[] = {
++	{ GDBUS_METHOD("AcquireMicrophone", NULL, GDBUS_ARGS({ "fd", "h" }),
++							acquire_microphone) },
++	{ }
++};
++
+ static const GDBusPropertyTable input_properties[] = {
+ 	{ "ReconnectMode", "s", property_get_reconnect_mode },
+ 	{ }
+@@ -1550,7 +1630,7 @@
+ 
+ 	if (g_dbus_register_interface(btd_get_dbus_connection(),
+ 					idev->path, INPUT_INTERFACE,
+-					NULL, NULL,
++					input_methods, NULL,
+ 					input_properties, idev,
+ 					NULL) == FALSE) {
+ 		error("Unable to register %s interface", INPUT_INTERFACE);
