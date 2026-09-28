@@ -2,7 +2,6 @@
 set -eu
 . /etc/anyconsole.conf
 MOUNTS=/run/stores
-ENGINES=/data/engines
 RECIPES=/opt/anyconsole/recipes
 PLATFORMS=/run/platforms
 LAUNCH_LABEL=anyconsole.launch
@@ -76,7 +75,8 @@ refresh_store() {
   mount_store "$1" "$2" &&
     rsync -a --delete --delay-updates --include='/*/' --include='/*/manifest.json' \
       $(platforms | sed 's|.*|--include=/*/&/|') --exclude='*' "$MOUNTS/$1/" "$CATALOG_DIR/$1/" ||
-    { rm -rf "${CATALOG_DIR:?}/$1"; ! mountpoint -q "$MOUNTS/$1" || umount -l "$MOUNTS/$1"; }
+    { rm -rf "${CATALOG_DIR:?}/$1"; ! mountpoint -q "$MOUNTS/$1" || umount -l "$MOUNTS/$1"; return; }
+  rsync -rt --omit-dir-times --existing --include='/*/' --include="/*/$MANIFEST" --exclude='*' "$CATALOG_DIR/$1/" "$GAMES_DIR/"
 }
 
 prune() {

@@ -160,8 +160,9 @@ LABEL anyconsole.launch="3ds cci cxi 3dsx zcci" anyconsole.bios="/saves/Azahar/s
 COPY --from=azahar /cores/azahar_libretro.so /retroarch/core.so
 
 FROM gpu AS x11
-RUN apt-get update && apt-get install -y --no-install-recommends xwayland xwayland-run xauth libopengl0 libasound2-plugins && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends xwayland xwayland-run xauth libopengl0 libasound2-plugins python3-sdl2 && rm -rf /var/lib/apt/lists/*
 COPY asound.conf /etc/asound.conf
+COPY joystick-guid /usr/local/bin/
 VOLUME /engine
 
 FROM debian:trixie-slim AS fetch
@@ -193,7 +194,6 @@ RUN appimage /cemu
 
 # wiiu Nintendo Wii U
 FROM x11 AS wiiu
-RUN apt-get update && apt-get install -y --no-install-recommends python3-sdl2 && rm -rf /var/lib/apt/lists/*
 LABEL anyconsole.launch="wux wud iso rpx wua" anyconsole.bios="/bios"
 COPY --from=cemu-download /cemu /opt/cemu
 COPY cemu/ /opt/cemu/
