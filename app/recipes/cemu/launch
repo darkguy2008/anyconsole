@@ -7,14 +7,6 @@ PRO_CONTROLLER="Wii U Pro Controller"
 CEMU=$XDG_CONFIG_HOME/Cemu
 MLC=/saves/mlc01
 
-joystick_guid() {
-  python3 -c 'import ctypes, sdl2
-sdl2.SDL_Init(sdl2.SDL_INIT_JOYSTICK)
-text = ctypes.create_string_buffer(33)
-sdl2.SDL_JoystickGetGUIDString(sdl2.SDL_JoystickGetDeviceGUID(0), text, len(text))
-print(text.value.decode())'
-}
-
 controller_profile() {
   type=$1 pad=$2 guid=$3
   printf '<?xml version="1.0" encoding="UTF-8"?>\n<emulated_controller>\n<type>%s</type>\n<controller>\n' "$type"
@@ -28,7 +20,7 @@ controller_profile() {
 }
 
 controller_profiles() {
-  guid=$(joystick_guid)
+  guid=$(joystick-guid)
   controller_profile "$GAMEPAD" 0 "$guid" > "$CEMU/controllerProfiles/controller0.xml"
   for pad in $(seq 1 $((PADS - 1))); do controller_profile "$PRO_CONTROLLER" "$pad" "$guid" > "$CEMU/controllerProfiles/controller$pad.xml"; done
 }

@@ -9,6 +9,7 @@ TARGET_SIZE=16G
 SSH_TEST_PORT=2223
 API_TEST_PORT=8081
 POLLS_PER_SECOND=10
+SSH_ALIVE_SECONDS=1
 POLL_INTERVAL=$(awk "BEGIN { print 1 / $POLLS_PER_SECOND }")
 STEP_SECONDS=15
 BOOT_SECONDS=180
@@ -25,12 +26,13 @@ REMOTE_PAD="$REMOTE_PAD_NAME 1"
 SECOND_REMOTE_PAD="$REMOTE_PAD_NAME 2"
 LOW_BATTERY=10
 STRONG_RUMBLE_EFFECT=4
+REDREAM_ENGINE=$ENGINES/dreamcast/engine
 AREA_SIZE='(.display.area_box | "\(.width)x\(.height)")'
 
 monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
 guest() {
   with_password ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o LogLevel=ERROR -o ConnectTimeout=1 -o ControlMaster=auto -o ControlPath=$OUT/ssh.sock -o ControlPersist=yes \
+    -o LogLevel=ERROR -o ConnectTimeout=1 -o ServerAliveInterval=$SSH_ALIVE_SECONDS -o ServerAliveCountMax=$((STEP_SECONDS / SSH_ALIVE_SECONDS)) -o ControlMaster=auto -o ControlPath=$OUT/ssh.sock -o ControlPersist=yes \
     -p $SSH_TEST_PORT root@127.0.0.1 "$@"
 }
 api() { curl -fsS -X "$1" --data-binary "${3:-}" "127.0.0.1:$API_TEST_PORT/cgi-bin/api/$2"; }
@@ -51,6 +53,7 @@ wait_for() {
 holds() { state | jq -e "$1"; }
 expect() { wait_for $STEP_SECONDS holds "$1"; log ok "$1"; }
 game_name() { echo "${1%/*}-${1#*/}"; }
+game_log() { echo "$LOG_DIR/$(game_name "$1").log"; }
 status_of() { echo ".games[] | select(.key == \"$1\") | .status == \"$2\""; }
 row_value() { echo ".rows[] | select(.label == \"$1\") | .value"; }
 send() { api POST input "$(printf '%s\n' "$@")" >/dev/null; }
@@ -240,8 +243,24 @@ rewind_to_older_state() {
   states=$(state | jq .rewind.states)
   tap a
   expect "(.guide | not) and .rewind.states == $((states - 1)) and .rewind.back == 0 and ($(status_of "$1" running))"
-  wait_for $STEP_SECONDS guest "grep -q 'Loading state' $LOG_DIR/$(game_name "$1").log"
+  wait_for $STEP_SECONDS guest "grep -q 'Loading state' $(game_log "$1") && ! grep -q 'Failed to load state' $(game_log "$1")"
   log ok "rewound $1 to an older state"
+}
+
+play_new_game() {
+  open_store
+  install_game "$1" "$2"
+  play_game "$1"
+}
+
+close_game() {
+  back_to_dashboard
+  expect "$(status_of "$1" paused)"
+  choose "$2"
+  choose Close
+  expect "$(status_of "$1" installed)"
+  tap b
+  expect '.screen == "home"'
 }
 
 play_every_other_game() {
@@ -250,17 +269,9 @@ play_every_other_game() {
     key=${key%/}
     holds "$(status_of "$key" "")" >/dev/null || continue
     title=$(jq -r .title "$TEST_STORE/${key%/*}/manifest.json")
-    open_store
-    install_game "$key" "$title"
-    play_game "$key"
+    play_new_game "$key" "$title"
     snapshot "$(game_name "$key")"
-    back_to_dashboard
-    expect "$(status_of "$key" paused)"
-    choose "$title"
-    choose Close
-    expect "$(status_of "$key" installed)"
-    tap b
-    expect '.screen == "home"'
+    close_game "$key" "$title"
   done
 }
 
@@ -355,15 +366,16 @@ join_keyboard() {
 second_player_joins_and_leaves() {
   PAD=2 tap guide
   second=$(device_id "$SECOND_REMOTE_PAD")
-  expect ".screen == \"whois\" and .session.picker == $second and ($(status_of alter-ego/nes paused))"
+  expect ".screen == \"whois\" and .session.picker == $second and ($(status_of "$1" paused))"
   PAD=2 choose "Player 2"
-  expect "$(players) == [1, 2] and .session.players[1].devices == [$second] and ($(status_of alter-ego/nes running))"
+  expect "$(players) == [1, 2] and .session.players[1].devices == [$second] and ($(status_of "$1" running))"
   wait_for $STEP_SECONDS guest "[ -e $PAD_NODES/event1 ]"
   log ok "Player 2 got the second virtual pad"
+  [ -z "${2:-}" ] || { wait_for $STEP_SECONDS "$2"; log ok "$2"; }
   PAD=2 tap guide
   expect ".guide and .session.focus == $second and .rows[-1].label == \"Log out\""
   PAD=2 choose "Log out"
-  expect "$(players) == [1] and (.guide | not) and ($(status_of alter-ego/nes running))"
+  expect "$(players) == [1] and (.guide | not) and ($(status_of "$1" running))"
   wait_for $STEP_SECONDS guest "[ ! -e $PAD_NODES/event1 ]"
   log ok "Player 2 logged out and gave the pad back"
 }
@@ -390,6 +402,34 @@ emulate_keyboard_with_pad() {
   expect "($(row_value Emulate)) == \"Keyboard\" and $(device_mode "$REMOTE_PAD") == \"keyboard\""
   tap guide
   expect "(.guide | not) and ($(status_of commander-keen/msdos running))"
+}
+
+input_holds() {
+  directory=$1 name=$2
+  shift 2
+  guest "docker run --rm -i --network none --device-cgroup-rule 'c 13:* rw' -v $directory:/dev/input:ro --entrypoint python3 $FAKEPAD_IMAGE - '$name' $*" <<'PYTHON'
+import glob, sys, libevdev
+devices = (libevdev.Device(open(path, "rb")) for path in sorted(glob.glob("/dev/input/event*")))
+device = next(device for device in devices if device.name == sys.argv[1])
+sys.exit(any(device.value[libevdev.evbit(code)] != int(value) for code, value in zip(sys.argv[2::2], sys.argv[3::2])))
+PYTHON
+}
+
+redream_gave_second_pad() {
+  port=$(guest "sed -n 's/^port1=dev:\([0-9]*\),desc:\([0-9a-f]*\),.*/registered device \1 desc=\2/p' $REDREAM_ENGINE/redream.cfg")
+  [ -n "$port" ] && guest "grep -qF '$port name=$PAD_NAME #2' $REDREAM_ENGINE/redream.log"
+}
+
+play_dreamcast_with_two_players() {
+  play_new_game gravity-wave/dreamcast "Gravity Wave"
+  send "1 lefty 0"
+  wait_for $STEP_SECONDS input_holds $PAD_NODES "$PAD_NAME" BTN_NORTH 1 ABS_Y $AXIS_CENTER
+  send "1 lefty $AXIS_CENTER" "1 righty 0"
+  wait_for $STEP_SECONDS input_holds $PAD_NODES "$PAD_NAME" BTN_NORTH 0 ABS_Y 0
+  send "1 righty $AXIS_CENTER"
+  log ok "the manifest's pad map moves with the left stick and aims with the right"
+  second_player_joins_and_leaves gravity-wave/dreamcast redream_gave_second_pad
+  close_game gravity-wave/dreamcast "Gravity Wave"
 }
 
 log_out_closing_games() {
@@ -434,7 +474,7 @@ expect '.stores[0].online and ([.games[].key] | index("alter-ego/nes") != null)'
 open_store
 install_watching_home alter-ego/nes "Alter Ego"
 play_game alter-ego/nes
-wait_for $STEP_SECONDS guest "grep -qF 'configured in port 1' $LOG_DIR/$(game_name alter-ego/nes).log"
+wait_for $STEP_SECONDS guest "grep -qF 'configured in port 1' $(game_log alter-ego/nes)"
 log ok "RetroArch configured the virtual pad"
 wait_for $STEP_SECONDS guest "[ -d $PROFILES_DIR/1/saves/$(game_name alter-ego/nes) ]"
 log ok "Player 1 plays with its own saves"
@@ -448,7 +488,7 @@ wait_for $STEP_SECONDS guest ". /etc/profile; pw-dump | jq -e '[.[] | select(.in
 log ok "the game plays sound into PipeWire"
 remember_guide_position
 change_emulation
-second_player_joins_and_leaves
+second_player_joins_and_leaves alter-ego/nes
 
 tap guide
 expect ".guide and .screen == \"guide\" and ($(status_of alter-ego/nes paused)) and .audio.output != \"\""
@@ -456,9 +496,7 @@ snapshot guide
 choose Dashboard
 expect '.dashboard and (.guide | not) and .screen == "home"'
 
-open_store
-install_game lan-master/nes "LAN Master"
-play_game lan-master/nes
+play_new_game lan-master/nes "LAN Master"
 expect "$(status_of alter-ego/nes paused)"
 
 join_keyboard
@@ -484,17 +522,16 @@ choose Uninstall
 expect '[.games[] | select(.key == "lan-master/nes")] | all(.status == "")'
 
 tap b
-open_store
-install_game commander-keen/msdos "Commander Keen"
-play_game commander-keen/msdos
+play_new_game commander-keen/msdos "Commander Keen"
 expect '.rewind.states >= 1'
 emulate_keyboard_with_pad
-keen_log=$LOG_DIR/$(game_name commander-keen/msdos).log
-programs=$(guest "grep -c 'DOSBOX STATUS\] Program:' $keen_log" || true)
+wait_for $STEP_SECONDS guest "grep -q 'DOSBOX STATUS\] Program: KEEN1 ' $(game_log commander-keen/msdos)"
+log ok "DOSBox Pure started the only executable, KEEN1"
 send "1 a 1"
-wait_for $STEP_SECONDS guest "[ \$(grep -c 'DOSBOX STATUS\] Program:' $keen_log) -gt $programs ]"
+wait_for $STEP_SECONDS input_holds $INPUT_NODES "$KEYBOARD_NAME" KEY_ENTER 1
 send "1 a 0"
-log ok "the pad's A reached DOSBox as Enter"
+wait_for $STEP_SECONDS input_holds $INPUT_NODES "$KEYBOARD_NAME" KEY_ENTER 0
+log ok "the pad's A pressed and released Enter on the virtual keyboard"
 expect '.rewind.states >= 2'
 snapshot keen
 rewind_to_older_state commander-keen/msdos
@@ -512,6 +549,7 @@ api POST stores "$TEST_STORE_URL" >/dev/null
 expect '.stores[0].online and all(.games[]; (.stores | length) == 1)'
 
 switch_gpu_after_games commander-keen/msdos
+play_dreamcast_with_two_players
 play_every_other_game
 log_out_closing_games
 

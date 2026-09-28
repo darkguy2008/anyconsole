@@ -42,8 +42,6 @@
 #define PAD_VENDOR 0x054c
 #define PAD_PRODUCT 0x0ce6
 #define PAD_VERSION 0x8111
-#define AXIS_MAX 255
-#define AXIS_CENTER (AXIS_MAX / 2 + 1)
 #define AXIS_REACH (AXIS_MAX / STICK_REACH_DIVISOR)
 #define SDL_AXIS_REACH (SDL_JOYSTICK_AXIS_MAX / STICK_REACH_DIVISOR)
 #define TRIGGER_PRESS (AXIS_MAX / 2)
@@ -116,6 +114,10 @@ static const struct control controls[] = {
 
 struct binding { const char *control; unsigned short code; };
 
+struct route { int source, sign, target; };
+#define SIGNS 3
+enum side { NEGATIVE_SIDE = 1, POSITIVE_SIDE = 2, BOTH_SIDES = NEGATIVE_SIDE | POSITIVE_SIDE };
+
 static const struct binding key_bindings[] = {
     {"dpup", KEY_UP}, {"dpdown", KEY_DOWN}, {"dpleft", KEY_LEFT}, {"dpright", KEY_RIGHT}, {"a", KEY_ENTER}, {"b", KEY_ESC},
     {"x", KEY_SPACE}, {"y", KEY_TAB}, {"leftshoulder", KEY_PAGEUP}, {"rightshoulder", KEY_PAGEDOWN}, {"start", KEY_ENTER}, {"back", KEY_BACKSPACE},
@@ -181,7 +183,8 @@ struct bluetooth_device {
 };
 
 static struct libevdev_uinput *pad[PADS], *touchpad[PADS], *motion[PADS], *keyboard;
-static int emitted[PADS][CONTROL_COUNT], keymap[CONTROL_COUNT], axis_control[SDL_CONTROLLER_AXIS_MAX], button_control[SDL_CONTROLLER_BUTTON_MAX];
+static int emitted[PADS][CONTROL_COUNT], keymap[CONTROL_COUNT], rerouted[CONTROL_COUNT], route_count, axis_control[SDL_CONTROLLER_AXIS_MAX], button_control[SDL_CONTROLLER_BUTTON_MAX];
+static struct route routes[CONTROL_COUNT * SIGNS];
 static struct ff_effect *effects[PADS];
 static int effect_count[PADS], gain[PADS];
 static SDL_JoystickID motion_source[PADS];
@@ -376,15 +379,45 @@ static int mode_named(const char *name) {
     return -1;
 }
 
+static double deflection(int value) { return (value - AXIS_CENTER) / (double)(AXIS_MAX - AXIS_CENTER); }
+
+static int stronger(unsigned i, int value, int candidate) { return abs(candidate - rest(i)) > abs(value - rest(i)) ? candidate : value; }
+
+static int axis_value(double unit) { return lround((fmax(-1, fmin(1, unit)) + 1) * AXIS_MAX / 2); }
+
+static int converted(const struct route *route, int raw) {
+    const struct control *source = &controls[route->source];
+    double amount = raw;
+    if (is_stick(route->source)) amount = deflection(raw);
+    else if (source->button) amount = (double)raw / AXIS_MAX;
+    else if (source->direction) amount = raw * source->direction;
+    if (route->sign) amount = fmax(0, route->sign * amount);
+    if (is_stick(route->target)) return axis_value(amount);
+    if (controls[route->target].button) return lround(fmin(fabs(amount), 1) * AXIS_MAX);
+    if (!is_stick(route->source)) return pressed_value(route->source, raw);
+    return route->sign ? stick_direction(raw) == route->sign : stick_direction(raw) != 0;
+}
+
+static int mapped(struct device *device, unsigned i) {
+    int raw = device->raw[i], side = raw < rest(i) ? NEGATIVE_SIDE : raw > rest(i) ? POSITIVE_SIDE : 0;
+    int value = rerouted[i] & side ? rest(i) : raw;
+    for (int r = 0; r < route_count; r++)
+        if (routes[r].target == (int)i) value = stronger(i, value, converted(&routes[r], device->raw[routes[r].source]));
+    return value;
+}
+
 static int effective(struct device *device, unsigned i) {
     const struct control *c = &controls[i];
     if (!routed(device) || (device->mode != ANALOG && device->mode != DIGITAL)) return rest(i);
-    if (device->mode == ANALOG) return device->raw[i];
-    if (c->direction)
-        return device->raw[i] || stick_direction(device->raw[control_index(EV_ABS, c->code == ABS_HAT0X ? ABS_X : ABS_Y)]) == c->direction;
+    int value = mapped(device, i);
+    if (device->mode == ANALOG) return value;
+    if (c->direction) {
+        int stick = control_index(EV_ABS, c->code == ABS_HAT0X ? ABS_X : ABS_Y);
+        return value || stick_direction(mapped(device, stick)) == c->direction;
+    }
     if (is_stick(i)) return AXIS_CENTER;
-    if (c->button) return pressed_value(i, device->raw[i]) ? AXIS_MAX : 0;
-    return device->raw[i];
+    if (c->button) return pressed_value(i, value) ? AXIS_MAX : 0;
+    return value;
 }
 
 static int hat(int seat, unsigned short code) {
@@ -399,9 +432,7 @@ static void sync_control(int seat, unsigned i) {
     int value = rest(i);
     for (int j = 0; j < INPUT_DEVICES_MAX; j++) {
         struct device *device = &device_table[j];
-        if (!device->id || device->pad != seat) continue;
-        int candidate = effective(device, i);
-        if (abs(candidate - rest(i)) > abs(value - rest(i))) value = candidate;
+        if (device->id && device->pad == seat) value = stronger(i, value, effective(device, i));
     }
     if (value == emitted[seat][i]) return;
     emitted[seat][i] = value;
@@ -413,12 +444,8 @@ static void sync_control(int seat, unsigned i) {
     }
 }
 
-static void sync_pad(int seat, unsigned i) {
-    if (!pad[seat]) return;
-    sync_control(seat, i);
-    if (!is_left_stick(i)) return;
-    sync_control(seat, direction_control(i, -1));
-    sync_control(seat, direction_control(i, 1));
+static void sync_pad(int seat) {
+    for (unsigned i = 0; pad[seat] && i < CONTROL_COUNT; i++) sync_control(seat, i);
 }
 
 static void plug(int seat) {
@@ -494,8 +521,6 @@ static int canvas_width(void) {
     return width;
 }
 
-static double deflection(int value) { return (value - AXIS_CENTER) / (double)(AXIS_MAX - AXIS_CENTER); }
-
 static int move_pointer(double *travel, const double *motion, const unsigned short *axes, unsigned count) {
     int moved = 0;
     for (unsigned axis = 0; axis < count; axis++) {
@@ -546,7 +571,7 @@ static void drive_control(struct device *device, int i, int value) {
     int before = device->raw[i];
     device->raw[i] = value;
     if (!routed(device)) return;
-    if (device->mode == ANALOG || device->mode == DIGITAL) sync_pad(device->pad, i);
+    if (device->mode == ANALOG || device->mode == DIGITAL) sync_pad(device->pad);
     else emulate(device, i, before, value);
 }
 
@@ -1320,21 +1345,35 @@ static void set_mode(struct device *device, const char *name) {
     write_controllers();
 }
 
-static void load_keymap(const char *game) {
+static void add_route(const char *source, const char *target) {
+    int sign = (*source == '+') - (*source == '-');
+    int from = control_named(source + abs(sign)), to = control_named(target);
+    if (from < 0 || to < 0 || (sign && !is_stick(from))) { fprintf(stderr, "padd: cannot map %s to %s\n", source, target); return; }
+    routes[route_count++] = (struct route){from, sign, to};
+    rerouted[from] |= sign < 0 ? NEGATIVE_SIDE : sign > 0 ? POSITIVE_SIDE : BOTH_SIDES;
+}
+
+static void load_maps(const char *game) {
     char path[PATH_MAX], slug[NAME_MAX + 1];
-    json_object *manifest = NULL, *keys = NULL;
+    json_object *manifest = NULL, *config = NULL, *keys, *pad_map;
     release_all();
     memset(keymap, 0, sizeof keymap);
+    memset(rerouted, 0, sizeof rerouted);
+    route_count = 0;
     const char *platform = strchr(game, '/');
     if (!platform) return;
     snprintf(slug, sizeof slug, "%.*s", (int)(platform - game), game);
     snprintf(path, sizeof path, GAMES_DIR "/%s/" MANIFEST, slug);
     manifest = json_object_from_file(path);
-    if (json_object_object_get_ex(manifest, platform + 1, &keys) && json_object_object_get_ex(keys, "keys", &keys)) {
+    json_object_object_get_ex(manifest, platform + 1, &config);
+    if (json_object_object_get_ex(config, "keys", &keys)) {
         json_object_object_foreach(keys, control, code) {
             int i = control_named(control), value = libevdev_event_code_from_name(EV_KEY, json_object_get_string(code));
             if (i >= 0 && value >= 0) keymap[i] = value;
         }
+    }
+    if (json_object_object_get_ex(config, "pad", &pad_map)) {
+        json_object_object_foreach(pad_map, source, target) add_route(source, json_object_get_string(target));
     }
     json_object_put(manifest);
 }
@@ -1381,7 +1420,7 @@ static void command(char *line) {
     } else if (count == 2 && !strcmp(words[0], "touchpad")) {
         touchpad_pointer = !strcmp(words[1], "pointer");
     } else if (count == 2 && !strcmp(words[0], "game")) {
-        load_keymap(strcmp(words[1], NO_GAME) ? words[1] : "");
+        load_maps(strcmp(words[1], NO_GAME) ? words[1] : "");
     } else if (count == 2 && !strcmp(words[0], "menu")) {
         set_menu(atoi(words[1]));
     } else if (count == 2 && !strcmp(words[0], "pads")) {
@@ -1525,8 +1564,8 @@ static void drive_axis(struct pad *source, SDL_GameControllerAxis axis) {
     SDL_GameControllerAxis horizontal = axis - axis % 2, vertical = horizontal + 1;
     double x = unit_axis(controller, horizontal), y = unit_axis(controller, vertical), magnitude = hypot(x, y);
     double gain = magnitude ? past_deadzone(magnitude, STICK_DEADZONE) / magnitude : 0;
-    pad_input(source->input, axis_control[horizontal], lround((x * gain + 1) * AXIS_MAX / 2));
-    pad_input(source->input, axis_control[vertical], lround((y * gain + 1) * AXIS_MAX / 2));
+    pad_input(source->input, axis_control[horizontal], axis_value(x * gain));
+    pad_input(source->input, axis_control[vertical], axis_value(y * gain));
 }
 
 static void attach(int index) {

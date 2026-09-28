@@ -2,10 +2,16 @@
 set -eu
 PICTURE_WIDTH=4
 PICTURE_HEIGHT=3
-VMU_PORTS="0 1 2 3"
+PORTS="0 1 2 3"
+FIRST_JOYSTICK_DEVICE=4
+CONFIG=/engine/redream.cfg
 cp -u /opt/redream/redream /engine/
 find /bios -maxdepth 1 -type f -exec ln -sf {} /engine/ \;
-for port in $VMU_PORTS; do ln -sf "/saves/vmu$port.bin" "/engine/vmu$port.bin"; done
+for port in $PORTS; do ln -sf "/saves/vmu$port.bin" "/engine/vmu$port.bin"; done
+touch "$CONFIG"
+sed -i '/^port[0-9]*=/d' "$CONFIG"
+guid=$(joystick-guid)
+for port in $PORTS; do echo "port$port=dev:$((FIRST_JOYSTICK_DEVICE + port)),desc:$guid,type:controller" >> "$CONFIG"; done
 height=${CANVAS#*x}
 width=$((height * PICTURE_WIDTH / PICTURE_HEIGHT))
 exec xwayland-run -geometry "${width}x$height" -- /engine/redream --width="$width" --height="$height" "$@"
