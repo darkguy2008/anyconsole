@@ -56,7 +56,6 @@
 #define GAMES_MAX 512
 #define STORES_MAX 32
 #define DEVICES_MAX 32
-#define AUDIO_OBJECTS_MAX 256
 #define DEPTH_MAX 4
 #define ROWS_MAX (GAMES_MAX + 1)
 #define TEXT_MAX 256
@@ -65,6 +64,8 @@
 #define RESOLUTIONS_MAX 8
 #define SLEEP_CHOICES_MAX 8
 #define AUTO "Auto"
+#define MHZ_PER_HZ 1000
+#define REFRESH_PRECISION 100
 #define BYTES_PER_PIXEL 4
 #define BUFFERS 2
 #define REWIND_STATES 20
@@ -100,7 +101,7 @@ static const struct { const char *name, *title; } screens[] = {
 };
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
-              CHOOSE_DISPLAY, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT };
+              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, SAVE_DISPLAY_MODE, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT };
 enum command { NONE, UP, DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
 static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [LEFT] = "left", [RIGHT] = "right",
                                        [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide"};
@@ -136,13 +137,12 @@ static int store_count;
 static pid_t refresher, monitor;
 static int refresh_pending, monitor_output = -1;
 static json_tokener *monitor_parser;
-static int audio_objects[AUDIO_OBJECTS_MAX], audio_object_count;
 static struct view dashboard[DEPTH_MAX] = {{.screen = HOME, .game = -1}}, guides[PROFILES + 1][DEPTH_MAX];
 static int dashboard_depth = 1, guide_depths[PROFILES + 1], guide_shown, dashboard_open = 1;
 static struct row rows[ROWS_MAX];
 static struct device outputs[DEVICES_MAX], microphones[DEVICES_MAX];
-static char default_output[TEXT_MAX], default_microphone[TEXT_MAX], chosen_controller[TEXT_MAX];
-static int output_count, microphone_count, volume = -1;
+static char default_output[TEXT_MAX], default_microphone[TEXT_MAX], chosen_controller[TEXT_MAX], staged_mode[TEXT_MAX];
+static int output_count, microphone_count, volume = -1, mode_staged;
 static int players[PADS], player_count, menu_told = -1, focus = NO_DEVICE, picker = NO_DEVICE, repeating_device, guide_profile, applied_game = UNAPPLIED;
 static struct member members[INPUT_DEVICES_MAX];
 static int member_count;
@@ -162,7 +162,7 @@ static int rewind_count, rewind_back;
 static char *written_state;
 static struct window windows[WINDOWS_MAX];
 static int window_count, resolutions[RESOLUTIONS_MAX], resolution_count, sleep_choices[SLEEP_CHOICES_MAX], sleep_choice_count;
-static json_object *settings, *display_state, *controllers_state;
+static json_object *settings, *display_state, *controllers_state, *audio_nodes;
 
 static struct wl_display *display;
 static struct wl_compositor *compositor;
@@ -228,16 +228,6 @@ static pid_t spawn_reading(char *const argv[], int *output) {
     if (pid < 0) close(pipe_ends[0]);
     else *output = pipe_ends[0];
     return pid;
-}
-
-static json_object *read_json(char *const argv[]) {
-    int output;
-    pid_t pid = spawn_reading(argv, &output);
-    if (pid < 0) return NULL;
-    json_object *parsed = json_object_from_fd(output);
-    close(output);
-    waitpid(pid, NULL, 0);
-    return parsed;
 }
 
 static void notify(const char *format, ...) {
@@ -462,53 +452,66 @@ static const char *string_at(json_object *object, const char *first, const char 
     return text ? text : "";
 }
 
+static int level_of(json_object *info) {
+    json_object *params, *props, *volumes;
+    if (!json_object_object_get_ex(info, "params", &params) || !json_object_object_get_ex(params, "Props", &props)) return -1;
+    for (size_t i = 0; i < json_object_array_length(props); i++) {
+        if (!json_object_object_get_ex(json_object_array_get_idx(props, i), "channelVolumes", &volumes) ||
+            !json_object_is_type(volumes, json_type_array) || !json_object_array_length(volumes))
+            continue;
+        double sum = 0;
+        for (size_t j = 0; j < json_object_array_length(volumes); j++) sum += json_object_get_double(json_object_array_get_idx(volumes, j));
+        return cbrt(sum / json_object_array_length(volumes)) * PERCENT + 0.5;
+    }
+    return -1;
+}
+
 static void read_audio(void) {
-    json_object *objects = read_json((char *[]){"pw-dump", NULL}), *field;
-    int level_output;
-    pid_t level_reader = spawn_reading((char *[]){"wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@", NULL}, &level_output);
-    FILE *level_text = level_reader > 0 ? fdopen(level_output, "r") : NULL;
-    double level;
-    volume = level_text && fscanf(level_text, "Volume: %lf", &level) == 1 ? level * PERCENT + 0.5 : -1;
-    if (level_text) fclose(level_text);
-    if (level_reader > 0) waitpid(level_reader, NULL, 0);
     output_count = microphone_count = 0;
-    for (size_t i = 0; json_object_is_type(objects, json_type_array) && i < json_object_array_length(objects); i++) {
-        json_object *object = json_object_array_get_idx(objects, i), *metadata, *info;
-        for (size_t j = 0; json_object_object_get_ex(object, "metadata", &metadata) && j < json_object_array_length(metadata); j++) {
-            json_object *entry = json_object_array_get_idx(metadata, j);
-            if (!strcmp(string_at(entry, "key", NULL), "default.audio.sink"))
-                snprintf(default_output, sizeof default_output, "%s", string_at(entry, "value", "name"));
-            if (!strcmp(string_at(entry, "key", NULL), "default.audio.source"))
-                snprintf(default_microphone, sizeof default_microphone, "%s", string_at(entry, "value", "name"));
-        }
-        if (!json_object_object_get_ex(object, "info", &info) || !json_object_object_get_ex(info, "props", &info)) continue;
-        int sink = !strcmp(string_at(info, "media.class", NULL), "Audio/Sink");
-        if (!sink && strcmp(string_at(info, "media.class", NULL), "Audio/Source")) continue;
+    volume = -1;
+    json_object_object_foreach(audio_nodes, key, node) {
+        json_object *info, *props;
+        json_object_object_get_ex(node, "info", &info);
+        json_object_object_get_ex(info, "props", &props);
+        int sink = !strcmp(string_at(props, "media.class", NULL), "Audio/Sink");
+        if (sink && !strcmp(string_at(props, "node.name", NULL), default_output)) volume = level_of(info);
         if ((sink ? output_count : microphone_count) == DEVICES_MAX) continue;
         struct device *device = sink ? &outputs[output_count++] : &microphones[microphone_count++];
-        json_object_object_get_ex(object, "id", &field);
-        device->id = json_object_get_int(field);
-        snprintf(device->node, sizeof device->node, "%s", string_at(info, "node.name", NULL));
+        device->id = atoi(key);
+        snprintf(device->node, sizeof device->node, "%s", string_at(props, "node.name", NULL));
         snprintf(device->name, sizeof device->name, "%s",
-                 *string_at(info, "node.description", NULL) ? string_at(info, "node.description", NULL) : device->node);
+                 *string_at(props, "node.description", NULL) ? string_at(props, "node.description", NULL) : device->node);
     }
-    json_object_put(objects);
     changed = 1;
 }
 
-static int is_audio_object(json_object *object) {
-    json_object *field;
-    int id = json_object_object_get_ex(object, "id", &field) ? json_object_get_int(field) : -1;
+static int track_audio(json_object *object) {
+    json_object *field, *metadata, *info, *props;
+    char id[TEXT_MAX];
+    int relevant = 0;
+    snprintf(id, sizeof id, "%d", json_object_object_get_ex(object, "id", &field) ? json_object_get_int(field) : -1);
     const char *type = string_at(object, "type", NULL);
-    for (int i = 0; i < audio_object_count; i++) {
-        if (audio_objects[i] != id) continue;
-        if (!*type) audio_objects[i] = audio_objects[--audio_object_count];
+    if (!*type) {
+        int known = json_object_object_get_ex(audio_nodes, id, NULL);
+        json_object_object_del(audio_nodes, id);
+        return known;
+    }
+    if (!strcmp(type, "PipeWire:Interface:Node")) {
+        if (!json_object_object_get_ex(object, "info", &info) || !json_object_object_get_ex(info, "props", &props) ||
+            (strcmp(string_at(props, "media.class", NULL), "Audio/Sink") && strcmp(string_at(props, "media.class", NULL), "Audio/Source")))
+            return 0;
+        json_object_object_add(audio_nodes, id, json_object_get(object));
         return 1;
     }
-    if (strcmp(type, "PipeWire:Interface:Node") && strcmp(type, "PipeWire:Interface:Device") && strcmp(type, "PipeWire:Interface:Metadata"))
-        return 0;
-    if (audio_object_count < AUDIO_OBJECTS_MAX) audio_objects[audio_object_count++] = id;
-    return 1;
+    for (size_t i = 0; json_object_object_get_ex(object, "metadata", &metadata) && i < json_object_array_length(metadata); i++) {
+        json_object *entry = json_object_array_get_idx(metadata, i);
+        const char *key = string_at(entry, "key", NULL);
+        char *chosen = !strcmp(key, "default.audio.sink") ? default_output : !strcmp(key, "default.audio.source") ? default_microphone : NULL;
+        if (!chosen) continue;
+        snprintf(chosen, TEXT_MAX, "%s", string_at(entry, "value", "name"));
+        relevant = 1;
+    }
+    return relevant;
 }
 
 static void start_monitor(void) {
@@ -516,7 +519,9 @@ static void start_monitor(void) {
     snprintf(socket_path, sizeof socket_path, "%s/" PIPEWIRE_SOCKET, getenv("XDG_RUNTIME_DIR"));
     if (monitor > 0 || access(socket_path, F_OK)) return;
     monitor = spawn_reading((char *[]){"pw-dump", "--monitor", "--no-colors", NULL}, &monitor_output);
-    audio_object_count = 0;
+    json_object_put(audio_nodes);
+    audio_nodes = json_object_new_object();
+    *default_output = *default_microphone = 0;
     json_tokener_reset(monitor_parser);
 }
 
@@ -530,7 +535,7 @@ static void read_monitor(void) {
         at += used;
         count -= used;
         for (size_t i = 0; json_object_is_type(changes, json_type_array) && i < json_object_array_length(changes); i++)
-            relevant |= is_audio_object(json_object_array_get_idx(changes, i));
+            relevant |= track_audio(json_object_array_get_idx(changes, i));
         json_object_put(changes);
         if (!changes && json_tokener_get_error(monitor_parser) != json_tokener_continue) json_tokener_reset(monitor_parser);
         if (!changes) break;
@@ -569,6 +574,22 @@ static const char *display_value(void) {
     return *pinned ? pinned : value;
 }
 
+static const char *mode_text(const char *mode) {
+    static char text[TEXT_MAX];
+    int width, height, refresh;
+    if (sscanf(mode, "%dx%d@%d", &width, &height, &refresh) != 3) return mode;
+    snprintf(text, sizeof text, "%dx%d %g Hz", width, height, round((double)refresh / MHZ_PER_HZ * REFRESH_PRECISION) / REFRESH_PRECISION);
+    return text;
+}
+
+static const char *chosen_mode(void) { return mode_staged ? staged_mode : string_at(settings, "mode", NULL); }
+
+static const char *display_mode_value(void) {
+    static char value[TEXT_MAX];
+    snprintf(value, sizeof value, AUTO " (%s)", mode_text(string_at(display_state, "mode", NULL)));
+    return *chosen_mode() ? mode_text(chosen_mode()) : value;
+}
+
 static const char *resolution_value(void) {
     static char value[TEXT_MAX];
     if (chosen_resolution()) snprintf(value, sizeof value, "%dp", chosen_resolution());
@@ -584,6 +605,16 @@ static void cycle_display(int step) {
         if (!strcmp(display_label(i), string_at(settings, "display", NULL))) current = i + 1;
     int next = cycle(current, count, step);
     start((char *[]){"settings", "display", next ? (char *)display_label(next - 1) : "", NULL});
+}
+
+static void cycle_display_mode(int step) {
+    json_object *modes = list_at(display_state, "modes");
+    int current = 0, count = length_of(modes);
+    for (int i = 0; i < count; i++)
+        if (!strcmp(json_object_get_string(json_object_array_get_idx(modes, i)), chosen_mode())) current = i + 1;
+    int next = cycle(current, count, step);
+    snprintf(staged_mode, sizeof staged_mode, "%s", next ? json_object_get_string(json_object_array_get_idx(modes, next - 1)) : "");
+    mode_staged = strcmp(staged_mode, string_at(settings, "mode", NULL)) != 0;
 }
 
 static void cycle_resolution(int step) {
@@ -910,7 +941,9 @@ static int build(struct view *view) {
         break;
     case SETTINGS:
         count = add_row(count, CHOOSE_DISPLAY, 0, "Display", "%s", display_value());
-        count = add_row(count, CHOOSE_RESOLUTION, 0, "Resolution", "%s", resolution_value());
+        count = add_row(count, CHOOSE_DISPLAY_MODE, 0, "Display resolution", "%s", display_mode_value());
+        if (mode_staged) count = add_row(count, SAVE_DISPLAY_MODE, 0, "Save", "");
+        count = add_row(count, CHOOSE_RESOLUTION, 0, "Game resolution", "%s", resolution_value());
         count = add_row(count, CHOOSE_SLEEP, 0, "Controller sleep", "%s", sleep_value());
         break;
     }
@@ -1342,7 +1375,7 @@ static void act(struct row *row, int device) {
     struct view *view = top();
     struct game *game = view->game >= 0 ? &games[view->game] : NULL;
     switch (row->action) {
-    case NOTHING: case VOLUME: case CHOOSE_DISPLAY: case CHOOSE_RESOLUTION: case CHOOSE_SLEEP: case EMULATE: break;
+    case NOTHING: case VOLUME: case CHOOSE_DISPLAY: case CHOOSE_DISPLAY_MODE: case CHOOSE_RESOLUTION: case CHOOSE_SLEEP: case EMULATE: break;
     case REWIND: load_rewind(); break;
     case LOGIN: login(row->arg, picker); break;
     case LOG_OUT_PLAYER:
@@ -1351,7 +1384,15 @@ static void act(struct row *row, int device) {
         break;
     case CONFIRM_LOG_OUT: logout(profile_of(focus), focus); break;
     case OPEN_STORE: push(STORE, -1); refresh(); break;
-    case OPEN_SETTINGS: push(SETTINGS, -1); break;
+    case OPEN_SETTINGS:
+        mode_staged = 0;
+        push(SETTINGS, -1);
+        break;
+    case SAVE_DISPLAY_MODE:
+        start((char *[]){"settings", "mode", staged_mode, NULL});
+        mode_staged = 0;
+        view->action = CHOOSE_DISPLAY_MODE;
+        break;
     case OPEN_GAME: push(GAME, row->arg); break;
     case PLAY:
         game->owner = profile_of(device);
@@ -1400,6 +1441,7 @@ static void change_volume(const char *direction) {
 static void adjust(enum action action, int step) {
     if (action == VOLUME) change_volume(step < 0 ? "-" : "+");
     if (action == CHOOSE_DISPLAY) cycle_display(step);
+    if (action == CHOOSE_DISPLAY_MODE) cycle_display_mode(step);
     if (action == CHOOSE_RESOLUTION) cycle_resolution(step);
     if (action == CHOOSE_SLEEP) cycle_sleep(step);
     if (action == REWIND && rewind_back - step >= 0 && rewind_back - step <= rewind_count) rewind_back -= step;

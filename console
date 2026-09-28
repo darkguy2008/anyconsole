@@ -86,6 +86,7 @@ usage: console [box address] <command>
   logout <profile>  sign a profile out, closing the games it launched
   volume <percent>  set the output volume
   set display [label]  show the console on this display from state (none = Auto)
+  set mode [mode]  drive the display at this mode from state's .display.modes, e.g. 3840x2160@60000 (none = Auto)
   set resolution <height>  render games and menus at this 16:9 height (0 = Auto)
   set sleep <minutes>  disconnect idle Bluetooth controllers after this long (0 = never)
   update     make it sync and stage the published release

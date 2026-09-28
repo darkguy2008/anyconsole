@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 GAMEPAD_MAPPING="1:1 2:0 3:3 4:2 5:9 6:10 7:42 8:43 9:6 10:4 11:11 12:12 13:13 14:14 15:7 16:8 17:45 18:39 19:44 20:38 21:47 22:41 23:46 24:40"
+PRO_HOME_BUTTON=11
+GAMEPAD="Wii U GamePad"
+PRO_CONTROLLER="Wii U Pro Controller"
 CEMU=$XDG_CONFIG_HOME/Cemu
 MLC=/saves/mlc01
 
@@ -13,15 +16,26 @@ print(text.value.decode())'
 }
 
 controller_profile() {
-  printf '<?xml version="1.0" encoding="UTF-8"?>\n<emulated_controller>\n<type>Wii U GamePad</type>\n<controller>\n'
-  printf '<api>SDLController</api>\n<uuid>0_%s</uuid>\n<rumble>1</rumble>\n<motion>true</motion>\n<mappings>\n' "$(joystick_guid)"
-  for pair in $GAMEPAD_MAPPING; do printf '<entry><mapping>%s</mapping><button>%s</button></entry>\n' "${pair%:*}" "${pair#*:}"; done
+  type=$1 pad=$2 guid=$3
+  printf '<?xml version="1.0" encoding="UTF-8"?>\n<emulated_controller>\n<type>%s</type>\n<controller>\n' "$type"
+  printf '<api>SDLController</api>\n<uuid>%s_%s</uuid>\n<rumble>1</rumble>\n<motion>true</motion>\n<mappings>\n' "$pad" "$guid"
+  for pair in $GAMEPAD_MAPPING; do
+    mapping=${pair%:*}
+    [ "$type" = "$GAMEPAD" ] || [ "$mapping" -lt $PRO_HOME_BUTTON ] || mapping=$((mapping + 1))
+    printf '<entry><mapping>%s</mapping><button>%s</button></entry>\n' "$mapping" "${pair#*:}"
+  done
   printf '</mappings>\n</controller>\n</emulated_controller>\n'
+}
+
+controller_profiles() {
+  guid=$(joystick_guid)
+  controller_profile "$GAMEPAD" 0 "$guid" > "$CEMU/controllerProfiles/controller0.xml"
+  for pad in $(seq 1 $((PADS - 1))); do controller_profile "$PRO_CONTROLLER" "$pad" "$guid" > "$CEMU/controllerProfiles/controller$pad.xml"; done
 }
 
 mkdir -p "$CEMU/controllerProfiles"
 [ -d "$MLC" ] || if [ -d /bios/mlc01 ]; then cp -R /bios/mlc01 "$MLC"; else mkdir -p "$MLC"; fi
 ln -sf /bios/keys.txt "$CEMU/keys.txt"
 cp /opt/cemu/settings.xml "$CEMU/settings.xml"
-controller_profile > "$CEMU/controllerProfiles/controller0.xml"
+controller_profiles
 exec xwayland-run -fullscreen -geometry "$CANVAS" -- /opt/cemu/AppRun -f -g "$1" -m "$MLC"
