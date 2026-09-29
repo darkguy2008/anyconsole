@@ -147,7 +147,8 @@ play_game() {
   snapshot "${1%/*}-launch"
   expect ".active == \"$1\" and (.dashboard | not) and ($(status_of "$1" running)) and .display.shown == \"$1\" and .display.frame != \"\""
   sandbox_globals=$(guest "WAYLAND_DISPLAY=$SOCKETS_DIR/$(game_name "$1")/wayland-0 wayland-info")
-  echo "$sandbox_globals" | grep -q "'wl_compositor'" && ! echo "$sandbox_globals" | grep -q -e zwlr_layer_shell_v1 -e zwlr_screencopy_manager_v1 ||
+  echo "$sandbox_globals" | grep -q "'wl_compositor'" && ! echo "$sandbox_globals" | grep -q -e zwlr_layer_shell_v1 -e zwlr_screencopy_manager_v1 \
+    -e ext_foreign_toplevel_list_v1 -e ext_image_copy_capture_manager_v1 -e ext_foreign_toplevel_image_capture_source_manager_v1 ||
     { log FAIL "$1 is not confined by its security context" >&2; exit 1; }
   log ok "$1 sees no privileged wayland protocols"
 }

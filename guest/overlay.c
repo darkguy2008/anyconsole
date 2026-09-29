@@ -1,9 +1,11 @@
 #define _GNU_SOURCE
 #include <cairo.h>
 #include <dirent.h>
+#include <drm_fourcc.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ftw.h>
+#include <gbm.h>
 #include <json-c/json.h>
 #include <limits.h>
 #include <math.h>
@@ -26,11 +28,15 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <wayland-client.h>
+#include <xf86drm.h>
 #include "anyconsole.h"
+#include "ext-foreign-toplevel-list-v1.h"
+#include "ext-image-capture-source-v1.h"
+#include "ext-image-copy-capture-v1.h"
+#include "linux-dmabuf-v1.h"
 #include "security-context-v1.h"
 #include "wlr-foreign-toplevel-management-unstable-v1.h"
 #include "wlr-layer-shell-unstable-v1.h"
-#include "wlr-screencopy-unstable-v1.h"
 
 #define PARTIAL ".partial"
 #define STATE_PARTIAL STATE_FILE PARTIAL
@@ -78,6 +84,7 @@
 #define CAROUSEL_ROWS 4
 #define OUTLINE_PER_ROW 0.1
 #define SECONDS_PER_MINUTE 60
+#define LINUX_DMABUF_VERSION 3
 #define BAR_WIDTH_DIVISOR 3
 #define BAR_PER_ROW 0.5
 #define LAUNCH_STEPS 2
@@ -126,9 +133,16 @@ struct row { char label[TEXT_MAX], value[TEXT_MAX]; enum action action; int arg;
 struct device { int id; char name[TEXT_MAX], node[TEXT_MAX]; };
 struct member { int device, profile; };
 struct notification { char text[TEXT_MAX]; struct timespec expires; };
-struct window { struct zwlr_foreign_toplevel_handle_v1 *handle; char app_id[TEXT_MAX]; };
+struct window { struct zwlr_foreign_toplevel_handle_v1 *handle; struct ext_foreign_toplevel_handle_v1 *listed; char app_id[TEXT_MAX]; };
 struct buffer { struct wl_buffer *buffer; void *pixels; int busy; };
-struct capture { struct zwlr_screencopy_frame_v1 *frame; struct wl_buffer *buffer; unsigned char *pixels; pixman_format_code_t format; int game, width, height, stride, save, current; };
+struct capture {
+    struct ext_image_copy_capture_session_v1 *session;
+    struct ext_image_copy_capture_frame_v1 *frame;
+    struct gbm_bo *bo;
+    struct wl_buffer *buffer;
+    struct wl_array modifiers;
+    int game, width, height, save, current;
+};
 
 static struct game games[GAMES_MAX];
 static int game_count, active = -1;
@@ -155,12 +169,14 @@ static enum command repeating;
 static int repeat_timer, notification_timer, save_timer, watcher, log_file, changed = 1;
 static json_object *emulate_choices[PROFILES + 1];
 static char rewinds[REWIND_STATES][NAME_MAX + 1];
-static cairo_surface_t *thumbnails[REWIND_STATES], *pending_screen, *current_screen;
+static cairo_surface_t *thumbnails[REWIND_STATES], *pending_screen, *current_screen, *newest_screen;
+static char newest_name[NAME_MAX + 1];
 static int pending_after;
 static struct capture capture;
 static int rewind_count, rewind_back;
 static char *written_state;
 static struct window windows[WINDOWS_MAX];
+static struct gbm_device *gbm;
 static int window_count, resolutions[RESOLUTIONS_MAX], resolution_count, sleep_choices[SLEEP_CHOICES_MAX], sleep_choice_count;
 static json_object *settings, *display_state, *controllers_state, *audio_nodes, *audio_devices;
 
@@ -170,9 +186,10 @@ static struct wl_shm *shm;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wp_security_context_manager_v1 *security;
 static struct zwlr_foreign_toplevel_manager_v1 *toplevels;
-static struct zwlr_screencopy_manager_v1 *screencopy;
-static struct wl_output *display_output;
-static uint32_t display_output_id;
+static struct ext_foreign_toplevel_list_v1 *listing;
+static struct ext_foreign_toplevel_image_capture_source_manager_v1 *toplevel_capture;
+static struct ext_image_copy_capture_manager_v1 *image_copy;
+static struct zwp_linux_dmabuf_v1 *dmabuf;
 static struct wl_seat *seat;
 static struct wl_surface *surface;
 static struct zwlr_layer_surface_v1 *layer;
@@ -286,6 +303,7 @@ static int remove_entry(const char *path, const struct stat *status, int type, s
 static void remove_rewinds(int index) {
     char path[PATH_MAX];
     nftw(rewind_path(path, index, ""), remove_entry, REWIND_TREE_DEPTH, FTW_DEPTH | FTW_PHYS);
+    *newest_name = '\0';
 }
 
 static int is_state(const struct dirent *entry) {
@@ -301,6 +319,12 @@ static void remove_state(const char *state) {
     char path[PATH_MAX];
     unlink(rewind_path(path, active, "/" STATES "/%s", state));
     unlink(rewind_path(path, active, "/" STATES "/%s" SCREEN_EXTENSION, state));
+}
+
+static void remember_newest(cairo_surface_t *screen) {
+    cairo_surface_destroy(newest_screen);
+    newest_screen = screen;
+    snprintf(newest_name, sizeof newest_name, "%s", rewinds[rewind_count - 1]);
 }
 
 static void refresh_rewinds(void) {
@@ -331,7 +355,7 @@ static void refresh_rewinds(void) {
     if (rewind_back > rewind_count) rewind_back = rewind_count;
     if (pending_screen && rewind_count && slot(rewinds[rewind_count - 1]) > pending_after) {
         cairo_surface_write_to_png(pending_screen, rewind_path(path, active, "/" STATES "/%s" SCREEN_EXTENSION, rewinds[rewind_count - 1]));
-        cairo_surface_destroy(pending_screen);
+        remember_newest(pending_screen);
         pending_screen = NULL;
     }
     changed = 1;
@@ -1117,23 +1141,25 @@ static void prepare_rewinds(int index, char *states) {
 }
 
 static cairo_surface_t *captured_screen(void) {
+    uint32_t stride;
+    void *mapping = NULL, *pixels = gbm_bo_map(capture.bo, 0, 0, capture.width, capture.height, GBM_BO_TRANSFER_READ, &stride, &mapping);
+    if (!pixels) return NULL;
     cairo_surface_t *screen = cairo_image_surface_create(CAIRO_FORMAT_RGB24, capture.width, capture.height);
-    pixman_image_t *shot = pixman_image_create_bits(capture.format, capture.width, capture.height, (uint32_t *)capture.pixels, capture.stride);
+    pixman_image_t *shot = pixman_image_create_bits(PIXMAN_x8r8g8b8, capture.width, capture.height, pixels, stride);
     pixman_image_t *target = pixman_image_create_bits(PIXMAN_x8r8g8b8, capture.width, capture.height,
                                                       (uint32_t *)cairo_image_surface_get_data(screen), cairo_image_surface_get_stride(screen));
     pixman_image_composite32(PIXMAN_OP_SRC, shot, NULL, target, 0, 0, 0, 0, 0, 0, capture.width, capture.height);
     pixman_image_unref(shot);
     pixman_image_unref(target);
+    gbm_bo_unmap(capture.bo, mapping);
     cairo_surface_mark_dirty(screen);
     return screen;
 }
 
 static int changed_since_save(cairo_surface_t *screen) {
     if (!rewind_count) return 1;
-    cairo_surface_t *last = state_image(rewind_count - 1, SCREEN_EXTENSION);
-    int percent = changed_percent(screen, last);
-    cairo_surface_destroy(last);
-    return percent >= SAVE_CHANGE_PERCENT;
+    if (strcmp(newest_name, rewinds[rewind_count - 1])) remember_newest(state_image(rewind_count - 1, SCREEN_EXTENSION));
+    return changed_percent(screen, newest_screen) >= SAVE_CHANGE_PERCENT;
 }
 
 static void end_capture(int captured) {
@@ -1151,11 +1177,11 @@ static void end_capture(int captured) {
         changed = 1;
     }
     cairo_surface_destroy(screen);
-    zwlr_screencopy_frame_v1_destroy(capture.frame);
-    if (capture.buffer) {
-        wl_buffer_destroy(capture.buffer);
-        munmap(capture.pixels, (size_t)capture.stride * capture.height);
-    }
+    if (capture.frame) ext_image_copy_capture_frame_v1_destroy(capture.frame);
+    if (capture.buffer) wl_buffer_destroy(capture.buffer);
+    if (capture.bo) gbm_bo_destroy(capture.bo);
+    ext_image_copy_capture_session_v1_destroy(capture.session);
+    wl_array_release(&capture.modifiers);
     capture = (struct capture){0};
 }
 
@@ -1168,49 +1194,101 @@ static struct wl_shm_pool *create_pool(size_t size, void **pixels) {
     return pool;
 }
 
-static void on_capture_buffer(void *data, struct zwlr_screencopy_frame_v1 *frame, uint32_t format, uint32_t buffer_width, uint32_t buffer_height, uint32_t stride) {
-    (void)data;
-    size_t size = (size_t)stride * buffer_height;
-    if (format == WL_SHM_FORMAT_XRGB8888 || format == WL_SHM_FORMAT_ARGB8888) capture.format = PIXMAN_x8r8g8b8;
-    else if (format == WL_SHM_FORMAT_XBGR8888 || format == WL_SHM_FORMAT_ABGR8888) capture.format = PIXMAN_x8b8g8r8;
-    else { end_capture(0); return; }
-    struct wl_shm_pool *pool = create_pool(size, (void **)&capture.pixels);
-    capture.buffer = wl_shm_pool_create_buffer(pool, 0, buffer_width, buffer_height, stride, format);
-    capture.width = buffer_width;
-    capture.height = buffer_height;
-    capture.stride = stride;
-    wl_shm_pool_destroy(pool);
-    zwlr_screencopy_frame_v1_copy(frame, capture.buffer);
+static void on_frame_transform(void *data, struct ext_image_copy_capture_frame_v1 *frame, uint32_t transform) { (void)data, (void)frame, (void)transform; }
+
+static void on_frame_damage(void *data, struct ext_image_copy_capture_frame_v1 *frame, int32_t x, int32_t y, int32_t width, int32_t height) {
+    (void)data, (void)frame, (void)x, (void)y, (void)width, (void)height;
 }
 
-static void on_capture_flags(void *data, struct zwlr_screencopy_frame_v1 *frame, uint32_t flags) { (void)data, (void)frame, (void)flags; }
-
-static void on_capture_ready(void *data, struct zwlr_screencopy_frame_v1 *frame, uint32_t seconds_high, uint32_t seconds_low, uint32_t nanoseconds) {
+static void on_frame_time(void *data, struct ext_image_copy_capture_frame_v1 *frame, uint32_t seconds_high, uint32_t seconds_low, uint32_t nanoseconds) {
     (void)data, (void)frame, (void)seconds_high, (void)seconds_low, (void)nanoseconds;
+}
+
+static void on_frame_ready(void *data, struct ext_image_copy_capture_frame_v1 *frame) {
+    (void)data, (void)frame;
     end_capture(1);
 }
 
-static void on_capture_failed(void *data, struct zwlr_screencopy_frame_v1 *frame) {
+static void on_frame_failed(void *data, struct ext_image_copy_capture_frame_v1 *frame, uint32_t reason) {
     (void)data, (void)frame;
+    fprintf(stderr, "overlay: capture failed (%u)\n", reason);
     end_capture(0);
 }
 
-static const struct zwlr_screencopy_frame_v1_listener capture_listener = {
-    .buffer = on_capture_buffer, .flags = on_capture_flags, .ready = on_capture_ready, .failed = on_capture_failed};
+static const struct ext_image_copy_capture_frame_v1_listener capture_frame_listener = {
+    .transform = on_frame_transform, .damage = on_frame_damage, .presentation_time = on_frame_time, .ready = on_frame_ready, .failed = on_frame_failed};
 
-static void start_capture(int index) {
-    json_object *box = NULL;
-    json_object_object_get_ex(display_state, "area_box", &box);
+static void on_capture_size(void *data, struct ext_image_copy_capture_session_v1 *session, uint32_t width, uint32_t height) {
+    (void)data, (void)session;
+    capture.width = width;
+    capture.height = height;
+}
+
+static void on_capture_shm_format(void *data, struct ext_image_copy_capture_session_v1 *session, uint32_t format) { (void)data, (void)session, (void)format; }
+
+static void on_capture_device(void *data, struct ext_image_copy_capture_session_v1 *session, struct wl_array *device) {
+    (void)data, (void)session;
+    drmDevicePtr found;
+    if (gbm || drmGetDeviceFromDevId(*(dev_t *)device->data, 0, &found)) return;
+    int fd = found->available_nodes & (1 << DRM_NODE_RENDER) ? open(found->nodes[DRM_NODE_RENDER], O_RDWR | O_CLOEXEC) : -1;
+    drmFreeDevice(&found);
+    if (fd >= 0) gbm = gbm_create_device(fd);
+}
+
+static void on_capture_format(void *data, struct ext_image_copy_capture_session_v1 *session, uint32_t format, struct wl_array *modifiers) {
+    (void)data, (void)session;
+    if (format == DRM_FORMAT_XRGB8888) wl_array_copy(&capture.modifiers, modifiers);
+}
+
+static void on_capture_done(void *data, struct ext_image_copy_capture_session_v1 *session) {
+    (void)data;
+    if (capture.frame) return;
+    capture.bo = gbm && capture.modifiers.size ? gbm_bo_create_with_modifiers2(gbm, capture.width, capture.height, DRM_FORMAT_XRGB8888, capture.modifiers.data,
+                                                                               capture.modifiers.size / sizeof(uint64_t), GBM_BO_USE_RENDERING)
+                                               : NULL;
+    if (!capture.bo) {
+        fprintf(stderr, "overlay: no capture buffer\n");
+        end_capture(0);
+        return;
+    }
+    struct zwp_linux_buffer_params_v1 *params = zwp_linux_dmabuf_v1_create_params(dmabuf);
+    int fd = gbm_bo_get_fd(capture.bo);
+    uint64_t modifier = gbm_bo_get_modifier(capture.bo);
+    zwp_linux_buffer_params_v1_add(params, fd, 0, gbm_bo_get_offset(capture.bo, 0), gbm_bo_get_stride(capture.bo), modifier >> (sizeof(uint32_t) * CHAR_BIT),
+                                   (uint32_t)modifier);
+    capture.buffer = zwp_linux_buffer_params_v1_create_immed(params, capture.width, capture.height, DRM_FORMAT_XRGB8888, 0);
+    zwp_linux_buffer_params_v1_destroy(params);
+    close(fd);
+    capture.frame = ext_image_copy_capture_session_v1_create_frame(session);
+    ext_image_copy_capture_frame_v1_add_listener(capture.frame, &capture_frame_listener, NULL);
+    ext_image_copy_capture_frame_v1_attach_buffer(capture.frame, capture.buffer);
+    ext_image_copy_capture_frame_v1_damage_buffer(capture.frame, 0, 0, capture.width, capture.height);
+    ext_image_copy_capture_frame_v1_capture(capture.frame);
+}
+
+static void on_capture_stopped(void *data, struct ext_image_copy_capture_session_v1 *session) {
+    (void)data, (void)session;
+    end_capture(0);
+}
+
+static const struct ext_image_copy_capture_session_v1_listener session_listener = {
+    .buffer_size = on_capture_size, .shm_format = on_capture_shm_format, .dmabuf_device = on_capture_device, .dmabuf_format = on_capture_format,
+    .done = on_capture_done, .stopped = on_capture_stopped};
+
+static int start_capture(int index) {
+    struct ext_foreign_toplevel_handle_v1 *handle = game_window(index) ? game_window(index)->listed : NULL;
+    if (!handle) return 0;
+    struct ext_image_capture_source_v1 *source = ext_foreign_toplevel_image_capture_source_manager_v1_create_source(toplevel_capture, handle);
     capture.game = index;
-    capture.frame = zwlr_screencopy_manager_v1_capture_output_region(screencopy, 0, display_output, int_at(box, "x"), int_at(box, "y"),
-                                                                    int_at(box, "width"), int_at(box, "height"));
-    zwlr_screencopy_frame_v1_add_listener(capture.frame, &capture_listener, NULL);
+    capture.session = ext_image_copy_capture_manager_v1_create_session(image_copy, source, 0);
+    ext_image_capture_source_v1_destroy(source);
+    ext_image_copy_capture_session_v1_add_listener(capture.session, &session_listener, NULL);
+    return 1;
 }
 
 static void sample_screen(void) {
-    if (!rewindable() || !display_output || games[active].paused || games[active].closing || capture.frame || notification_count) return;
-    capture.save = 1;
-    start_capture(active);
+    if (!rewindable() || games[active].paused || games[active].closing || capture.session || notification_count) return;
+    capture.save = start_capture(active);
 }
 
 static void load_rewind(void) {
@@ -1515,12 +1593,11 @@ static void adjust(enum action action, int step) {
 
 static void open_guide(void) {
     rewind_back = 0;
-    if (!rewindable() || !display_output) {
+    if (!rewindable() || (!capture.session && !start_capture(active))) {
         guide_shown = 1;
         return;
     }
     capture.current = 1;
-    if (!capture.frame) start_capture(active);
 }
 
 static void toggle_guide(int device) {
@@ -2096,6 +2173,35 @@ static void on_toplevels_finished(void *data, struct zwlr_foreign_toplevel_manag
 
 static const struct zwlr_foreign_toplevel_manager_v1_listener toplevels_listener = {.toplevel = on_toplevel, .finished = on_toplevels_finished};
 
+static void on_listed_closed(void *data, struct ext_foreign_toplevel_handle_v1 *handle) {
+    (void)data;
+    ext_foreign_toplevel_handle_v1_destroy(handle);
+    for (int i = 0; i < window_count; i++)
+        if (windows[i].listed == handle) windows[i].listed = NULL;
+}
+
+static void on_listed_done(void *data, struct ext_foreign_toplevel_handle_v1 *handle) { (void)data, (void)handle; }
+
+static void on_listed_text(void *data, struct ext_foreign_toplevel_handle_v1 *handle, const char *text) { (void)data, (void)handle, (void)text; }
+
+static void on_listed_app_id(void *data, struct ext_foreign_toplevel_handle_v1 *handle, const char *app_id) {
+    (void)data;
+    for (int i = 0; i < window_count; i++)
+        if (!strcmp(windows[i].app_id, app_id)) windows[i].listed = handle;
+}
+
+static const struct ext_foreign_toplevel_handle_v1_listener listed_listener = {
+    .closed = on_listed_closed, .done = on_listed_done, .title = on_listed_text, .app_id = on_listed_app_id, .identifier = on_listed_text};
+
+static void on_listed(void *data, struct ext_foreign_toplevel_list_v1 *list, struct ext_foreign_toplevel_handle_v1 *handle) {
+    (void)data, (void)list;
+    ext_foreign_toplevel_handle_v1_add_listener(handle, &listed_listener, NULL);
+}
+
+static void on_listing_finished(void *data, struct ext_foreign_toplevel_list_v1 *list) { (void)data, (void)list; }
+
+static const struct ext_foreign_toplevel_list_v1_listener listing_listener = {.toplevel = on_listed, .finished = on_listing_finished};
+
 static void on_global(void *data, struct wl_registry *registry, uint32_t id, const char *interface, uint32_t version) {
     (void)data, (void)version;
     if (!strcmp(interface, wl_compositor_interface.name))
@@ -2111,20 +2217,18 @@ static void on_global(void *data, struct wl_registry *registry, uint32_t id, con
     else if (!strcmp(interface, zwlr_foreign_toplevel_manager_v1_interface.name)) {
         toplevels = wl_registry_bind(registry, id, &zwlr_foreign_toplevel_manager_v1_interface, 1);
         zwlr_foreign_toplevel_manager_v1_add_listener(toplevels, &toplevels_listener, NULL);
-    } else if (!strcmp(interface, zwlr_screencopy_manager_v1_interface.name))
-        screencopy = wl_registry_bind(registry, id, &zwlr_screencopy_manager_v1_interface, 1);
-    else if (!strcmp(interface, wl_output_interface.name)) {
-        display_output = wl_registry_bind(registry, id, &wl_output_interface, 1);
-        display_output_id = id;
-    }
+    } else if (!strcmp(interface, ext_foreign_toplevel_list_v1_interface.name)) {
+        listing = wl_registry_bind(registry, id, &ext_foreign_toplevel_list_v1_interface, 1);
+        ext_foreign_toplevel_list_v1_add_listener(listing, &listing_listener, NULL);
+    } else if (!strcmp(interface, ext_foreign_toplevel_image_capture_source_manager_v1_interface.name))
+        toplevel_capture = wl_registry_bind(registry, id, &ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1);
+    else if (!strcmp(interface, ext_image_copy_capture_manager_v1_interface.name))
+        image_copy = wl_registry_bind(registry, id, &ext_image_copy_capture_manager_v1_interface, 1);
+    else if (!strcmp(interface, zwp_linux_dmabuf_v1_interface.name))
+        dmabuf = wl_registry_bind(registry, id, &zwp_linux_dmabuf_v1_interface, LINUX_DMABUF_VERSION);
 }
 
-static void on_global_remove(void *data, struct wl_registry *registry, uint32_t id) {
-    (void)data, (void)registry;
-    if (id != display_output_id || !display_output) return;
-    wl_output_destroy(display_output);
-    display_output = NULL;
-}
+static void on_global_remove(void *data, struct wl_registry *registry, uint32_t id) { (void)data, (void)registry, (void)id; }
 
 static const struct wl_registry_listener registry_listener = {.global = on_global, .global_remove = on_global_remove};
 
@@ -2199,7 +2303,7 @@ int main(void) {
     if (!display || log_file < 0) { fprintf(stderr, "overlay: no wayland display or log\n"); return 1; }
     wl_registry_add_listener(wl_display_get_registry(display), &registry_listener, NULL);
     wl_display_roundtrip(display);
-    if (!compositor || !shm || !layer_shell || !security || !seat || !toplevels || !screencopy) { fprintf(stderr, "overlay: compositor lacks a required protocol\n"); return 1; }
+    if (!compositor || !shm || !layer_shell || !security || !seat || !toplevels || !listing || !toplevel_capture || !image_copy || !dmabuf) { fprintf(stderr, "overlay: compositor lacks a required protocol\n"); return 1; }
     directory_of(STORES_FILE, stores_directory);
     directory_of(DISPLAY_FILE, display_directory);
     directory_of(SETTINGS_FILE, settings_directory);
