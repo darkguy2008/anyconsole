@@ -2,6 +2,7 @@
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
+#include <drm_fourcc.h>
 #include <json-c/json.h>
 #include <limits.h>
 #include <math.h>
@@ -27,7 +28,10 @@
 #include <wlr/render/gles2.h>
 #include <wlr/render/swapchain.h>
 #include <wlr/render/wlr_renderer.h>
+#include <wlr/interfaces/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
+#include <wlr/types/wlr_ext_image_copy_capture_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
@@ -47,6 +51,7 @@
 #include <xf86drmMode.h>
 #include <xkbcommon/xkbcommon.h>
 #include "anyconsole.h"
+#include "ext-image-capture-source-v1-protocol.h"
 
 #define ASPECT_WIDTH 16
 #define ASPECT_HEIGHT 9
@@ -59,6 +64,8 @@
 #define COMPOSITOR_VERSION 6
 #define XDG_SHELL_VERSION 6
 #define LAYER_SHELL_VERSION 4
+#define TOPLEVEL_LIST_VERSION 1
+#define IMAGE_COPY_CAPTURE_VERSION 1
 #define USEC_PER_MSEC 1000
 #define CORNERS 4
 #define GAME_REFRESH_MHZ 60000
@@ -114,8 +121,10 @@ struct display {
 struct window {
     struct wlr_xdg_toplevel *toplevel;
     struct wlr_foreign_toplevel_handle_v1 *handle;
+    struct wlr_ext_foreign_toplevel_handle_v1 *listed;
+    struct wlr_ext_image_capture_source_v1 source;
     char app_id[TEXT_MAX];
-    int sandboxed, frame_width, frame_height;
+    int sandboxed;
     struct wl_list link;
     struct wl_listener commit, map, unmap, destroy, activate, request_fullscreen;
 };
@@ -134,6 +143,9 @@ static struct wlr_layer_shell_v1 *layer_shell;
 static struct wlr_security_context_manager_v1 *security;
 static struct wlr_foreign_toplevel_manager_v1 *foreign;
 static struct wlr_screencopy_manager_v1 *screencopy;
+static struct wlr_ext_foreign_toplevel_list_v1 *listing;
+static struct wlr_ext_image_copy_capture_manager_v1 *image_copy;
+static struct wl_global *toplevel_capture;
 static struct wlr_output_layout *layout;
 static struct wlr_relative_pointer_manager_v1 *relative;
 static struct xkb_keymap *keymap;
@@ -325,7 +337,7 @@ static void write_state(void) {
         json_object_object_add(item, "gpu", json_object_new_string(entry->gpu->name));
         json_object_array_add(list, item);
     }
-    if (shown) snprintf(frame, sizeof frame, "%dx%d", shown->frame_width, shown->frame_height);
+    if (shown) snprintf(frame, sizeof frame, "%ux%u", shown->source.width, shown->source.height);
     if (active) {
         struct wlr_box box = area();
         snprintf(canvas, sizeof canvas, "%dx%d", canvas_width, canvas_height);
@@ -669,14 +681,45 @@ static void on_window_activate(struct wl_listener *listener, void *data) {
     show(window);
 }
 
+static void schedule_game_frame(struct wlr_ext_image_capture_source_v1 *source) {
+    pixman_region32_t damage;
+    pixman_region32_init_rect(&damage, 0, 0, source->width, source->height);
+    wl_signal_emit_mutable(&source->events.frame, &(struct wlr_ext_image_capture_source_v1_frame_event){.damage = &damage});
+    pixman_region32_fini(&damage);
+}
+
+static void copy_game_frame(struct wlr_ext_image_capture_source_v1 *source, struct wlr_ext_image_copy_capture_frame_v1 *frame,
+                            struct wlr_ext_image_capture_source_v1_frame_event *event) {
+    (void)event;
+    struct window *window = wl_container_of(source, window, source);
+    struct wlr_texture *texture = wlr_surface_get_texture(window->toplevel->base->surface);
+    if (!texture || texture->width != (uint32_t)frame->buffer->width || texture->height != (uint32_t)frame->buffer->height) {
+        wlr_ext_image_copy_capture_frame_v1_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS);
+        return;
+    }
+    struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, frame->buffer, NULL);
+    if (!pass) {
+        wlr_ext_image_copy_capture_frame_v1_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
+        return;
+    }
+    wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = texture, .blend_mode = WLR_RENDER_BLEND_MODE_NONE});
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (wlr_render_pass_submit(pass)) wlr_ext_image_copy_capture_frame_v1_ready(frame, WL_OUTPUT_TRANSFORM_NORMAL, &now);
+    else wlr_ext_image_copy_capture_frame_v1_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
+}
+
+static const struct wlr_ext_image_capture_source_v1_interface game_source = {.schedule_frame = schedule_game_frame, .copy_frame = copy_game_frame};
+
 static void on_window_commit(struct wl_listener *listener, void *data) {
     (void)data;
     struct window *window = wl_container_of(listener, window, commit);
     if (window->toplevel->base->initial_commit) size_window(window);
     struct wlr_surface *surface = window->toplevel->base->surface;
-    if (surface->buffer && (surface->buffer->base.width != window->frame_width || surface->buffer->base.height != window->frame_height)) {
-        window->frame_width = surface->buffer->base.width;
-        window->frame_height = surface->buffer->base.height;
+    if (surface->buffer && ((uint32_t)surface->buffer->base.width != window->source.width || (uint32_t)surface->buffer->base.height != window->source.height)) {
+        window->source.width = surface->buffer->base.width;
+        window->source.height = surface->buffer->base.height;
+        wl_signal_emit_mutable(&window->source.events.constraints_update, NULL);
         write_state();
     }
     if (window == shown) redraw();
@@ -694,6 +737,8 @@ static void on_window_map(struct wl_listener *listener, void *data) {
     window->handle = wlr_foreign_toplevel_handle_v1_create(foreign);
     wlr_foreign_toplevel_handle_v1_set_app_id(window->handle, window->app_id);
     listen(&window->activate, &window->handle->events.request_activate, on_window_activate);
+    window->listed = wlr_ext_foreign_toplevel_handle_v1_create(listing, &(struct wlr_ext_foreign_toplevel_handle_v1_state){.app_id = window->app_id});
+    window->listed->data = window;
     show(window);
 }
 
@@ -703,6 +748,7 @@ static void on_window_unmap(struct wl_listener *listener, void *data) {
     if (window == shown) show(NULL);
     wl_list_remove(&window->activate.link);
     wlr_foreign_toplevel_handle_v1_destroy(window->handle);
+    wlr_ext_foreign_toplevel_handle_v1_destroy(window->listed);
 }
 
 static void on_window_destroy(struct wl_listener *listener, void *data) {
@@ -714,6 +760,7 @@ static void on_window_destroy(struct wl_listener *listener, void *data) {
     wl_list_remove(&window->destroy.link);
     wl_list_remove(&window->request_fullscreen.link);
     wl_list_remove(&window->link);
+    wlr_ext_image_capture_source_v1_finish(&window->source);
     free(window);
     choose_display();
 }
@@ -726,6 +773,9 @@ static void on_new_toplevel(struct wl_listener *listener, void *data) {
         wlr_security_context_manager_v1_lookup_client(security, wl_resource_get_client(toplevel->resource));
     window->toplevel = toplevel;
     window->sandboxed = context != NULL;
+    wlr_ext_image_capture_source_v1_init(&window->source, &game_source);
+    window->source.dmabuf_device = render_gpu->device->dev;
+    wlr_drm_format_set_add(&window->source.dmabuf_formats, DRM_FORMAT_XRGB8888, DRM_FORMAT_MOD_LINEAR);
     snprintf(window->app_id, sizeof window->app_id, "%s", context && context->app_id ? context->app_id : "");
     listen(&window->commit, &toplevel->base->surface->events.commit, on_window_commit);
     listen(&window->map, &toplevel->base->surface->events.map, on_window_map);
@@ -851,10 +901,35 @@ static void on_new_constraint(struct wl_listener *listener, void *data) {
     if (shown && constraint->surface == shown->toplevel->base->surface) wlr_pointer_constraint_v1_send_activated(constraint);
 }
 
+static void create_toplevel_source(struct wl_client *client, struct wl_resource *manager, uint32_t id, struct wl_resource *toplevel) {
+    (void)manager;
+    struct wlr_ext_foreign_toplevel_handle_v1 *handle = wlr_ext_foreign_toplevel_handle_v1_from_resource(toplevel);
+    wlr_ext_image_capture_source_v1_create_resource(handle ? &((struct window *)handle->data)->source : NULL, client, id);
+}
+
+static void destroy_resource(struct wl_client *client, struct wl_resource *resource) {
+    (void)client;
+    wl_resource_destroy(resource);
+}
+
+static const struct ext_foreign_toplevel_image_capture_source_manager_v1_interface toplevel_capture_requests = {
+    .create_source = create_toplevel_source, .destroy = destroy_resource};
+
+static void bind_toplevel_capture(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    (void)data;
+    struct wl_resource *resource = wl_resource_create(client, &ext_foreign_toplevel_image_capture_source_manager_v1_interface, version, id);
+    if (!resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(resource, &toplevel_capture_requests, NULL, NULL);
+}
+
 static bool visible_to(const struct wl_client *client, const struct wl_global *global, void *data) {
     (void)data;
     return !wlr_security_context_manager_v1_lookup_client(security, client) ||
-           (global != layer_shell->global && global != security->global && global != foreign->global && global != screencopy->global);
+           (global != layer_shell->global && global != security->global && global != foreign->global && global != screencopy->global &&
+            global != listing->global && global != image_copy->global && global != toplevel_capture);
 }
 
 static void load_settings(void) {
@@ -924,6 +999,10 @@ int main(int argc, char *argv[]) {
     security = wlr_security_context_manager_v1_create(display);
     foreign = wlr_foreign_toplevel_manager_v1_create(display);
     screencopy = wlr_screencopy_manager_v1_create(display);
+    listing = wlr_ext_foreign_toplevel_list_v1_create(display, TOPLEVEL_LIST_VERSION);
+    image_copy = wlr_ext_image_copy_capture_manager_v1_create(display, IMAGE_COPY_CAPTURE_VERSION);
+    toplevel_capture = wl_global_create(display, &ext_foreign_toplevel_image_capture_source_manager_v1_interface, ext_foreign_toplevel_image_capture_source_manager_v1_interface.version, NULL,
+                                        bind_toplevel_capture);
     layout = wlr_output_layout_create(display);
     wlr_xdg_output_manager_v1_create(display, layout);
     wlr_viewporter_create(display);
