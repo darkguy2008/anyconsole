@@ -13,7 +13,7 @@ INSTALL_LABEL=anyconsole.install
 DEVICES_LABEL=anyconsole.devices
 TOUCHPAD_LABEL=anyconsole.touchpad
 SHARED_LABEL=anyconsole.shared
-SANDBOX="--init --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp"
+SANDBOX="--init --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp --tmpfs /dev/shm"
 
 platforms() {
   [ -s $PLATFORMS ] || docker build -q --call targets,format=json $RECIPES |
