@@ -30,6 +30,10 @@ FROM unzip AS parallel_n64
 ADD $CORES/parallel_n64_libretro.so.zip .
 RUN 7z e parallel_n64_libretro.so.zip >/dev/null
 
+FROM unzip AS genesis_plus_gx
+ADD $CORES/genesis_plus_gx_libretro.so.zip .
+RUN 7z e genesis_plus_gx_libretro.so.zip >/dev/null
+
 FROM unzip AS mgba
 ADD $CORES/mgba_libretro.so.zip .
 RUN 7z e mgba_libretro.so.zip >/dev/null
@@ -58,6 +62,10 @@ FROM unzip AS swanstation
 ADD $CORES/swanstation_libretro.so.zip .
 RUN 7z e swanstation_libretro.so.zip >/dev/null
 
+FROM unzip AS dolphin
+ADD $CORES/dolphin_libretro.so.zip $SYSTEM/Dolphin.zip .
+RUN 7z e dolphin_libretro.so.zip >/dev/null && 7z x -o/system Dolphin.zip >/dev/null
+
 FROM unzip AS pcsx2
 ADD $STABLE/RetroArch_cores.7z $SYSTEM/LRPS2.zip .
 RUN 7z e RetroArch_cores.7z pcsx2_libretro.so -r >/dev/null && 7z x -o/system LRPS2.zip >/dev/null
@@ -75,7 +83,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libgl1-m
 ENV HOME=/tmp SDL_JOYSTICK_HIDAPI=0 SDL_JOYSTICK_DISABLE_UDEV=1 SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1
 
 FROM gpu AS retroarch
-RUN apt-get update && apt-get install -y --no-install-recommends libasound2t64 libjack-jackd2-0 libfontconfig1 libdbus-1-3 libxi6 libxrandr2 libxinerama1 libxxf86vm1 libxss1 libxext6 libxrender1 libxcursor1 libxfixes3 libv4l-0 libudev1 libxkbcommon0 libwayland-egl1 libwayland-cursor0 libsdl2-2.0-0 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libasound2t64 libjack-jackd2-0 libfontconfig1 libdbus-1-3 libxi6 libxrandr2 libxinerama1 libxxf86vm1 libxss1 libxext6 libxrender1 libxcursor1 libxfixes3 libv4l-0 libudev1 libxkbcommon0 libwayland-egl1 libwayland-cursor0 libsdl2-2.0-0 libusb-1.0-0 && rm -rf /var/lib/apt/lists/*
 COPY --from=retroarch-download /retroarch /retroarch
 RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib/x86_64-linux-gnu/${bundled##*/}" ] || rm "$bundled"; done
 COPY retroarch.cfg vulkan.cfg /retroarch/
@@ -103,6 +111,11 @@ COPY --from=snes9x /cores/snes9x_libretro.so /retroarch/core.so
 FROM retroarch AS n64
 LABEL anyconsole.launch="z64 n64 v64"
 COPY --from=parallel_n64 /cores/parallel_n64_libretro.so /retroarch/core.so
+
+# genesis Sega Genesis
+FROM retroarch AS genesis
+LABEL anyconsole.launch="md gen smd bin mdx" anyconsole.emulate="{\"pad\":\"digital\"}"
+COPY --from=genesis_plus_gx /cores/genesis_plus_gx_libretro.so /retroarch/core.so
 
 # gba Game Boy Advance
 FROM retroarch AS gba
@@ -139,6 +152,12 @@ COPY --from=stella2014 /cores/stella2014_libretro.so /retroarch/core.so
 FROM retroarch AS ps1
 LABEL anyconsole.launch="m3u chd cue pbp" anyconsole.bios="/system"
 COPY --from=swanstation /cores/swanstation_libretro.so /retroarch/core.so
+
+# gamecube Nintendo GameCube
+FROM retroarch AS gamecube
+LABEL anyconsole.launch="m3u rvz gcm iso ciso gcz wia tgc dol elf"
+COPY --from=dolphin /cores/dolphin_libretro.so /retroarch/core.so
+COPY --from=dolphin /system /system
 
 # ps2 PlayStation 2
 FROM retroarch AS ps2
