@@ -21,7 +21,7 @@ ADD --checksum=sha256:26bdcf2cebd7310c6f598850606b037ef0c515fe6608ebc54d22c50c4c
 COPY *.patch /patches/
 RUN tar xJf /bluez.tar.xz \
  && cd /bluez-$BLUEZ_VERSION \
- && for fix in /patches/*.patch; do patch -p1 < "$fix"; done \
+ && for fix in /patches/*.patch; do patch -p1 < "$fix" || exit 1; done \
  && ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --libexecdir=/usr/libexec --with-udevdir=/usr/lib/udev --enable-sixaxis \
     --disable-manpages --disable-obex --disable-cups --disable-client --disable-tools --disable-monitor --disable-systemd \
  && make -j"$(nproc)" \
