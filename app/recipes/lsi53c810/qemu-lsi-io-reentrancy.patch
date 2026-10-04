@@ -1,0 +1,103 @@
+From c006c635af55cdb027dfd3c1bb3b632cccf43b07 Mon Sep 17 00:00:00 2001
+From: Alemar <6304136+darkguy2008@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 17:07:02 -0600
+Subject: [PATCH] hw/scsi/lsi53c895a: disable reentrancy guard for the I/O
+ region
+
+SCRIPTS can move data to the chip's own registers by addressing the I/O
+BAR with a memory move while DMODE.DIOM (or SIOM) is set.  lsi_mem_write()
+then writes through pci_io_as back into io_io while the guest's I/O access
+that started the SCRIPTS is still in progress, and the memory API's
+re-entrancy guard blocks it:
+
+  qemu-system-i386: warning: Blocked re-entrant IO on MemoryRegion: lsi-io at addr: 0x10
+
+The write is dropped, so the driver's register update is lost.  The
+Windows 98 SE in-box SYMC8XX.MPD miniport does this with -device lsi53c810
+and hangs near the end of setup.
+
+ram_io and mmio_io already disable the guard for the same reason, and
+lsi_execute_script() bounds its own recursion, so do the same for io_io.
+Add a qtest that moves a value into DSA through the I/O BAR.
+
+Signed-off-by: Alemar <6304136+darkguy2008@users.noreply.github.com>
+---
+ hw/scsi/lsi53c895a.c               |  6 +++--
+ tests/qtest/fuzz-lsi53c895a-test.c | 35 ++++++++++++++++++++++++++++++
+ 2 files changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/hw/scsi/lsi53c895a.c b/hw/scsi/lsi53c895a.c
+index 1b7f02fc..8a2c0897 100644
+--- a/hw/scsi/lsi53c895a.c
++++ b/hw/scsi/lsi53c895a.c
+@@ -2373,11 +2373,13 @@ static void lsi_scsi_realize(PCIDevice *dev, Error **errp)
+     s->scripts_timer = timer_new_us(QEMU_CLOCK_VIRTUAL, scripts_timer_cb, s);
+ 
+     /*
+-     * Since we use the address-space API to interact with ram_io, disable the
+-     * re-entrancy guard.
++     * SCRIPTS DMA reaches ram_io, mmio_io and io_io through the address-space
++     * API by design, so disable the re-entrancy guard on all three.
++     * lsi_execute_script() bounds its own recursion.
+      */
+     s->ram_io.disable_reentrancy_guard = true;
+     s->mmio_io.disable_reentrancy_guard = true;
++    s->io_io.disable_reentrancy_guard = true;
+ 
+     address_space_init(&s->pci_io_as, pci_address_space_io(dev), "lsi-pci-io");
+     qdev_init_gpio_out(d, &s->ext_irq, 1);
+diff --git a/tests/qtest/fuzz-lsi53c895a-test.c b/tests/qtest/fuzz-lsi53c895a-test.c
+index 1b55928b..23fdc285 100644
+--- a/tests/qtest/fuzz-lsi53c895a-test.c
++++ b/tests/qtest/fuzz-lsi53c895a-test.c
+@@ -140,6 +140,38 @@ static void test_lsi_do_dma_empty_queue(void)
+     qtest_quit(s);
+ }
+ 
++/*
++ * SCRIPTS may move data to the chip's own registers through its I/O BAR
++ * (DMODE.DIOM); the re-entrancy guard used to block this.
++ */
++static void test_lsi_memmove_to_own_io(void)
++{
++    QTestState *s;
++
++    s = qtest_init("-M q35 -m 512M -nodefaults "
++                   "-device lsi53c895a");
++
++    qtest_outl(s, 0xcf8, 0x80000810); /* I/O Bar */
++    qtest_outl(s, 0xcfc, 0xc000);
++    qtest_outl(s, 0xcf8, 0x80000818); /* RAM Bar */
++    qtest_outl(s, 0xcfc, 0xff000000);
++    qtest_outl(s, 0xcf8, 0x80000804); /* PCI Command Register */
++    qtest_outw(s, 0xcfc, 0x7);        /* Enables accesses */
++
++    qtest_writel(s, 0xff000000, 0xc0000004); /* Memory Move, 4 bytes */
++    qtest_writel(s, 0xff000004, 0xff000100); /* from script RAM */
++    qtest_writel(s, 0xff000008, 0xc010);     /* to DSA through the I/O BAR */
++    qtest_writel(s, 0xff00000c, 0x98080000); /* INT */
++    qtest_writel(s, 0xff000100, 0x12345678);
++
++    qtest_outb(s, 0xc038, 0x10);             /* DMODE: DIOM */
++    qtest_outl(s, 0xc02c, 0xff000000);       /* DSP: start SCRIPTS */
++
++    g_assert_cmphex(qtest_inl(s, 0xc010), ==, 0x12345678);
++
++    qtest_quit(s);
++}
++
+ int main(int argc, char **argv)
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -157,5 +189,8 @@ int main(int argc, char **argv)
+     qtest_add_func("fuzz/lsi53c895a/lsi_dma_reentrancy",
+                    test_lsi_dma_reentrancy);
+ 
++    qtest_add_func("fuzz/lsi53c895a/lsi_memmove_to_own_io",
++                   test_lsi_memmove_to_own_io);
++
+     return g_test_run();
+ }
+-- 
+2.54.0 (Apple Git-157)
+

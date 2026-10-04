@@ -1,4 +1,9 @@
 ARG LIBRETRO=https://buildbot.libretro.com
+# Windows 98 disk controller, picked with --build-arg WIN98_SCSI=<value>:
+#   lsi        -device lsi (53C895A) with LSI's sym_hi driver, fetched from archive.org
+#   lsi53c810  -device lsi53c810 with Windows 98's in-box SYMC8XX driver; builds SeaBIOS and QEMU
+#              from source with the patches in lsi53c810/ (~14% slower disk I/O, nothing fetched from archive.org)
+ARG WIN98_SCSI=lsi
 
 FROM debian:trixie-slim AS unzip
 ARG LIBRETRO
@@ -249,13 +254,37 @@ FROM fetch AS win98-download
 COPY --from=softgpu-release /url /softgpu.url
 COPY --from=patcher9x-release /url /patcher9x.url
 ADD https://files.emulace.cz/ac97_362.zip /ac97.zip
-ADD --checksum=sha256:76e3ed7029a6f5ec8c8bdc160a072b77135d4c7a1128589f4f94508c477e10eb https://archive.org/download/SYMC8XX-bios-driver/win896.zip /lsi.zip
 RUN curl -fsSL -o /softgpu.zip "$(cat /softgpu.url)" \
  && curl -fsSL "$(cat /patcher9x.url)" | tar xz -C /usr/local/bin \
  && 7z e -o/base/drivers /softgpu.zip 'driver/sse3-w98/*' -x!'driver/sse3-w98/mesa25' >/dev/null \
  && 7z e -o/base/build/DX9 /softgpu.zip 'redist/dx9_2004/*' >/dev/null \
- && 7z e -o/base/drivers /ac97.zip 'WDM/*' >/dev/null \
- && 7z e -o/base/drivers /lsi.zip 'sym_hi.*' >/dev/null
+ && 7z e -o/base/drivers /ac97.zip 'WDM/*' >/dev/null
+
+FROM fetch AS win98-scsi-lsi
+ADD --checksum=sha256:76e3ed7029a6f5ec8c8bdc160a072b77135d4c7a1128589f4f94508c477e10eb https://archive.org/download/SYMC8XX-bios-driver/win896.zip /lsi.zip
+RUN 7z e -o/out/opt/win98/base/drivers /lsi.zip 'sym_hi.*' >/dev/null \
+ && echo 'SCSI="-device lsi"' > /out/opt/win98/scsi
+
+FROM debian:trixie-slim AS win98-scsi-lsi53c810
+RUN apt-get update && apt-get install -y --no-install-recommends gcc make patch python-is-python3 python3-venv ninja-build pkgconf flex bison bzip2 xz-utils libglib2.0-dev libpixman-1-dev zlib1g-dev libsdl2-dev libepoxy-dev libgbm-dev libpulse-dev libfdt-dev && rm -rf /var/lib/apt/lists/*
+ARG SEABIOS_VERSION=1.17.0
+ADD --checksum=sha256:5159a35fac5c1579dd5d702001033c826ce45d30d3bd657ec1b2695455997712 https://www.seabios.org/downloads/seabios-$SEABIOS_VERSION.tar.gz /seabios.tar.gz
+ARG QEMU_VERSION=10.0.13
+ADD --checksum=sha256:4a59b74dac7ead8b162a7c4595dcbbeebe989b90c89cfe6bb4dec5447342f6fa https://download.qemu.org/qemu-$QEMU_VERSION.tar.xz /qemu.tar.xz
+COPY lsi53c810/qemu-lsi-io-reentrancy.patch /
+RUN tar xJf /qemu.tar.xz && cd /qemu-$QEMU_VERSION \
+ && patch -p1 < /qemu-lsi-io-reentrancy.patch \
+ && ./configure --target-list=i386-softmmu --firmwarepath=/usr/share/qemu:/usr/share/seabios --without-default-features --enable-werror --disable-debug-info --enable-kvm --enable-sdl --enable-opengl --enable-pa \
+ && make -C build qemu-system-i386 \
+ && install -D build/qemu-system-i386 /out/usr/local/bin/qemu-system-i386
+COPY lsi53c810/seabios-*.patch /seabios-patches/
+RUN tar xzf /seabios.tar.gz && cd /seabios-$SEABIOS_VERSION \
+ && for fix in /seabios-patches/*.patch; do patch -p1 < "$fix" || exit 1; done \
+ && printf 'CONFIG_QEMU=y\nCONFIG_ROM_SIZE=256\n' > .config && make olddefconfig && make \
+ && install -D out/bios.bin /out/opt/win98/bios.bin \
+ && echo 'SCSI="-device lsi53c810 -bios /opt/win98/bios.bin"' > /out/opt/win98/scsi
+
+FROM win98-scsi-$WIN98_SCSI AS win98-scsi
 
 FROM debian:trixie-slim AS win98-programs
 RUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-i686 && rm -rf /var/lib/apt/lists/*
@@ -272,6 +301,7 @@ LABEL anyconsole.launch="img iso" anyconsole.bios="/bios" anyconsole.install="/o
 COPY --from=win98-download /usr/local/bin/patcher9x /usr/local/bin/
 COPY --from=win98-download /base /opt/win98/base
 COPY --from=win98-programs /anycon /opt/win98/base/anycon
+COPY --from=win98-scsi /out/ /
 COPY win98/ /opt/win98/
 VOLUME /engine
 ENTRYPOINT ["/opt/win98/launch"]

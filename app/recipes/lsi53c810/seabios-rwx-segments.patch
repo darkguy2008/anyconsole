@@ -1,0 +1,80 @@
+From 0a12a1f67bd6b0e1f5ebac16e275e3f7e5a2445d Mon Sep 17 00:00:00 2001
+From: Alemar <6304136+darkguy2008@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 19:08:36 -0600
+Subject: [PATCH] Makefile: don't warn about the ROMs' RWX load segment
+
+Since binutils 2.39, ld warns when an output has a LOAD segment that is
+readable, writable and executable:
+
+  ld: warning: out/rom16.o has a LOAD segment with RWX permissions
+  ld: warning: out/rom.o has a LOAD segment with RWX permissions
+  ld: warning: out/vgarom.o has a LOAD segment with RWX permissions
+
+The BIOS and VGA BIOS images are flat binaries that mix 16-bit code and
+the variables it writes in the same segment by design (one PT_LOAD in
+layoutrom.py, ld -N), and only their raw bytes are used.  Declaring the
+segment with an explicit PHDRS FLAGS(7) still warns.
+
+Pass --no-warn-rwx-segments to the ROM link steps when ld supports it,
+as Linux and Trusted Firmware-A do.  The generated bios.bin and
+vgabios.bin are byte-identical with and without the option.
+
+Signed-off-by: Alemar <6304136+darkguy2008@users.noreply.github.com>
+---
+ Makefile | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 01f42ec3..d8456e90 100644
+--- a/Makefile
++++ b/Makefile
+@@ -52,6 +52,8 @@ DIRS=src src/hw src/fw vgasrc
+ # Default compiler flags
+ cc-option=$(shell if test -z "`$(1) $(2) -S -o /dev/null -xc /dev/null 2>&1`" \
+     ; then echo "$(2)"; else echo "$(3)"; fi ;)
++ld-option=$(shell if $(1) $(2) -v >/dev/null 2>&1 \
++    ; then echo "$(2)"; else echo "$(3)"; fi ;)
+ 
+ EXTRAVERSION=
+ 
+@@ -83,6 +85,9 @@ CFLAGS16 := $(CFLAGSSEG) -DMODE16=1 \
+     $(call cc-option,$(CC),-m16,-Wa$(COMMA)src/code16gcc.s) \
+     $(call cc-option,$(CC),--param large-stack-frame=4,-fno-inline)
+ 
++# The ROM images are flat binaries that mix code and data in one segment
++ROMLDFLAGS := $(call ld-option,$(LD),--no-warn-rwx-segments,)
++
+ # Run with "make V=1" to see the actual compile commands
+ ifdef V
+ Q=
+@@ -180,15 +185,15 @@ $(OUT)romlayout32seg.lds $(OUT)romlayout32flat.lds $(OUT)code32flat.o $(OUT)code
+ 
+ $(OUT)rom16.o: $(OUT)code16.o $(OUT)romlayout16.lds
+ 	@echo "  Linking $@"
+-	$(Q)$(LD) -T $(OUT)romlayout16.lds $< -o $@
++	$(Q)$(LD) $(ROMLDFLAGS) -T $(OUT)romlayout16.lds $< -o $@
+ 
+ $(OUT)rom32seg.o: $(OUT)code32seg.o $(OUT)romlayout32seg.lds
+ 	@echo "  Linking $@"
+-	$(Q)$(LD) -T $(OUT)romlayout32seg.lds $< -o $@
++	$(Q)$(LD) $(ROMLDFLAGS) -T $(OUT)romlayout32seg.lds $< -o $@
+ 
+ $(OUT)rom.o: $(OUT)rom16.noexec.o $(OUT)rom32seg.noexec.o $(OUT)code32flat.o $(OUT)romlayout32flat.lds
+ 	@echo "  Linking $@"
+-	$(Q)$(LD) -N -T $(OUT)romlayout32flat.lds $(OUT)rom16.noexec.o $(OUT)rom32seg.noexec.o $(OUT)code32flat.o -o $@
++	$(Q)$(LD) $(ROMLDFLAGS) -N -T $(OUT)romlayout32flat.lds $(OUT)rom16.noexec.o $(OUT)rom32seg.noexec.o $(OUT)code32flat.o -o $@
+ 
+ $(OUT)bios.bin.prep: $(OUT)rom.o scripts/checkrom.py
+ 	@echo "  Prepping $@"
+@@ -239,7 +244,7 @@ $(OUT)vgarom.o: $(OUT)vgaccode16.o $(OUT)vgaentry.o $(OUT)vgasrc/vgalayout.lds v
+ 	@echo "  Linking $@"
+ 	$(Q)$(PYTHON) ./scripts/buildversion.py -e "$(EXTRAVERSION)" -t "$(CC);$(AS);$(LD);$(OBJCOPY);$(OBJDUMP);$(STRIP)" $(OUT)autovgaversion.h
+ 	$(Q)$(CC) $(CFLAGS16) -c vgasrc/vgaversion.c -o $(OUT)vgaversion.o
+-	$(Q)$(LD) --gc-sections -T $(OUT)vgasrc/vgalayout.lds $(OUT)vgaccode16.o $(OUT)vgaentry.o $(OUT)vgaversion.o -o $@
++	$(Q)$(LD) $(ROMLDFLAGS) --gc-sections -T $(OUT)vgasrc/vgalayout.lds $(OUT)vgaccode16.o $(OUT)vgaentry.o $(OUT)vgaversion.o -o $@
+ 
+ $(OUT)vgabios.bin.raw: $(OUT)vgarom.o
+ 	@echo "  Extracting binary $@"
+-- 
+2.54.0 (Apple Git-157)
+

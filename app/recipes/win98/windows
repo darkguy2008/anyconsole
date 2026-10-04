@@ -20,7 +20,7 @@ windows_iso() {
 }
 
 inputs_stamp() {
-  { find "$INPUTS" /opt/win98/windows /opt/win98/hardware -type f -exec sha256sum {} + | sort
+  { find "$INPUTS" /opt/win98/windows /opt/win98/hardware /opt/win98/scsi -type f -exec sha256sum {} + | sort
     stat -c '%n %s %Y' "$1"; } | sha256sum
 }
 
