@@ -1,0 +1,75 @@
+From 833fc9103651987e729863caba158b7031ed6052 Mon Sep 17 00:00:00 2001
+From: Alemar <6304136+darkguy2008@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 17:44:11 -0600
+Subject: [PATCH] lsi-scsi: also boot from the lsi53c810
+
+QEMU emulates the 53C810 (-device lsi53c810) with the same device model as
+the 53C895A, but the driver only matched the 895A device id.  The 810
+matters because Windows 9x ships an in-box miniport for it (SYMC8XX.MPD)
+and none for the 895A.
+
+The driver only uses I/O BAR0 registers common to the 53C8xx family and
+runs its SCRIPTS from host memory, so match the 810 id too.
+
+Signed-off-by: Alemar <6304136+darkguy2008@users.noreply.github.com>
+---
+ src/Kconfig       | 5 +++--
+ src/hw/lsi-scsi.c | 9 +++++----
+ 2 files changed, 8 insertions(+), 6 deletions(-)
+
+diff --git a/src/Kconfig b/src/Kconfig
+index 332b52d6..e49fb45b 100644
+--- a/src/Kconfig
++++ b/src/Kconfig
+@@ -205,10 +205,11 @@ menu "Hardware support"
+             Support boot from AMD PCscsi storage.
+     config LSI_SCSI
+         depends on DRIVES && QEMU_HARDWARE
+-        bool "lsi53c895a scsi controllers"
++        bool "lsi53c895a and lsi53c810 scsi controllers"
+         default y
+         help
+-            Support boot from qemu-emulated lsi53c895a scsi storage.
++            Support boot from qemu-emulated lsi53c895a and lsi53c810 scsi
++            storage.
+     config MEGASAS
+         depends on DRIVES
+         bool "LSI MegaRAID SAS controllers"
+diff --git a/src/hw/lsi-scsi.c b/src/hw/lsi-scsi.c
+index cbaa2acd..d35f443d 100644
+--- a/src/hw/lsi-scsi.c
++++ b/src/hw/lsi-scsi.c
+@@ -1,4 +1,4 @@
+-// (qemu-emulated) lsi53c895a boot support.
++// (qemu-emulated) lsi53c895a and lsi53c810 boot support.
+ //
+ // Copyright (C) 2012 Red Hat Inc.
+ //
+@@ -194,7 +194,7 @@ init_lsi_scsi(void *data)
+         return;
+     pci_enable_busmaster(pci);
+ 
+-    dprintf(1, "found lsi53c895a at %pP, io @ %x\n", pci, iobase);
++    dprintf(1, "found lsi scsi at %pP, io @ %x\n", pci, iobase);
+ 
+     // reset
+     outb(LSI_ISTAT0_SRST, iobase + LSI_REG_ISTAT0);
+@@ -211,12 +211,13 @@ lsi_scsi_setup(void)
+     if (!CONFIG_LSI_SCSI || !runningOnQEMU())
+         return;
+ 
+-    dprintf(3, "init lsi53c895a\n");
++    dprintf(3, "init lsi scsi\n");
+ 
+     struct pci_device *pci;
+     foreachpci(pci) {
+         if (pci->vendor != PCI_VENDOR_ID_LSI_LOGIC
+-            || pci->device != PCI_DEVICE_ID_LSI_53C895A)
++            || (pci->device != PCI_DEVICE_ID_LSI_53C895A
++                && pci->device != PCI_DEVICE_ID_NCR_53C810))
+             continue;
+         run_thread(init_lsi_scsi, pci);
+     }
+-- 
+2.54.0 (Apple Git-157)
+
