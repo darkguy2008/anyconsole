@@ -1,1 +1,2 @@
 pcsx2_shared_memory_cards = "disabled"
+pcsx2_mtvu = "enabled"

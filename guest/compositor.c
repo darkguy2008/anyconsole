@@ -68,8 +68,8 @@
 #define IMAGE_COPY_CAPTURE_VERSION 1
 #define USEC_PER_MSEC 1000
 #define CORNERS 4
-#define GAME_REFRESH_MHZ 60000
 #define MHZ_PER_HZ 1000
+#define GAME_REFRESH_MHZ (60 * MHZ_PER_HZ)
 
 enum filter { NEAREST, LINEAR, PIXEL };
 static const char *filters[] = {[NEAREST] = "nearest", [LINEAR] = "linear", [PIXEL] = "pixel"};
@@ -161,7 +161,7 @@ static struct wlr_swapchain *canvas_chain;
 static struct program programs[sizeof sampler_prefixes / sizeof *sampler_prefixes];
 static char pinned[TEXT_MAX], chosen_mode[TEXT_MAX], *written_state;
 static struct wlr_output_mode *applied_mode;
-static int shown_refresh;
+static int shown_refresh, watcher, manifest_watch = -1;
 static int resolution, canvas_width, canvas_height, started, stopping, dirty;
 static unsigned connections;
 static double pointer_x, pointer_y;
@@ -402,7 +402,7 @@ static void update_canvas(void) {
 }
 
 static struct wlr_output_mode *display_mode(struct wlr_output *output) {
-    struct wlr_output_mode *mode, *base = wlr_output_preferred_mode(output), *best = NULL;
+    struct wlr_output_mode *mode, *base = wlr_output_preferred_mode(output), *best;
     int refresh = GAME_REFRESH_MHZ;
     char name[TEXT_MAX];
     wl_list_for_each(mode, &output->modes, link) {
@@ -410,8 +410,9 @@ static struct wlr_output_mode *display_mode(struct wlr_output *output) {
         if (!strcmp(name, chosen_mode)) base = mode, refresh = mode->refresh;
     }
     if (shown_refresh) refresh = shown_refresh;
+    best = base;
     wl_list_for_each(mode, &output->modes, link)
-        if (mode->width == base->width && mode->height == base->height && (!best || abs(mode->refresh - refresh) < abs(best->refresh - refresh)))
+        if (mode->width == base->width && mode->height == base->height && abs(mode->refresh - refresh) < abs(best->refresh - refresh))
             best = mode;
     return best;
 }
@@ -657,18 +658,21 @@ static void on_new_output(struct wl_listener *listener, void *data) {
     if (started) choose_display();
 }
 
-static int manifest_refresh(struct window *window) {
+static void read_manifest(struct window *window) {
     const char *platform = window ? strchr(window->app_id, '/') : NULL;
-    char path[PATH_MAX];
+    char directory[PATH_MAX], path[sizeof directory + sizeof "/" MANIFEST];
     json_object *manifest, *settings, *refresh;
-    if (!platform) return 0;
-    snprintf(path, sizeof path, GAMES_DIR "/%.*s/" MANIFEST, (int)(platform - window->app_id), window->app_id);
+    if (manifest_watch >= 0) inotify_rm_watch(watcher, manifest_watch);
+    manifest_watch = -1;
+    shown_refresh = 0;
+    if (!platform) return;
+    snprintf(directory, sizeof directory, GAMES_DIR "/%.*s", (int)(platform - window->app_id), window->app_id);
+    snprintf(path, sizeof path, "%s/" MANIFEST, directory);
+    manifest_watch = inotify_add_watch(watcher, directory, IN_MOVED_TO | IN_CLOSE_WRITE);
     manifest = json_object_from_file(path);
-    int mhz = json_object_object_get_ex(manifest, platform + 1, &settings) && json_object_object_get_ex(settings, "refresh", &refresh)
-                  ? (int)lround(json_object_get_double(refresh) * MHZ_PER_HZ)
-                  : 0;
+    if (json_object_object_get_ex(manifest, platform + 1, &settings) && json_object_object_get_ex(settings, "refresh", &refresh))
+        shown_refresh = (int)lround(json_object_get_double(refresh) * MHZ_PER_HZ);
     json_object_put(manifest);
-    return mhz;
 }
 
 static void show(struct window *window) {
@@ -689,7 +693,7 @@ static void show(struct window *window) {
         wlr_seat_keyboard_notify_clear_focus(seat);
         wlr_seat_pointer_notify_clear_focus(seat);
     }
-    shown_refresh = manifest_refresh(window);
+    read_manifest(window);
     choose_display();
     redraw();
 }
@@ -959,17 +963,18 @@ static void load_settings(void) {
     json_object_put(settings);
 }
 
-static int on_settings_change(int fd, uint32_t mask, void *data) {
+static int on_watched_change(int fd, uint32_t mask, void *data) {
     (void)mask, (void)data;
     char buffer[BUFSIZ] __attribute__((aligned(__alignof__(struct inotify_event))));
     ssize_t count = read(fd, buffer, sizeof buffer);
     for (char *at = buffer; count > 0 && at < buffer + count;) {
         struct inotify_event *event = (struct inotify_event *)at;
         at += sizeof *event + event->len;
-        if (event->len && !strcmp(event->name, basename(SETTINGS_FILE))) {
-            load_settings();
-            choose_display();
-        }
+        if (!event->len) continue;
+        if (event->wd == manifest_watch && !strcmp(event->name, MANIFEST)) read_manifest(shown);
+        else if (!strcmp(event->name, basename(SETTINGS_FILE))) load_settings();
+        else continue;
+        choose_display();
     }
     return 0;
 }
@@ -1041,9 +1046,9 @@ int main(int argc, char *argv[]) {
     if (!socket) { fprintf(stderr, "compositor: no wayland socket\n"); return 1; }
     setenv("WAYLAND_DISPLAY", socket, 1);
     snprintf(settings_directory, sizeof settings_directory, "%.*s", (int)(strrchr(SETTINGS_FILE, '/') - SETTINGS_FILE), SETTINGS_FILE);
-    int watcher = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+    watcher = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
     inotify_add_watch(watcher, settings_directory, IN_MOVED_TO);
-    wl_event_loop_add_fd(loop, watcher, WL_EVENT_READABLE, on_settings_change, NULL);
+    wl_event_loop_add_fd(loop, watcher, WL_EVENT_READABLE, on_watched_change, NULL);
     wl_event_loop_add_signal(loop, SIGCHLD, on_child, NULL);
     load_settings();
     if (!wlr_backend_start(backend)) { fprintf(stderr, "compositor: could not start the backend\n"); return 1; }
