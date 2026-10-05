@@ -71,9 +71,21 @@ FROM unzip AS dolphin
 ADD $CORES/dolphin_libretro.so.zip $SYSTEM/Dolphin.zip .
 RUN 7z e dolphin_libretro.so.zip >/dev/null && 7z x -o/system Dolphin.zip >/dev/null
 
+FROM debian:trixie-slim AS pcsx2-build
+RUN apt-get update && apt-get install -y --no-install-recommends g++ cmake make patch libgl-dev && rm -rf /var/lib/apt/lists/*
+ARG PS2_COMMIT=6eabf2242d451ee2e6d52b1e3f10efb77143ed05
+ADD --checksum=sha256:3cd483b12b8631f73bd1a26bf392c16e29045baf3b049d061f2313eb8ee940cd https://github.com/libretro/ps2/archive/$PS2_COMMIT.tar.gz /ps2.tar.gz
+COPY ps2/*.patch /ps2-patches/
+RUN tar xzf /ps2.tar.gz && cd /ps2-$PS2_COMMIT \
+ && for fix in /ps2-patches/*.patch; do patch -p1 < "$fix" || exit 1; done \
+ && cmake -B /ps2-build -DCMAKE_BUILD_TYPE=Release -DLIBRETRO=ON -DDISABLE_ADVANCE_SIMD=ON -DUSE_VULKAN=ON -DUSE_OPENGL=ON \
+ && cmake --build /ps2-build -j"$(nproc)" \
+ && install -D /ps2-build/bin/pcsx2_libretro.so /cores/pcsx2_libretro.so
+
 FROM unzip AS pcsx2
-ADD $STABLE/RetroArch_cores.7z $SYSTEM/LRPS2.zip .
-RUN 7z e RetroArch_cores.7z pcsx2_libretro.so -r >/dev/null && 7z x -o/system LRPS2.zip >/dev/null
+ADD $SYSTEM/LRPS2.zip .
+RUN 7z x -o/system LRPS2.zip >/dev/null
+COPY --from=pcsx2-build /cores/pcsx2_libretro.so /cores/
 
 FROM unzip AS ppsspp
 ADD $CORES/ppsspp_libretro.so.zip $SYSTEM/PPSSPP.zip .
@@ -88,13 +100,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libgl1-m
 ENV HOME=/tmp SDL_JOYSTICK_HIDAPI=0 SDL_JOYSTICK_DISABLE_UDEV=1 SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1
 
 FROM gpu AS retroarch
-RUN apt-get update && apt-get install -y --no-install-recommends libasound2t64 libjack-jackd2-0 libfontconfig1 libdbus-1-3 libxi6 libxrandr2 libxinerama1 libxxf86vm1 libxss1 libxext6 libxrender1 libxcursor1 libxfixes3 libv4l-0 libudev1 libxkbcommon0 libwayland-egl1 libwayland-cursor0 libsdl2-2.0-0 libusb-1.0-0 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libasound2t64 libjack-jackd2-0 libfontconfig1 libdbus-1-3 libxi6 libxrandr2 libxinerama1 libxxf86vm1 libxss1 libxext6 libxrender1 libxcursor1 libxfixes3 libv4l-0 libudev1 libxkbcommon0 libwayland-egl1 libwayland-cursor0 libsdl2-2.0-0 libusb-1.0-0 jq && rm -rf /var/lib/apt/lists/*
 COPY --from=retroarch-download /retroarch /retroarch
 RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib/x86_64-linux-gnu/${bundled##*/}" ] || rm "$bundled"; done
 COPY retroarch.cfg vulkan.cfg /retroarch/
+COPY retroarch-launch /retroarch/launch
+RUN touch /retroarch/core.opt
 LABEL anyconsole.vulkan="--appendconfig=/retroarch/vulkan.cfg" anyconsole.rewind="true"
 ENV LD_LIBRARY_PATH=/retroarch/lib
-ENTRYPOINT ["/retroarch/retroarch", "--verbose", "--config", "/retroarch/retroarch.cfg", "--libretro", "/retroarch/core.so"]
+ENTRYPOINT ["/retroarch/launch"]
 
 # nes Nintendo Entertainment System
 FROM retroarch AS nes

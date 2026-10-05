@@ -1,0 +1,58 @@
+diff --git a/libretro/libretro_core_options.h b/libretro/libretro_core_options.h
+index 52435135c..144f16d3e 100644
+--- a/libretro/libretro_core_options.h
++++ b/libretro/libretro_core_options.h
+@@ -729,6 +729,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
+       },
+       "100% (Normal Speed)"
+    },
++   {
++      "pcsx2_ntsc_frame_rate",
++      "Emulation > NTSC Frame Rate",
++      "NTSC Frame Rate",
++      "Vertical sync rate in Hz of games running in NTSC video mode, and the frame rate reported to the frontend. Set to 50 for PAL games patched to run in NTSC mode so they keep their native 50 Hz pace.",
++      NULL,
++      "emulation",
++      {
++         { "59.94", NULL },
++         { "50", NULL },
++         { NULL, NULL },
++      },
++      "59.94"
++   },
+    {
+       "pcsx2_ee_cpu",
+       "Emulation > EE CPU Provider (Restart)",
+diff --git a/libretro/main.cpp b/libretro/main.cpp
+index 91f7e6834..47b6dc0ce 100644
+--- a/libretro/main.cpp
++++ b/libretro/main.cpp
+@@ -1382,6 +1382,19 @@ static void check_variables(bool first_run)
+ 		}
+ 	}
+ 
++	var.key = "pcsx2_ntsc_frame_rate";
++	if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
++	{
++		const float ntsc_frame_rate = strtof(var.value, NULL);
++		if (ntsc_frame_rate != s_option_config.GS.FramerateNTSC)
++		{
++			s_option_config.GS.FramerateNTSC = ntsc_frame_rate;
++			updated = true;
++			if (!first_run)
++				pending_update_av_info = true;
++		}
++	}
++
+ 	/* MTVU / Instant VU1: restart-only (THREAD_VU1 must not flip while the
+ 	 * MTGS ring is live - see the MainLoop handoff-mutex comment). On arm64
+ 	 * VMManager rewrites vuThread at boot from its hardware-default hook, which
+@@ -2055,7 +2068,7 @@ void retro_get_system_av_info(retro_system_av_info* info)
+ 			break;
+ 	}
+ 
+-	info->timing.fps         = (retro_get_region() == RETRO_REGION_NTSC) ? (60.0f / 1.001f) : 50.0f;
++	info->timing.fps         = (retro_get_region() == RETRO_REGION_NTSC) ? s_option_config.GS.FramerateNTSC : 50.0f;
+ 	info->timing.sample_rate = 48000;
+ }
+ 

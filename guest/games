@@ -5,7 +5,6 @@ MOUNTS=/run/stores
 RECIPES=/opt/anyconsole/recipes
 PLATFORMS=/run/platforms
 LAUNCH_LABEL=anyconsole.launch
-GAME_LABEL=anyconsole.game
 RECIPE_LABEL=anyconsole.recipe
 VULKAN_LABEL=anyconsole.vulkan
 BIOS_LABEL=anyconsole.bios

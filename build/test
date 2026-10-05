@@ -265,6 +265,11 @@ close_game() {
   expect '.screen == "home"'
 }
 
+core_options_hold() {
+  guest "docker exec \$(docker ps -q --filter label=$GAME_LABEL=$1) cat /tmp/core.opt" |
+    jq -nRe --argjson options "$2" '[inputs] as $lines | $options | to_entries | all("\(.key) = \"\(.value)\"" as $line | $lines | any(. == $line))'
+}
+
 play_every_other_game() {
   for directory in "$TEST_STORE"/*/*/; do
     key=${directory#"$TEST_STORE/"}
@@ -273,6 +278,8 @@ play_every_other_game() {
     title=$(jq -r .title "$TEST_STORE/${key%/*}/manifest.json")
     play_new_game "$key" "$title"
     snapshot "$(game_name "$key")"
+    wait_for $STEP_SECONDS core_options_hold "$key" "$(jq -c --arg platform "${key#*/}" '.[$platform].options // {}' "$TEST_STORE/${key%/*}/manifest.json")"
+    log ok "$key core options reached RetroArch"
     close_game "$key" "$title"
   done
 }

@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+jq -nrR --argjson game "$GAME_CONFIG" '
+  [inputs | capture("^(?<key>[^ ]+) = \"(?<value>.*)\"$")] | from_entries + ($game.options // {})
+  | to_entries[] | "\(.key) = \"\(.value)\""' /retroarch/core.opt > /tmp/core.opt
+exec /retroarch/retroarch --verbose --config /retroarch/retroarch.cfg --libretro /retroarch/core.so "$@"

@@ -69,6 +69,7 @@
 #define USEC_PER_MSEC 1000
 #define CORNERS 4
 #define GAME_REFRESH_MHZ 60000
+#define MHZ_PER_HZ 1000
 
 enum filter { NEAREST, LINEAR, PIXEL };
 static const char *filters[] = {[NEAREST] = "nearest", [LINEAR] = "linear", [PIXEL] = "pixel"};
@@ -160,6 +161,7 @@ static struct wlr_swapchain *canvas_chain;
 static struct program programs[sizeof sampler_prefixes / sizeof *sampler_prefixes];
 static char pinned[TEXT_MAX], chosen_mode[TEXT_MAX], *written_state;
 static struct wlr_output_mode *applied_mode;
+static int shown_refresh;
 static int resolution, canvas_width, canvas_height, started, stopping, dirty;
 static unsigned connections;
 static double pointer_x, pointer_y;
@@ -400,15 +402,17 @@ static void update_canvas(void) {
 }
 
 static struct wlr_output_mode *display_mode(struct wlr_output *output) {
-    struct wlr_output_mode *mode, *preferred = wlr_output_preferred_mode(output), *best = preferred;
+    struct wlr_output_mode *mode, *base = wlr_output_preferred_mode(output), *best = NULL;
+    int refresh = GAME_REFRESH_MHZ;
     char name[TEXT_MAX];
     wl_list_for_each(mode, &output->modes, link) {
         name_mode(mode, name);
-        if (!strcmp(name, chosen_mode)) return mode;
-        if (mode->width == preferred->width && mode->height == preferred->height &&
-            abs(mode->refresh - GAME_REFRESH_MHZ) < abs(best->refresh - GAME_REFRESH_MHZ))
-            best = mode;
+        if (!strcmp(name, chosen_mode)) base = mode, refresh = mode->refresh;
     }
+    if (shown_refresh) refresh = shown_refresh;
+    wl_list_for_each(mode, &output->modes, link)
+        if (mode->width == base->width && mode->height == base->height && (!best || abs(mode->refresh - refresh) < abs(best->refresh - refresh)))
+            best = mode;
     return best;
 }
 
@@ -653,6 +657,20 @@ static void on_new_output(struct wl_listener *listener, void *data) {
     if (started) choose_display();
 }
 
+static int manifest_refresh(struct window *window) {
+    const char *platform = window ? strchr(window->app_id, '/') : NULL;
+    char path[PATH_MAX];
+    json_object *manifest, *settings, *refresh;
+    if (!platform) return 0;
+    snprintf(path, sizeof path, GAMES_DIR "/%.*s/" MANIFEST, (int)(platform - window->app_id), window->app_id);
+    manifest = json_object_from_file(path);
+    int mhz = json_object_object_get_ex(manifest, platform + 1, &settings) && json_object_object_get_ex(settings, "refresh", &refresh)
+                  ? (int)lround(json_object_get_double(refresh) * MHZ_PER_HZ)
+                  : 0;
+    json_object_put(manifest);
+    return mhz;
+}
+
 static void show(struct window *window) {
     if (shown) {
         wlr_xdg_toplevel_set_activated(shown->toplevel, false);
@@ -671,8 +689,9 @@ static void show(struct window *window) {
         wlr_seat_keyboard_notify_clear_focus(seat);
         wlr_seat_pointer_notify_clear_focus(seat);
     }
+    shown_refresh = manifest_refresh(window);
+    choose_display();
     redraw();
-    write_state();
 }
 
 static void on_window_activate(struct wl_listener *listener, void *data) {

@@ -25,6 +25,7 @@ LOG_DIR=/data/log
 VOLUME_LIMIT=1.0
 GAME_IMAGE=anyconsole
 REWIND_LABEL=anyconsole.rewind
+GAME_LABEL=anyconsole.game
 BIOS_DIR=/data/bios
 ENGINES=/data/engines
 PROFILES_DIR=/data/profiles
