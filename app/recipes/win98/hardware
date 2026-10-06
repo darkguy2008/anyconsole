@@ -2,7 +2,8 @@ BASE=/engine/base.img
 ROM_DISK=/game/rom.img
 DISK_SIZE=8G
 SECTOR_BYTES=512
-PARTITION_START=2048
+SECTORS_PER_TRACK=63
+PARTITION_START=$SECTORS_PER_TRACK
 PARTITION=@@$((PARTITION_START * SECTOR_BYTES))
 MEMORY=1024
 . /opt/win98/scsi
@@ -14,6 +15,8 @@ make_disk() {
   echo "start=$PARTITION_START, type=c, bootable" | sfdisk -q "$1"
   mkfs.fat -F 32 -h "$PARTITION_START" --offset "$PARTITION_START" "$1" >/dev/null
 }
+
+disk_partition() { echo "$1@@$(($(sfdisk --json "$1" | jq '.partitiontable.partitions[0].start') * SECTOR_BYTES))"; }
 
 scsi_disk() { echo "-drive file=$2,if=none,id=disk$1,format=${3:-raw} -device scsi-hd,drive=disk$1,scsi-id=$1"; }
 

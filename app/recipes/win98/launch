@@ -2,7 +2,6 @@
 set -eu
 . /opt/win98/hardware
 DATA=/shared/data.img
-DATA_PARTITION=$DATA$PARTITION
 THROWAWAY_DIR=/tmp
 
 throwaway() {
@@ -47,6 +46,7 @@ run_machine() {
 
 [ -f "$BASE" ] || { echo "Windows 98 is not installed; reinstall this game to install it" >&2; exit 1; }
 [ -f "$DATA" ] || make_data_disk "$DATA"
+DATA_PARTITION=$(disk_partition "$DATA")
 restore_saves
 set -- $(scsi_disk 0 "$(throwaway "$BASE")" qcow2) $(scsi_disk 1 "$DATA")
 [ ! -f "$ROM_DISK" ] || set -- "$@" $(scsi_disk 2 "$(throwaway "$ROM_DISK")" qcow2)
