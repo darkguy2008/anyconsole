@@ -8,6 +8,7 @@ OUT=build/out/test
 TARGET_SIZE=16G
 SSH_TEST_PORT=2223
 API_TEST_PORT=8081
+VNC_TEST_DISPLAY=1
 POLLS_PER_SECOND=10
 SSH_ALIVE_SECONDS=1
 POLL_INTERVAL=$(awk "BEGIN { print 1 / $POLLS_PER_SECOND }")
@@ -27,6 +28,7 @@ SECOND_REMOTE_PAD="$REMOTE_PAD_NAME 2"
 LOW_BATTERY=10
 STRONG_RUMBLE_EFFECT=4
 REDREAM_ENGINE=$ENGINES/dreamcast/engine
+VIRGL_GPU=virtio_gpu
 AREA_SIZE='(.display.area_box | "\(.width)x\(.height)")'
 
 monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
@@ -86,7 +88,7 @@ choose() {
   highlight "$1"
   tap a
 }
-snapshot() { monitor "screendump $OUT/$1.png -f png"; wait_for $STEP_SECONDS test -s "$OUT/$1.png"; }
+snapshot() { wait_for $STEP_SECONDS gvnccapture "127.0.0.1:$VNC_TEST_DISPLAY" "$OUT/$1.png"; }
 booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /data/boots) = $1 ] && pidof overlay && [ -s $STATE_FILE ]"; }
 
 start_vm() {
@@ -98,7 +100,7 @@ start_vm() {
   run_qemu $OUT/efivars.fd $OUT/target.img \
     "hostfwd=tcp:127.0.0.1:$SSH_TEST_PORT-:22,hostfwd=tcp:127.0.0.1:$API_TEST_PORT-:$API_PORT" \
     -device qemu-xhci -drive file=build/out/installer.img,format=raw,if=none,id=usb0 -device usb-storage,drive=usb0,id=stick \
-    -device virtio-gpu-pci,xres=$SECOND_DISPLAY_WIDTH,yres=$SECOND_DISPLAY_HEIGHT -display none -monitor unix:$OUT/monitor.sock,server,nowait -serial file:$OUT/serial.log &
+    -device virtio-gpu-pci,xres=$SECOND_DISPLAY_WIDTH,yres=$SECOND_DISPLAY_HEIGHT -vnc :$VNC_TEST_DISPLAY -monitor unix:$OUT/monitor.sock,server,nowait -serial file:$OUT/serial.log &
   trap 'monitor quit' EXIT
 }
 
@@ -201,7 +203,7 @@ MODES
 }
 
 switch_gpu_after_games() {
-  second=$(state | jq -r '.display as $display | $display.displays[] | select(.gpu != $display.gpu) | .label')
+  second=$(state | jq -r '.display as $display | $display.displays[] | select(.label != $display.display) | .label')
   api POST settings "display $second" >/dev/null
   expect ".display.pending == \"$second\" and any(.notifications[]; startswith(\"Close and restart your games\")) and .display.shown == \"$1\""
   guest games stop
@@ -225,6 +227,10 @@ remember_guide_position() {
 }
 
 rewind_to_older_state() {
+  if [ "$(state | jq -r .display.gpu)" = "$VIRGL_GPU" ]; then
+    log skip "rewinding $1: virgl reads the overlay's shared capture buffer back as black until Mesa ships virgl-exported-readback"
+    return
+  fi
   expect '.rewind.states >= 2'
   wait_for $STEP_SECONDS guest "[ \$(ls $REWIND_DIR/$(game_name "$1")/states/*.screen.png | wc -l) -ge 2 ]"
   log ok "the saved $1 states have screen captures"

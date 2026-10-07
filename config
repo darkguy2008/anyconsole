@@ -16,7 +16,7 @@ run_qemu() {
     -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd -drive if=pflash,format=raw,file="$vars" \
     -device ich9-ahci,id=ahci -drive file="$disk",format=raw,if=none,id=d0 -device ide-hd,drive=d0,bus=ahci.0 \
     -netdev user,id=net0,$forwards,smb=$PWD/$TEST_STORE -device e1000e,netdev=net0,id=$NIC \
-    -audiodev none,id=sound -device ich9-intel-hda -device hda-micro,audiodev=sound -vga std "$@"
+    -audiodev none,id=sound -device ich9-intel-hda -device hda-micro,audiodev=sound -vga none -device virtio-vga-gl -display egl-headless "$@"
 }
 with_password() { SSH_ASKPASS="$PWD/build/askpass" SSH_ASKPASS_REQUIRE=force "$@"; }
 sync_host() { rsync -a --delete --exclude .git --exclude-from=.gitignore ./ "$DEPLOY_HOST:$DEPLOY_PATH/"; }
