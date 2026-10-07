@@ -107,7 +107,7 @@ static const char pixel_source[] =
 struct gpu {
     struct wlr_device *device;
     struct wlr_backend *backend;
-    int rank, has_display;
+    int rank, has_display, renders;
     char name[TEXT_MAX];
 };
 
@@ -229,6 +229,13 @@ static int connected(struct gpu *gpu) {
     return found;
 }
 
+static int has_render_node(struct gpu *gpu) {
+    char *render_node = drmGetRenderDeviceNameFromFd(gpu->device->fd);
+    int found = render_node != NULL;
+    free(render_node);
+    return found;
+}
+
 static dev_t handed_over(void) {
     FILE *file = fopen(RENDER_GPU_FILE, "r");
     unsigned major_number, minor_number;
@@ -239,6 +246,7 @@ static dev_t handed_over(void) {
 
 static int startup_order(struct gpu *a, struct gpu *b, dev_t handed) {
     int a_handed = a->device->dev == handed, b_handed = b->device->dev == handed;
+    if (a->renders != b->renders) return a->renders - b->renders;
     if (a->has_display != b->has_display) return a->has_display - b->has_display;
     if (a_handed != b_handed) return a_handed - b_handed;
     return a->rank - b->rank;
@@ -255,6 +263,7 @@ static int start_gpus(void) {
     for (gpu_count = 0; gpu_count < count; gpu_count++) {
         gpus[gpu_count].device = devices[gpu_count];
         gpus[gpu_count].has_display = connected(&gpus[gpu_count]);
+        gpus[gpu_count].renders = has_render_node(&gpus[gpu_count]);
     }
     if (!gpu_count) return 0;
     rank_gpus();
@@ -452,7 +461,7 @@ static void choose_display(void) {
     struct display *best = NULL, *entry;
     if (stopping) return;
     wl_list_for_each(entry, &displays, link) if (better(entry, best)) best = entry;
-    pending = best && best->gpu != render_gpu ? best : NULL;
+    pending = best && best->gpu != render_gpu && best->gpu->renders ? best : NULL;
     if (pending && !games_running()) {
         hand_over(pending->gpu);
         return;
