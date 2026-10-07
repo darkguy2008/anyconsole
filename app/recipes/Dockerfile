@@ -204,8 +204,8 @@ COPY joystick-guid /usr/local/bin/
 VOLUME /engine
 
 FROM debian:trixie-slim AS fetch
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates jq libxml2-utils 7zip && rm -rf /var/lib/apt/lists/*
-COPY appimage /usr/local/bin/
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates libxml2-utils 7zip && rm -rf /var/lib/apt/lists/*
+COPY appimage github-release /usr/local/bin/
 
 FROM fetch AS redream-release
 ADD https://redream.io/download /redream.html
@@ -223,8 +223,8 @@ COPY redream/ /opt/redream/
 ENTRYPOINT ["/opt/redream/launch"]
 
 FROM fetch AS cemu-release
-ADD https://api.github.com/repos/cemu-project/Cemu/releases/latest /release.json
-RUN jq -r '.assets[] | select(.name | endswith("x86_64.AppImage")) | .browser_download_url' /release.json > /url
+ADD https://github.com/cemu-project/Cemu/releases.atom /releases.atom
+RUN github-release cemu-project/Cemu x86_64.AppImage > /url
 
 FROM fetch AS cemu-download
 COPY --from=cemu-release /url /url
@@ -240,8 +240,8 @@ ENV XDG_CONFIG_HOME=/engine XDG_DATA_HOME=/engine XDG_CACHE_HOME=/engine GDK_BAC
 ENTRYPOINT ["/opt/cemu/launch"]
 
 FROM fetch AS rpcs3-release
-ADD https://api.github.com/repos/RPCS3/rpcs3-binaries-linux/releases/latest /release.json
-RUN jq -r '.assets[] | select(.name | endswith("_linux64.AppImage")) | .browser_download_url' /release.json > /url
+ADD https://github.com/RPCS3/rpcs3-binaries-linux/releases.atom /releases.atom
+RUN github-release RPCS3/rpcs3-binaries-linux _linux64.AppImage > /url
 
 FROM fetch AS rpcs3-download
 COPY --from=rpcs3-release /url /url
@@ -257,12 +257,12 @@ ENV XDG_CONFIG_HOME=/engine/config XDG_CACHE_HOME=/engine/cache QT_QPA_PLATFORM=
 ENTRYPOINT ["/opt/rpcs3/launch"]
 
 FROM fetch AS softgpu-release
-ADD https://api.github.com/repos/JHRobotics/softgpu/releases/latest /release.json
-RUN jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' /release.json > /url
+ADD https://github.com/JHRobotics/softgpu/releases.atom /releases.atom
+RUN github-release JHRobotics/softgpu .zip > /url
 
 FROM fetch AS patcher9x-release
-ADD https://api.github.com/repos/JHRobotics/patcher9x/releases/latest /release.json
-RUN jq -r '.assets[] | select(.name | endswith("-linux-amd64.tar.gz")) | .browser_download_url' /release.json > /url
+ADD https://github.com/JHRobotics/patcher9x/releases.atom /releases.atom
+RUN github-release JHRobotics/patcher9x -linux-amd64.tar.gz > /url
 
 FROM fetch AS win98-download
 COPY --from=softgpu-release /url /softgpu.url
