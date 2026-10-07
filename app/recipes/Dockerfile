@@ -96,7 +96,7 @@ ADD $CORES/azahar_libretro.so.zip .
 RUN 7z e azahar_libretro.so.zip >/dev/null
 
 FROM debian:trixie-slim AS gpu
-RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libgl1-mesa-dri mesa-libgallium libglx-mesa0 libegl1 libegl-mesa0 libgles2 libvulkan1 mesa-vulkan-drivers libpulse0 && rm -rf /var/lib/apt/lists/*
+RUN . /etc/os-release && printf 'Types: deb\nURIs: http://deb.debian.org/debian\nSuites: %s-backports\nComponents: main\n' "$VERSION_CODENAME" > /etc/apt/sources.list.d/backports.sources && apt-get update && apt-get install -y --no-install-recommends -t "$VERSION_CODENAME-backports" libgl1 libgl1-mesa-dri mesa-libgallium libglx-mesa0 libegl1 libegl-mesa0 libgles2 libvulkan1 mesa-vulkan-drivers libpulse0 && rm -rf /var/lib/apt/lists/*
 ENV HOME=/tmp SDL_JOYSTICK_HIDAPI=0 SDL_JOYSTICK_DISABLE_UDEV=1 SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1
 
 FROM gpu AS retroarch
