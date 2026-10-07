@@ -28,7 +28,7 @@ make_skeleton() {
   ln -s /run $ROOTFS/var/run
 }
 
-fetch() { curl -fsSL -R -z "$DOWNLOAD_CACHE/$1" -o "$DOWNLOAD_CACHE/$1" "$2" || [ -f "$DOWNLOAD_CACHE/$1" ]; }
+fetch() { if curl -fsSL -R --remove-on-error -z "$DOWNLOAD_CACHE/$1" -o "$DOWNLOAD_CACHE/$1.part" "$2"; then [ ! -f "$DOWNLOAD_CACHE/$1.part" ] || mv "$DOWNLOAD_CACHE/$1.part" "$DOWNLOAD_CACHE/$1"; else [ -f "$DOWNLOAD_CACHE/$1" ]; fi; }
 
 write_shared_header() {
   {
