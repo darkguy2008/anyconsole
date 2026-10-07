@@ -1243,9 +1243,15 @@ static void on_capture_format(void *data, struct ext_image_copy_capture_session_
 static void on_capture_done(void *data, struct ext_image_copy_capture_session_v1 *session) {
     (void)data;
     if (capture.frame) return;
-    capture.bo = gbm && capture.modifiers.size ? gbm_bo_create_with_modifiers2(gbm, capture.width, capture.height, DRM_FORMAT_XRGB8888, capture.modifiers.data,
-                                                                               capture.modifiers.size / sizeof(uint64_t), GBM_BO_USE_RENDERING)
-                                               : NULL;
+    size_t modifier_count = capture.modifiers.size / sizeof(uint64_t);
+    uint64_t *advertised = capture.modifiers.data;
+    uint64_t modifier = DRM_FORMAT_MOD_LINEAR;
+    capture.bo = gbm && modifier_count ? gbm_bo_create_with_modifiers2(gbm, capture.width, capture.height, DRM_FORMAT_XRGB8888, advertised, modifier_count,
+                                                                       GBM_BO_USE_RENDERING)
+                                       : NULL;
+    if (capture.bo) modifier = gbm_bo_get_modifier(capture.bo);
+    else if (gbm && modifier_count == 1 && advertised[0] == DRM_FORMAT_MOD_LINEAR)
+        capture.bo = gbm_bo_create(gbm, capture.width, capture.height, DRM_FORMAT_XRGB8888, GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
     if (!capture.bo) {
         fprintf(stderr, "overlay: no capture buffer\n");
         end_capture(0);
@@ -1253,7 +1259,6 @@ static void on_capture_done(void *data, struct ext_image_copy_capture_session_v1
     }
     struct zwp_linux_buffer_params_v1 *params = zwp_linux_dmabuf_v1_create_params(dmabuf);
     int fd = gbm_bo_get_fd(capture.bo);
-    uint64_t modifier = gbm_bo_get_modifier(capture.bo);
     zwp_linux_buffer_params_v1_add(params, fd, 0, gbm_bo_get_offset(capture.bo, 0), gbm_bo_get_stride(capture.bo), modifier >> (sizeof(uint32_t) * CHAR_BIT),
                                    (uint32_t)modifier);
     capture.buffer = zwp_linux_buffer_params_v1_create_immed(params, capture.width, capture.height, DRM_FORMAT_XRGB8888, 0);
