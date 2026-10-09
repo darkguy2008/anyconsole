@@ -8,6 +8,7 @@ ln -sf pts/ptmx /dev/ptmx
 mount -t ramfs ramfs /run
 mount -o remount,rw /
 load_drivers
+[ ! -e "$CPUFREQ_DIR/policy0/scaling_governor" ] || cp "$CPUFREQ_DIR/policy0/scaling_governor" "$GOVERNOR_FILE"
 splash drm
 mount -t ext4 "$(findfs LABEL=data)" /data
 mount -t vfat "$(findfs LABEL=ESP)" /boot/efi

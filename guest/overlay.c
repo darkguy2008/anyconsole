@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <ftw.h>
 #include <gbm.h>
+#include <glob.h>
 #include <json-c/json.h>
 #include <limits.h>
 #include <math.h>
@@ -70,6 +71,7 @@
 #define RESOLUTIONS_MAX 8
 #define SLEEP_CHOICES_MAX 8
 #define AUTO "Auto"
+#define BOOST_GOVERNOR "performance"
 #define MHZ_PER_HZ 1000
 #define REFRESH_PRECISION 100
 #define BYTES_PER_PIXEL 4
@@ -178,6 +180,8 @@ static char *written_state;
 static struct window windows[WINDOWS_MAX];
 static struct gbm_device *gbm;
 static int window_count, resolutions[RESOLUTIONS_MAX], resolution_count, sleep_choices[SLEEP_CHOICES_MAX], sleep_choice_count;
+static char boot_governor[TEXT_MAX];
+static int boosted = -1;
 static json_object *settings, *display_state, *controllers_state, *audio_nodes, *audio_devices;
 
 static struct wl_display *display;
@@ -2040,6 +2044,32 @@ static void write_state(char *serialized) {
     written_state = serialized;
 }
 
+static void read_boot_governor(void) {
+    FILE *file = fopen(GOVERNOR_FILE, "r");
+    if (file && fgets(boot_governor, sizeof boot_governor, file)) boot_governor[strcspn(boot_governor, "\n")] = '\0';
+    if (file) fclose(file);
+}
+
+static void set_governor(const char *governor) {
+    glob_t policies;
+    if (glob(CPUFREQ_DIR "/policy*", 0, NULL, &policies)) return;
+    for (size_t i = 0; i < policies.gl_pathc; i++) {
+        char path[PATH_MAX];
+        snprintf(path, sizeof path, "%s/scaling_governor", policies.gl_pathv[i]);
+        FILE *file = fopen(path, "w");
+        if (!file || fputs(governor, file) < 0 || fclose(file) < 0) perror(path);
+    }
+    globfree(&policies);
+}
+
+static void apply_governor(void) {
+    int running = 0;
+    for (int i = 0; i < game_count; i++) running |= games[i].pid && !games[i].paused;
+    if (running == boosted) return;
+    boosted = running;
+    set_governor(running ? BOOST_GOVERNOR : boot_governor);
+}
+
 static void settle(void) {
     if (!changed) return;
     changed = 0;
@@ -2050,6 +2080,7 @@ static void settle(void) {
         if (!games[i].pid || !game_window(i) || games[i].closing || games[i].paused == pause || games[i].freezer) continue;
         freeze(i, pause);
     }
+    apply_governor();
     if (menu_told != (attract() || interactive())) {
         menu_told = attract() || interactive();
         tell_padd("menu %d", menu_told);
@@ -2337,6 +2368,7 @@ int main(void) {
     read_stores();
     read_settings();
     read_display();
+    read_boot_governor();
     load_session();
     reset_devices();
     rescan();
