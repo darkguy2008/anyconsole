@@ -5,7 +5,6 @@ SETTINGS_VERSION=1
 PAD_PORTS=2
 OPENGL_RENDERER=12
 VULKAN_RENDERER=14
-NTSC_FRAME_RATE_OPTION=pcsx2_ntsc_frame_rate
 
 pad() {
   printf '[Pad%s]\nType = DualShock2\n' "$1"
@@ -14,10 +13,6 @@ pad() {
 
 pads() {
   for port in $(seq $PAD_PORTS); do pad "$port"; done
-}
-
-core_options() {
-  printf '%s' "$GAME_CONFIG" | jq -r --arg key "$NTSC_FRAME_RATE_OPTION" '(.options // {}) | to_entries[] | if .key == $key then "FramerateNTSC = \(.value)" else "ignoring core option \(.key)\n" | stderr | empty end'
 }
 
 settings() {
@@ -32,7 +27,6 @@ Slot1_Filename = ${game%.*}.ps2
 Slot2_Enable = false
 [EmuCore/GS]
 Renderer = $renderer
-$(core_options)
 [EmuCore/Speedhacks]
 vuThread = true
 [Logging]
