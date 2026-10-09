@@ -27,6 +27,7 @@ Slot1_Filename = ${game%.*}.ps2
 Slot2_Enable = false
 [EmuCore/GS]
 Renderer = $renderer
+VsyncEnable = true
 [EmuCore/Speedhacks]
 vuThread = true
 [Logging]
