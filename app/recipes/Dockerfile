@@ -71,22 +71,6 @@ FROM unzip AS dolphin
 ADD $CORES/dolphin_libretro.so.zip $SYSTEM/Dolphin.zip .
 RUN 7z e dolphin_libretro.so.zip >/dev/null && 7z x -o/system Dolphin.zip >/dev/null
 
-FROM debian:trixie-slim AS pcsx2-build
-RUN apt-get update && apt-get install -y --no-install-recommends g++ cmake make patch libgl-dev && rm -rf /var/lib/apt/lists/*
-ARG PS2_COMMIT=6eabf2242d451ee2e6d52b1e3f10efb77143ed05
-ADD --checksum=sha256:3cd483b12b8631f73bd1a26bf392c16e29045baf3b049d061f2313eb8ee940cd https://github.com/libretro/ps2/archive/$PS2_COMMIT.tar.gz /ps2.tar.gz
-COPY ps2/*.patch /ps2-patches/
-RUN tar xzf /ps2.tar.gz && cd /ps2-$PS2_COMMIT \
- && for fix in /ps2-patches/*.patch; do patch -p1 < "$fix" || exit 1; done \
- && cmake -B /ps2-build -DCMAKE_BUILD_TYPE=Release -DLIBRETRO=ON -DDISABLE_ADVANCE_SIMD=ON -DUSE_VULKAN=ON -DUSE_OPENGL=ON \
- && cmake --build /ps2-build -j"$(nproc)" \
- && install -D /ps2-build/bin/pcsx2_libretro.so /cores/pcsx2_libretro.so
-
-FROM unzip AS pcsx2
-ADD $SYSTEM/LRPS2.zip .
-RUN 7z x -o/system LRPS2.zip >/dev/null
-COPY --from=pcsx2-build /cores/pcsx2_libretro.so /cores/
-
 FROM unzip AS ppsspp
 ADD $CORES/ppsspp_libretro.so.zip $SYSTEM/PPSSPP.zip .
 RUN 7z e ppsspp_libretro.so.zip >/dev/null && 7z x -o/system PPSSPP.zip >/dev/null
@@ -178,14 +162,6 @@ LABEL anyconsole.launch="m3u rvz gcm iso ciso gcz wia tgc dol elf"
 COPY --from=dolphin /cores/dolphin_libretro.so /retroarch/core.so
 COPY --from=dolphin /system /system
 
-# ps2 PlayStation 2
-FROM retroarch AS ps2
-LABEL anyconsole.launch="m3u chd iso cso" anyconsole.bios="/system/pcsx2/bios"
-COPY --from=pcsx2 /cores/pcsx2_libretro.so /retroarch/core.so
-COPY --from=pcsx2 /system /system
-COPY ps2.opt /retroarch/core.opt
-VOLUME /system/pcsx2/cache
-
 # psp PlayStation Portable
 FROM retroarch AS psp
 LABEL anyconsole.launch="iso cso pbp"
@@ -255,6 +231,23 @@ RUN ln -s /opt/rpcs3/usr/share/rpcs3 /usr/share/rpcs3
 COPY rpcs3/ /opt/rpcs3/
 ENV XDG_CONFIG_HOME=/engine/config XDG_CACHE_HOME=/engine/cache QT_QPA_PLATFORM=xcb
 ENTRYPOINT ["/opt/rpcs3/launch"]
+
+FROM fetch AS pcsx2-release
+ADD https://github.com/PCSX2/pcsx2/releases.atom /releases.atom
+RUN github-release PCSX2/pcsx2 -linux-appimage-x64-Qt.AppImage > /url
+
+FROM fetch AS pcsx2-download
+COPY --from=pcsx2-release /url /url
+RUN appimage /pcsx2
+
+# ps2 PlayStation 2
+FROM x11 AS ps2
+RUN apt-get update && apt-get install -y --no-install-recommends libfontconfig1 libfreetype6 libharfbuzz0b libcom-err2 libgpg-error0 libsm6 libice6 matchbox-window-manager jq && rm -rf /var/lib/apt/lists/*
+LABEL anyconsole.launch="chd iso cso" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan"
+COPY --from=pcsx2-download /pcsx2 /opt/pcsx2
+COPY pcsx2/ /opt/pcsx2/
+ENV XDG_CONFIG_HOME=/engine QT_QPA_PLATFORM=xcb
+ENTRYPOINT ["/opt/pcsx2/launch"]
 
 FROM fetch AS softgpu-release
 ADD https://github.com/JHRobotics/softgpu/releases.atom /releases.atom

@@ -1,0 +1,54 @@
+#!/bin/sh
+set -eu
+PCSX2=$XDG_CONFIG_HOME/PCSX2
+SETTINGS_VERSION=1
+PAD_PORTS=2
+OPENGL_RENDERER=12
+VULKAN_RENDERER=14
+NTSC_FRAME_RATE_OPTION=pcsx2_ntsc_frame_rate
+
+pad() {
+  printf '[Pad%s]\nType = DualShock2\n' "$1"
+  while read -r control binding; do printf '%s = SDL-%s/%s\n' "$control" "$(($1 - 1))" "$binding"; done < /opt/pcsx2/pad.map
+}
+
+pads() {
+  for port in $(seq $PAD_PORTS); do pad "$port"; done
+}
+
+core_options() {
+  printf '%s' "$GAME_CONFIG" | jq -r --arg key "$NTSC_FRAME_RATE_OPTION" '(.options // {}) | to_entries[] | if .key == $key then "FramerateNTSC = \(.value)" else "ignoring core option \(.key)\n" | stderr | empty end'
+}
+
+settings() {
+  cat <<SETTINGS
+[UI]
+SettingsVersion = $SETTINGS_VERSION
+HideMouseCursor = true
+[Folders]
+MemoryCards = /saves
+[MemoryCards]
+Slot1_Filename = ${game%.*}.ps2
+Slot2_Enable = false
+[EmuCore/GS]
+Renderer = $renderer
+$(core_options)
+[EmuCore/Speedhacks]
+vuThread = true
+[Logging]
+EnableSystemConsole = true
+EnableFileLogging = false
+$(pads)
+SETTINGS
+}
+
+renderer=$OPENGL_RENDERER
+if [ "${1:-}" = --vulkan ]; then
+  renderer=$VULKAN_RENDERER
+  shift
+fi
+game=${1##*/}
+mkdir -p "$PCSX2/inis" "$PCSX2/bios"
+ln -sf /bios/* "$PCSX2/bios/"
+settings > "$PCSX2/inis/PCSX2.ini"
+exec xwayland-run -fullscreen -geometry "$CANVAS" -- sh -c 'matchbox-window-manager -use_titlebar no -use_cursor no & exec "$@"' sh /opt/pcsx2/AppRun -nogui -fullscreen -- "$1"
