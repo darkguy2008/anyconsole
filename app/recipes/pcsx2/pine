@@ -1,0 +1,19 @@
+#!/usr/bin/python3
+import os
+import socket
+import struct
+import sys
+
+OPCODES = {"save": 0x9, "load": 0xA}
+SOCKET_NAME = "pcsx2.sock"
+PACKET = struct.Struct("<IBB")
+REPLY_SIZE = 5
+STATUS_OK = 0
+
+command, slot = sys.argv[1], int(sys.argv[2])
+with socket.socket(socket.AF_UNIX) as connection:
+    connection.connect(os.path.join(os.environ["XDG_RUNTIME_DIR"], SOCKET_NAME))
+    connection.sendall(PACKET.pack(PACKET.size, OPCODES[command], slot))
+    reply = connection.recv(REPLY_SIZE, socket.MSG_WAITALL)
+if len(reply) != REPLY_SIZE or reply[REPLY_SIZE - 1] != STATUS_OK:
+    sys.exit(f"PINE {command} slot {slot} failed: reply {reply.hex()}")

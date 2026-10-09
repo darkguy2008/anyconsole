@@ -1,0 +1,48 @@
+#!/bin/sh
+set -eu
+STATES=/states
+PINE=/opt/pcsx2/pine
+SAVE_SLOT=1
+LOAD_SLOT=2
+SAVED_SUFFIX=$(printf '.%02d.p2s' $SAVE_SLOT)
+LOADED_SUFFIX=$(printf '.%02d.p2s' $LOAD_SLOT)
+
+next_slot() {
+  next=0
+  for state in "$STATES"/*.state[0-9]*; do
+    index=${state##*.state}
+    case $index in *[!0-9]*) continue ;; esac
+    [ "$index" -lt "$next" ] || next=$((index + 1))
+  done
+  echo "$next"
+}
+
+close_write() { : >> "$1"; }
+
+publish() {
+  state=$STATES/${1%"$SAVED_SUFFIX"}.state$(next_slot)
+  mv "$STATES/$1" "$state"
+  close_write "$state"
+}
+
+publish_saves() {
+  inotifywait -m -q -e moved_to --format %f "$STATES" | while IFS= read -r name; do
+    case $name in *"$SAVED_SUFFIX") publish "$name" ;; esac
+  done
+}
+
+load() {
+  for state in "$STATES"/*.state"$1"; do
+    [ -e "$state" ] || { echo "no state with slot $1" >&2; return 1; }
+    ln -f "$state" "${state%.state"$1"}$LOADED_SUFFIX" && $PINE load $LOAD_SLOT
+  done
+}
+
+publish_saves &
+while read -r command argument; do
+  case $command in
+    SAVE_STATE) $PINE save $SAVE_SLOT ;;
+    LOAD_STATE_SLOT) load "$argument" ;;
+    *) echo "unknown command $command" >&2; false ;;
+  esac || echo "$command $argument failed" >&2
+done

@@ -242,8 +242,8 @@ RUN appimage /pcsx2
 
 # ps2 PlayStation 2
 FROM x11 AS ps2
-RUN apt-get update && apt-get install -y --no-install-recommends libfontconfig1 libfreetype6 libharfbuzz0b libcom-err2 libgpg-error0 libsm6 libice6 matchbox-window-manager && rm -rf /var/lib/apt/lists/*
-LABEL anyconsole.launch="chd iso cso" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan"
+RUN apt-get update && apt-get install -y --no-install-recommends libfontconfig1 libfreetype6 libharfbuzz0b libcom-err2 libgpg-error0 libsm6 libice6 matchbox-window-manager inotify-tools && rm -rf /var/lib/apt/lists/*
+LABEL anyconsole.launch="chd iso cso" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true"
 COPY --from=pcsx2-download /pcsx2 /opt/pcsx2
 COPY pcsx2/ /opt/pcsx2/
 ENV XDG_CONFIG_HOME=/engine QT_QPA_PLATFORM=xcb
