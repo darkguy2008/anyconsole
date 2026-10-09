@@ -110,7 +110,7 @@ static const struct { const char *name, *title; } screens[] = {
 };
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
-              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, SAVE_DISPLAY_MODE, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN };
+              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN };
 enum command { NONE, UP, DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
 static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [LEFT] = "left", [RIGHT] = "right",
                                        [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide"};
@@ -158,7 +158,7 @@ static int dashboard_depth = 1, guide_depths[PROFILES + 1], guide_shown, dashboa
 static struct row rows[ROWS_MAX];
 static struct device outputs[DEVICES_MAX], microphones[DEVICES_MAX];
 static char default_output[TEXT_MAX], default_microphone[TEXT_MAX], microphone_pad[TEXT_MAX], chosen_controller[TEXT_MAX], staged_mode[TEXT_MAX];
-static int output_count, microphone_count, volume = -1, microphone_volume = -1, microphone_muted, mode_staged;
+static int output_count, microphone_count, volume = -1, microphone_volume = -1, microphone_muted, mode_staged, staged_resolution, resolution_staged;
 static int players[PADS], player_count, menu_told = -1, focus = NO_DEVICE, picker = NO_DEVICE, previewed = NO_DEVICE, previewed_seat, repeating_device, guide_profile, applied_game = UNAPPLIED;
 static struct member members[INPUT_DEVICES_MAX];
 static int member_count;
@@ -624,7 +624,7 @@ static int int_at(json_object *object, const char *name) {
     return json_object_object_get_ex(object, name, &field) ? json_object_get_int(field) : 0;
 }
 
-static int chosen_resolution(void) { return int_at(settings, "resolution"); }
+static int chosen_resolution(void) { return resolution_staged ? staged_resolution : int_at(settings, "resolution"); }
 
 static const char *display_value(void) {
     static char value[TEXT_MAX];
@@ -677,13 +677,22 @@ static void cycle_display_mode(int step) {
 }
 
 static void cycle_resolution(int step) {
-    char value[TEXT_MAX];
     int current = 0;
     for (int i = 0; i < resolution_count; i++)
         if (resolutions[i] == chosen_resolution()) current = i + 1;
     int next = cycle(current, resolution_count, step);
-    snprintf(value, sizeof value, "%d", next ? resolutions[next - 1] : 0);
-    start((char *[]){"settings", "resolution", value, NULL});
+    staged_resolution = next ? resolutions[next - 1] : 0;
+    resolution_staged = staged_resolution != int_at(settings, "resolution");
+}
+
+static void discard_staged(void) { mode_staged = resolution_staged = 0; }
+
+static void apply_staged(void) {
+    char value[TEXT_MAX];
+    snprintf(value, sizeof value, "%d", staged_resolution);
+    if (mode_staged) start((char *[]){"settings", "mode", staged_mode, NULL});
+    if (resolution_staged) start((char *[]){"settings", "resolution", value, NULL});
+    discard_staged();
 }
 
 static int chosen_sleep(void) {
@@ -946,6 +955,12 @@ static int owned_games(int profile) {
 
 static int rewindable(void) { return in_game() && games[active].rewinds; }
 
+static int add_resolution_rows(int count) {
+    count = add_row(count, CHOOSE_DISPLAY_MODE, 0, "Display resolution", "%s", display_mode_value());
+    count = add_row(count, CHOOSE_RESOLUTION, 0, "Game resolution", "%s", resolution_value());
+    return mode_staged || resolution_staged ? add_row(count, APPLY_RESOLUTIONS, 0, "Apply", "") : count;
+}
+
 static int build(struct view *view) {
     int count = 0, order[GAMES_MAX];
     char level[TEXT_MAX] = "", microphone_level[TEXT_MAX] = "";
@@ -987,6 +1002,7 @@ static int build(struct view *view) {
         if (microphone_is_muted()) snprintf(microphone_level, sizeof microphone_level, "Muted");
         else if (microphone_volume >= 0) snprintf(microphone_level, sizeof microphone_level, "%d%%", microphone_volume);
         count = add_row(count, MICROPHONE_VOLUME, 0, "Microphone volume", "%s", microphone_level);
+        count = add_resolution_rows(count);
         count = add_row(count, OPEN_CONTROLLERS, 0, "Controllers", "");
         count = add_row(count, RELOAD, 0, "Reload", "");
         count = add_row(count, RESTART, 0, "Restart", "");
@@ -1024,9 +1040,7 @@ static int build(struct view *view) {
         break;
     case SETTINGS:
         count = add_row(count, CHOOSE_DISPLAY, 0, "Display", "%s", display_value());
-        count = add_row(count, CHOOSE_DISPLAY_MODE, 0, "Display resolution", "%s", display_mode_value());
-        if (mode_staged) count = add_row(count, SAVE_DISPLAY_MODE, 0, "Save", "");
-        count = add_row(count, CHOOSE_RESOLUTION, 0, "Game resolution", "%s", resolution_value());
+        count = add_resolution_rows(count);
         count = add_row(count, CHOOSE_SLEEP, 0, "Controller sleep", "%s", sleep_value());
         break;
     }
@@ -1535,12 +1549,11 @@ static void act(struct row *row, int device) {
     case CONFIRM_LOG_OUT: logout(profile_of(focus), focus); break;
     case OPEN_STORE: push(STORE, -1); refresh(); break;
     case OPEN_SETTINGS:
-        mode_staged = 0;
+        discard_staged();
         push(SETTINGS, -1);
         break;
-    case SAVE_DISPLAY_MODE:
-        start((char *[]){"settings", "mode", staged_mode, NULL});
-        mode_staged = 0;
+    case APPLY_RESOLUTIONS:
+        apply_staged();
         view->action = CHOOSE_DISPLAY_MODE;
         break;
     case OPEN_GAME: push(GAME, row->arg); break;
@@ -1602,6 +1615,7 @@ static void adjust(enum action action, int step) {
 
 static void open_guide(void) {
     rewind_back = 0;
+    discard_staged();
     if (!rewindable() || (!capture.session && !start_capture(active))) {
         guide_shown = 1;
         return;

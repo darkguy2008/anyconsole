@@ -163,10 +163,14 @@ open_store() {
 change_resolution_in_settings() {
   choose Settings
   expect '.screen == "settings"'
-  choose "Game resolution"
+  highlight "Game resolution"
   tap dpright
-  expect '.settings.resolution == 720 and .display.canvas == "1280x720"'
+  expect "any(.rows[]; .label == \"Apply\") and (.settings.resolution // 0) == 0 and .display.canvas == $AREA_SIZE"
+  choose Apply
+  expect '.settings.resolution == 720 and .display.canvas == "1280x720" and all(.rows[]; .label != "Apply")'
+  highlight "Game resolution"
   tap dpright
+  choose Apply
   expect '.settings.resolution == 1080 and .display.canvas == "1920x1080" and .display.filter == "linear"'
   snapshot settings
   api POST settings "resolution 0" >/dev/null
@@ -188,14 +192,14 @@ $(state | jq -r '.display.mode as $mode | ([.display.modes[] | . != $mode] | ind
 MODES
   choose Settings
   stage_mode
-  expect "any(.rows[]; .label == \"Save\") and .display.mode == \"$auto\" and (.settings.mode // \"\") == \"\""
+  expect "any(.rows[]; .label == \"Apply\") and .display.mode == \"$auto\" and (.settings.mode // \"\") == \"\""
   tap b
   expect ".screen == \"home\" and .display.mode == \"$auto\" and (.settings.mode // \"\") == \"\""
   choose Settings
-  expect '.screen == "settings" and all(.rows[]; .label != "Save")'
+  expect '.screen == "settings" and all(.rows[]; .label != "Apply")'
   stage_mode
-  choose Save
-  expect ".settings.mode == \"$chosen\" and .display.mode == \"$chosen\" and all(.rows[]; .label != \"Save\") and .rows[.selected].label == \"Display resolution\""
+  choose Apply
+  expect ".settings.mode == \"$chosen\" and .display.mode == \"$chosen\" and all(.rows[]; .label != \"Apply\") and .rows[.selected].label == \"Display resolution\""
   api POST settings "mode" >/dev/null
   expect ".settings.mode == \"\" and .display.mode == \"$auto\""
   tap b
@@ -222,6 +226,20 @@ remember_guide_position() {
   expect '.guide | not'
   tap guide
   expect '.guide and .rows[.selected].label == "Volume"'
+  tap guide
+  expect '.guide | not'
+}
+
+apply_resolution_from_guide() {
+  tap guide
+  expect '.guide and .screen == "guide"'
+  highlight "Game resolution"
+  tap dpright
+  expect '(.settings.resolution // 0) == 0 and any(.rows[]; .label == "Apply")'
+  choose Apply
+  expect '.settings.resolution == 720 and .display.canvas == "1280x720" and all(.rows[]; .label != "Apply")'
+  api POST settings "resolution 0" >/dev/null
+  expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
   tap guide
   expect '.guide | not'
 }
@@ -530,6 +548,7 @@ expect ".display.canvas == $AREA_SIZE and .display.frame == .display.canvas and 
 wait_for $STEP_SECONDS guest ". /etc/profile; pw-dump | jq -e '[.[] | select(.info.props[\"media.class\"]? == \"Stream/Output/Audio\" and .info.state == \"running\")] | length == 1'"
 log ok "the game plays sound into PipeWire"
 remember_guide_position
+apply_resolution_from_guide
 blow_into_microphone
 change_emulation
 second_player_joins_and_leaves alter-ego/nes
