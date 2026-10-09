@@ -41,7 +41,7 @@ api() { curl -fsS -X "$1" --data-binary "${3:-}" "127.0.0.1:$API_TEST_PORT/cgi-b
 state() { api GET state; }
 log() { echo "$1 +$(($(date +%s) - STARTED))s: $2"; }
 diagnose() {
-  guest "cat $STATE_FILE /tmp/install.log; echo; for log in $LOG_DIR/*.log; do echo \"== \$log\"; tail -n 15 \"\$log\"; done" >&2 || true
+  guest "cat $STATE_FILE /tmp/install.log; echo; docker ps -a --format '{{.Names}} {{.Status}}'; for container in \$(docker ps -q); do docker top \$container -eo pid,stat,wchan:30,args; done; for log in $LOG_DIR/*.log; do echo \"== \$log\"; tail -n 15 \"\$log\"; done" >&2 || true
   guest ". /etc/profile; wpctl status; pw-dump | jq -c '.[] | select(.info.props[\"media.class\"]? == \"Audio/Source\") | {id, props: [.info.params.Props[]? | {channelVolumes, softVolumes, volume}]}'" >&2 || true
 }
 wait_for() {
@@ -265,6 +265,7 @@ close_game() {
   back_to_dashboard
   expect "$(status_of "$1" paused)"
   choose "$2"
+  expect '.screen == "game"'
   choose Close
   expect "$(status_of "$1" installed)"
   tap b
@@ -559,6 +560,7 @@ expect ".active == \"alter-ego/nes\" and ($(status_of alter-ego/nes running)) an
 
 back_to_dashboard
 choose "LAN Master"
+expect '.screen == "game"'
 choose Close
 expect "$(status_of lan-master/nes installed)"
 choose Uninstall
