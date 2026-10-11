@@ -26,6 +26,8 @@ remember() {
 
 arm_boot() { grub-editenv "$GRUBENV" set slot="$1" prev="$2" tries=1; }
 
+install_boot_menu() { cmp -s "$GRUB_CONFIG" "$GRUB_DIR/grub.cfg" || { cp "$GRUB_CONFIG" "$GRUB_DIR/grub.cfg.partial" && mv "$GRUB_DIR/grub.cfg.partial" "$GRUB_DIR/grub.cfg"; }; }
+
 sync_release() {
   announce "syncing v$REL to slot $INACTIVE"
   mount -t ext4 "$(findfs "LABEL=root-$INACTIVE")" /mnt || return 1
@@ -61,6 +63,7 @@ case "${1:-}" in
   slot) echo "$SLOT" ;;
   mark-good)
     arm_boot "$SLOT" "$SLOT"
+    install_boot_menu
     [ "$STAGED_VERSION" = "$VERSION" ] && remember installed "$VERSION" ;;
   watch) while :; do (poll); sleep "$OTA_INTERVAL"; done ;;
   update)

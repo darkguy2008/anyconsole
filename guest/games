@@ -130,6 +130,12 @@ launch_file() {
   return 1
 }
 
+hold_idle_latency() {
+  latency=$(cat $IDLE_LATENCIES 2>/dev/null | sort -n | grep -vxm1 0) || return 0
+  exec 3>/dev/cpu_dma_latency
+  printf '%08x\n' "$latency" >&3
+}
+
 run() {
   rom=$GAMES_DIR/$1/$2/rom saves=$PROFILES_DIR/$5/saves/$1-$2
   image=$(image_config "$2")
@@ -141,6 +147,7 @@ run() {
   video=
   route_touchpad "$(label_of "$image" "$TOUCHPAD_LABEL")"
   ! printf '%s' "$display" | jq -e .vulkan >/dev/null || video=$(label_of "$image" "$VULKAN_LABEL")
+  hold_idle_latency
   exec docker run --rm -i --label "$GAME_LABEL=$1/$2" $SANDBOX $(platform_access "$2") $shared \
     --device /dev/dri --device-cgroup-rule 'c 13:* rw' -v "$PAD_NODES:/dev/input:ro" \
     -v "$3:/run/wayland" -v "$4:/states" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \

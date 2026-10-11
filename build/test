@@ -781,6 +781,8 @@ test_reboot() {
   expect '.settings.resolution == 720'
   guest reboot
   wait_for $BOOT_SECONDS booted 2
+  wait_for $STEP_SECONDS guest "grep -qF ' $KERNEL_ARGS' /proc/cmdline"
+  log ok "the kernel booted with $KERNEL_ARGS"
   expect ".screen == \"attract\" and ($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed)) and .settings.resolution == 720"
   sign_in_from_attract
   api POST settings "resolution 0" >/dev/null
