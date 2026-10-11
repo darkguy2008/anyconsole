@@ -80,6 +80,7 @@ holds() { state | jq -e "$1"; }
 expect() { wait_for $STEP_SECONDS holds "$1"; log ok "$1"; }
 game_name() { echo "${1%/*}-${1#*/}"; }
 game_log() { echo "$LOG_DIR/$(game_name "$1").log"; }
+saves_of() { echo "$PROFILES_DIR/1/saves/$(game_name "$1")"; }
 status_of() { echo ".games[] | select(.key == \"$1\") | .status == \"$2\""; }
 row_value() { echo ".rows[] | select(.label == \"$1\") | .value"; }
 send() { api POST input "$(printf '%s\n' "$@")" >/dev/null; }
@@ -572,12 +573,17 @@ rewind_dreamcast() {
   fi
   wait_for $STEP_SECONDS redream_preloaded
   expect '.rewind.states >= 1'
+  vmus="$(saves_of "$1")/vmu*.bin"
+  saved=$(guest "md5sum $vmus")
+  guest "for vmu in $vmus; do printf x >> \$vmu; done"
   open_rewind_row "$1"
   tap dpleft
   expect '.rewind.back == 1'
   tap a
   expect "(.guide | not) and .rewind.back == 0 and ($(status_of "$1" running))"
   wait_for $STEP_SECONDS redream_read_loaded_state "$1"
+  [ "$(guest "md5sum $vmus")" = "$saved" ] || { log FAIL "rewinding did not put back the VMUs the state was saved with" >&2; diagnose; exit 1; }
+  log ok "rewinding put back the VMUs the state was saved with"
   guest "! grep -q '^\[[A-Z]*\] *SAVE ' $(game_log "$1")" || { log FAIL "redream logged a save state error" >&2; diagnose; exit 1; }
   wait_for $STEP_SECONDS screen_moves
   expect "$(status_of "$1" running)"
@@ -641,7 +647,7 @@ test_nes() {
   play_game alter-ego/nes
   wait_for $STEP_SECONDS guest "grep -qF 'configured in port 1' $(game_log alter-ego/nes)"
   log ok "RetroArch configured the virtual pad"
-  wait_for $STEP_SECONDS guest "[ -d $PROFILES_DIR/1/saves/$(game_name alter-ego/nes) ]"
+  wait_for $STEP_SECONDS guest "[ -d $(saves_of alter-ego/nes) ]"
   log ok "Player 1 plays with its own saves"
   snapshot alter-ego
   api POST settings "resolution 1080" >/dev/null
