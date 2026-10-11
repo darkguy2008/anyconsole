@@ -58,7 +58,7 @@ screenshot_is_png() {
 }
 log() { echo "$1 +$(($(date +%s) - STARTED))s: $2"; }
 diagnose() {
-  guest "cat $STATE_FILE /tmp/install.log; echo; docker ps -a --format '{{.Names}} {{.Status}}'; for container in \$(docker ps -q); do docker top \$container -eo pid,stat,wchan:30,args; done; for log in $LOG_DIR/*.log; do echo \"== \$log\"; tail -n 15 \"\$log\"; done" >&2 || true
+  guest "cat $STATE_FILE /tmp/install.log; echo; docker ps -a --format '{{.Names}} {{.Status}}'; for container in \$(docker ps -q); do docker top \$container -o pid,stat,args; for pid in \$(docker top \$container -o pid | tail -n +2); do echo \"\$pid \$(cat /proc/\$pid/wchan)\"; done; done; for log in $LOG_DIR/*.log; do echo \"== \$log\"; tail -n 15 \"\$log\"; done" >&2 || true
   guest ". /etc/profile; wpctl status; pw-dump | jq -c '.[] | select(.info.props[\"media.class\"]? == \"Audio/Source\") | {id, props: [.info.params.Props[]? | {channelVolumes, softVolumes, volume}]}'" >&2 || true
 }
 wait_for() {
@@ -330,8 +330,10 @@ close_game() {
   expect '.screen == "home"'
 }
 
+game_container() { echo "\$(docker ps -q --filter label=$GAME_LABEL=$1)"; }
+
 core_options_hold() {
-  guest "docker exec \$(docker ps -q --filter label=$GAME_LABEL=$1) cat /tmp/core.opt" |
+  guest "docker exec $(game_container "$1") cat /tmp/core.opt" |
     jq -nRe --argjson options "$2" '[inputs] as $lines | $options | to_entries | all("\(.key) = \"\(.value)\"" as $line | $lines | any(. == $line))'
 }
 
@@ -667,7 +669,9 @@ test_actions() {
   expect_reply $STEP_SECONDS 200 ".ok and .state.active == \"lan-master/nes\" and (.state | $(status_of lan-master/nes running))" \
     --arg action play --arg game lan-master/nes
   expect_reply $STEP_SECONDS 200 '.ok and .state.dashboard' --arg action dashboard
+  guest "docker top $(game_container lan-master/nes) -o pid | tail -n +2 | xargs kill -STOP"
   expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of lan-master/nes installed))" --arg action close --arg game lan-master/nes
+  log ok "Close ended a game that stopped answering signals"
   expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of lan-master/nes ''))" --arg action uninstall --arg game lan-master/nes
   guest "touch $GAMES_DIR/lan-master"
   expect_reply $INSTALL_SECONDS 409 '(.ok | not) and (.error | startswith("Install failed: LAN Master: ")) and (.error as $error | any(.notifications[]; . == $error))' \

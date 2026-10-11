@@ -1419,7 +1419,9 @@ static void finish_close(int index) {
     struct game *game = &games[index];
     if (game->freezer) return;
     if (game->paused) freeze(index, 0);
-    if (!game->freezer && kill(game->pid, SIGTERM) < 0) perror("close");
+    if (game->freezer) return;
+    if (kill(game->pid, SIGTERM) < 0) perror("close");
+    start((char *[]){"games", "close", game->slug, game->platform, NULL});
 }
 
 static void play(int index) {
