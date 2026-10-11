@@ -590,6 +590,17 @@ rewind_dreamcast() {
   log ok "redream saved a state, read it back for rewind and kept running"
 }
 
+kept_rewinds() { guest "ls $KEPT_REWIND_DIR/*-$(game_name "$1")/states/*.state[0-9]*"; }
+
+crash_keeps_rewinds() {
+  expect '.rewind.states >= 1'
+  guest "docker kill $(game_container "$1")"
+  expect "($(status_of "$1" installed)) and any(.notifications[]; . == \"$2 stopped\")"
+  wait_for $STEP_SECONDS kept_rewinds "$1"
+  log ok "the states of $1 from before it crashed are kept"
+  expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of "$1" running))" --arg action play --arg game "$1"
+}
+
 test_logout() {
   ensure_installed alter-ego/nes "Alter Ego"
   choose "Alter Ego"
@@ -759,6 +770,7 @@ test_msdos() {
   highlight Emulate
   adjust_to Emulate "Default (Analog pad)"
   tap guide
+  crash_keeps_rewinds commander-keen/msdos "Commander Keen"
   close_game commander-keen/msdos "Commander Keen"
 }
 
@@ -785,8 +797,12 @@ test_reboot() {
   ensure_installed commander-keen/msdos "Commander Keen"
   api POST settings "resolution 720" >/dev/null
   expect '.settings.resolution == 720'
+  expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of alter-ego/nes running))" --arg action play --arg game alter-ego/nes
+  expect '.rewind.states >= 1'
   guest reboot
   wait_for $BOOT_SECONDS booted 2
+  wait_for $STEP_SECONDS kept_rewinds alter-ego/nes
+  log ok "the states of a game the reboot interrupted are kept"
   wait_for $STEP_SECONDS guest "grep -qF ' $KERNEL_ARGS' /proc/cmdline"
   log ok "the kernel booted with $KERNEL_ARGS"
   expect ".screen == \"attract\" and ($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed)) and .settings.resolution == 720"

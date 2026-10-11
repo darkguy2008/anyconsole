@@ -27,6 +27,7 @@
 #include <sys/timerfd.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 #include <xf86drm.h>
@@ -79,6 +80,7 @@
 #define BYTES_PER_PIXEL 4
 #define BUFFERS 2
 #define REWIND_STATES 20
+#define KEPT_SESSIONS 4
 #define SAVE_SECONDS 5
 #define SAVE_CHANGE_PERCENT 1
 #define STATES "states"
@@ -338,10 +340,39 @@ static int remove_entry(const char *path, const struct stat *status, int type, s
     return remove(path);
 }
 
+static void remove_tree(const char *path) { nftw(path, remove_entry, REWIND_TREE_DEPTH, FTW_DEPTH | FTW_PHYS); }
+
 static void remove_rewinds(int index) {
     char path[PATH_MAX];
-    nftw(rewind_path(path, index, ""), remove_entry, REWIND_TREE_DEPTH, FTW_DEPTH | FTW_PHYS);
+    remove_tree(rewind_path(path, index, ""));
     *newest_name = '\0';
+}
+
+static int is_visible(const struct dirent *entry) { return *entry->d_name != '.'; }
+
+static void keep_rewinds(const char *rewind) {
+    char path[PATH_MAX], kept[PATH_MAX];
+    struct dirent **entries = NULL;
+    snprintf(path, sizeof path, REWIND_DIR "/%s", rewind);
+    snprintf(kept, sizeof kept, KEPT_REWIND_DIR "/%ld-%s", (long)time(NULL), rewind);
+    rename(path, kept);
+    int count = scandir(KEPT_REWIND_DIR, &entries, is_visible, alphasort);
+    for (int i = 0; i < count; i++) {
+        snprintf(path, sizeof path, KEPT_REWIND_DIR "/%s", entries[i]->d_name);
+        if (i < count - KEPT_SESSIONS) remove_tree(path);
+        free(entries[i]);
+    }
+    free(entries);
+}
+
+static void keep_interrupted_rewinds(void) {
+    struct dirent **entries = NULL;
+    int count = scandir(REWIND_DIR, &entries, is_visible, alphasort);
+    for (int i = 0; i < count; i++) {
+        keep_rewinds(entries[i]->d_name);
+        free(entries[i]);
+    }
+    free(entries);
 }
 
 static int is_state(const struct dirent *entry) {
@@ -1195,9 +1226,12 @@ static void ended(int index, int status) {
     snprintf(path, sizeof path, "%s/" WAYLAND_SOCKET, directory);
     unlink(path);
     rmdir(directory);
-    if (!game->closing && status) fail(index, "%s stopped", game->title);
+    if (!game->closing && status) {
+        fail(index, "%s stopped", game->title);
+        inotify_rm_watch(watcher, game->states_watch);
+        keep_rewinds(name(index));
+    } else remove_rewinds(index);
     game->pid = 0;
-    remove_rewinds(index);
     if (active == index) active = -1;
     refresh_rewinds();
     apply_modes();
@@ -2172,7 +2206,7 @@ static int settled(const struct request *request) {
     if (capture.current || refresher > 0) return 0;
     if (request->game < 0) return 1;
     const struct game *game = &games[request->game];
-    return !game->job && !game->freezer && !(game->pid && (!game_window(request->game) || game->closing));
+    return !game->job && !game->freezer && !game->probe && !(game->pid && (!game_window(request->game) || game->closing));
 }
 
 static void remove_request(int index) {
@@ -2603,6 +2637,7 @@ int main(void) {
     watched[SAVE] = (struct pollfd){.fd = save_timer, .events = POLLIN};
     watched[LISTENER] = (struct pollfd){.fd = bind_socket(OVERLAY_SOCKET, SOCK_NONBLOCK), .events = POLLIN};
     splash = cairo_image_surface_create_from_png(SPLASH_IMAGE);
+    keep_interrupted_rewinds();
     read_stores();
     read_settings();
     read_display();
