@@ -7,7 +7,7 @@ for workspace in */; do
   case " $* " in *" $name "*) continue ;; esac
   (
     flock -n 9 || exit 0
-    docker image rm "$BASE_IMAGE_PREFIX-$name" >/dev/null 2>&1 || true
+    docker image rm "$BASE_IMAGE_PREFIX-$name" $(docker image ls --format '{{.Repository}}:{{.Tag}}' "$TEST_IMAGE_PREFIX-$name") >/dev/null 2>&1 || true
     rm -rf "$name" "$name.lock"
     echo "removed workspace $name"
   ) 9>"$name.lock"

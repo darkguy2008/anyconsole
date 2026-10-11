@@ -4,7 +4,6 @@ set -eu
 RECIPES=/opt/anyconsole/recipes
 PLATFORMS=/run/platforms
 LAUNCH_LABEL=anyconsole.launch
-RECIPE_LABEL=anyconsole.recipe
 VULKAN_LABEL=anyconsole.vulkan
 BIOS_LABEL=anyconsole.bios
 INSTALL_LABEL=anyconsole.install
@@ -166,7 +165,7 @@ resume() {
 stop() { containers | xargs -r docker rm -f >/dev/null; }
 
 case "${1:-}" in
-  refresh|prepare|install|uninstall|run|pause|resume|stop|labels) command=$1; shift; $command "$@" ;;
+  refresh|prepare|install|uninstall|run|pause|resume|stop|labels|recipe_sum) command=$1; shift; $command "$@" ;;
   *) cat >&2 <<'USAGE'
 usage: games <command>
   refresh                         mount every store in /data/stores and list its games
@@ -178,6 +177,7 @@ usage: games <command>
   resume <slug> <platform>        unfreeze a running game and show its second screen if chosen
   stop                            remove every running game container
   labels <platform>               print the labels of the platform's image as JSON
+  recipe_sum                      print the checksum every current platform image is labeled with
 USAGE
     exit 1 ;;
 esac
