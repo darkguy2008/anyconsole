@@ -3,7 +3,7 @@ set -eux
 
 ROOTFS=/rootfs
 LIBDIR=/usr/lib/x86_64-linux-gnu
-BINARIES="/usr/bin/wayland-info /usr/bin/grim /bin/busybox /usr/bin/mountpoint /usr/sbin/modprobe /bin/padd /bin/splash /bin/overlay /bin/compositor /sbin/sfdisk /sbin/mke2fs /sbin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd /usr/bin/udevadm /usr/sbin/mount.cifs /usr/bin/jq /usr/libexec/bluetooth/bluetoothd /usr/bin/dbus-daemon"
+BINARIES="/usr/bin/wayland-info /usr/bin/grim /usr/bin/socat /bin/busybox /usr/bin/mountpoint /usr/sbin/modprobe /bin/padd /bin/splash /bin/overlay /bin/compositor /sbin/sfdisk /sbin/mke2fs /sbin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd /usr/bin/udevadm /usr/sbin/mount.cifs /usr/bin/jq /usr/libexec/bluetooth/bluetoothd /usr/bin/dbus-daemon"
 GBM_BACKEND=$LIBDIR/gbm/dri_gbm.so
 EGL_VENDORS=/usr/share/glvnd/egl_vendor.d
 VULKAN_DRIVERS=/usr/share/vulkan/icd.d

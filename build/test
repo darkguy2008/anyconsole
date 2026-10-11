@@ -31,6 +31,9 @@ STRONG_RUMBLE_EFFECT=4
 REDREAM_ENGINE=$ENGINES/dreamcast/engine
 REDREAM_LICENSE=dreamcast/redream.key
 VIRGL_GPU=virtio_gpu
+PNG_SIGNATURE=89504e470d0a1a0a
+LAN_MASTER_ROM=$TEST_STORE/lan-master/nes/rom
+LAN_MASTER_HIDDEN_ROM=$LAN_MASTER_ROM.hidden
 AREA_SIZE='(.display.area_box | "\(.width)x\(.height)")'
 
 monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
@@ -41,6 +44,22 @@ guest() {
 }
 api() { curl -fsS -X "$1" --data-binary "${3:-}" "127.0.0.1:$API_TEST_PORT/cgi-bin/api/$2"; }
 state() { api GET state; }
+expect_reply() {
+  seconds=$1 status=$2 filter=$3
+  shift 3
+  code=$(jq -n '$ARGS.named' "$@" | curl -sS -m "$seconds" -X POST --data-binary @- -o $OUT/reply.json -w '%{http_code}' "127.0.0.1:$API_TEST_PORT/cgi-bin/api/action") || code=$?
+  if [ "$code" != "$status" ] || ! jq -e "$filter" $OUT/reply.json >/dev/null; then
+    log FAIL "$* did not answer $status with: $filter, got $code: $(cat $OUT/reply.json 2>&1)" >&2
+    diagnose
+    exit 1
+  fi
+  log ok "$filter"
+}
+restore_rom() { [ ! -d "$LAN_MASTER_HIDDEN_ROM" ] || mv "$LAN_MASTER_HIDDEN_ROM" "$LAN_MASTER_ROM"; }
+screenshot_is_png() {
+  curl -fsS -m $STEP_SECONDS -o $OUT/screenshot.png "127.0.0.1:$API_TEST_PORT/cgi-bin/api/screenshot" &&
+    [ "$(od -An -tx1 -N8 $OUT/screenshot.png | tr -d ' \n')" = $PNG_SIGNATURE ]
+}
 log() { echo "$1 +$(($(date +%s) - STARTED))s: $2"; }
 diagnose() {
   guest "cat $STATE_FILE /tmp/install.log; echo; docker ps -a --format '{{.Names}} {{.Status}}'; for container in \$(docker ps -q); do docker top \$container -eo pid,stat,wchan:30,args; done; for log in $LOG_DIR/*.log; do echo \"== \$log\"; tail -n 15 \"\$log\"; done" >&2 || true
@@ -104,7 +123,7 @@ start_vm() {
     "hostfwd=tcp:127.0.0.1:$SSH_TEST_PORT-:22,hostfwd=tcp:127.0.0.1:$API_TEST_PORT-:$API_PORT" \
     -device qemu-xhci -drive file=build/out/installer.img,format=raw,if=none,id=usb0 -device usb-storage,drive=usb0,id=stick \
     -device virtio-gpu-pci,xres=$SECOND_DISPLAY_WIDTH,yres=$SECOND_DISPLAY_HEIGHT -vnc :$VNC_TEST_DISPLAY -monitor unix:$OUT/monitor.sock,server,nowait -serial file:$OUT/serial.log &
-  trap 'monitor quit' EXIT
+  trap 'restore_rom; monitor quit' EXIT
 }
 
 install_from_stick() {
@@ -352,7 +371,7 @@ hotplug_wired_controller() {
   plug_fakepad usb
   expect "($(has_fakepad wired)) and (.controllers.bluetooth | not) and any(.notifications[]; . == \"Connected $FAKEPAD_NAME\")"
   wired=$(device_id "$FAKEPAD_NAME")
-  api POST login "1 $wired" >/dev/null
+  expect_reply $STEP_SECONDS 200 .ok --arg action login --arg arg 1 --arg device "$wired"
   expect "(.session.players[0].devices | index($wired) != null) and ([$(device_named "$FAKEPAD_NAME") | .pad] == [1])"
   tap guide
   expect '.guide and .screen == "guide"'
@@ -644,6 +663,27 @@ test_nes() {
   expect '.screen == "home"'
 }
 
+test_actions() {
+  expect_reply $INSTALL_SECONDS 200 ".ok and (.state | $(status_of lan-master/nes installed)) and any(.notifications[]; . == \"Installed LAN Master\")" \
+    --arg action install --arg game lan-master/nes
+  expect_reply $STEP_SECONDS 200 ".ok and .state.active == \"lan-master/nes\" and (.state | $(status_of lan-master/nes running))" \
+    --arg action play --arg game lan-master/nes
+  expect_reply $STEP_SECONDS 200 '.ok and .state.dashboard' --arg action dashboard
+  expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of lan-master/nes installed))" --arg action close --arg game lan-master/nes
+  expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of lan-master/nes ''))" --arg action uninstall --arg game lan-master/nes
+  mv "$LAN_MASTER_ROM" "$LAN_MASTER_HIDDEN_ROM"
+  wait_for $STEP_SECONDS guest "[ ! -d $STORE_MOUNTS/1/lan-master/nes/rom ]"
+  expect_reply $INSTALL_SECONDS 409 '(.ok | not) and (.error | startswith("Install failed: LAN Master: rsync")) and (.error as $error | any(.notifications[]; . == $error))' \
+    --arg action install --arg game lan-master/nes
+  restore_rom
+  expect "$(status_of lan-master/nes "")"
+  expect_reply $STEP_SECONDS 409 '(.ok | not) and (.error | startswith("no row on any screen matches"))' --arg action nope
+  wait_for $STEP_SECONDS screenshot_is_png
+  log ok "the screenshot is a PNG"
+  tap b
+  expect '.screen == "home"'
+}
+
 test_dreamcast() {
   build_fakepad
   install_and_play gravity-wave/dreamcast "Gravity Wave"
@@ -713,7 +753,7 @@ test_reboot() {
   expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
 }
 
-TESTS="capture display audio controllers nes dreamcast msdos stores gpu logout reboot"
+TESTS="capture display audio controllers nes actions dreamcast msdos stores gpu logout reboot"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in

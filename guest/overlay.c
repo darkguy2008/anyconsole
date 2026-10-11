@@ -41,7 +41,6 @@
 
 #define PARTIAL ".partial"
 #define STATE_PARTIAL STATE_FILE PARTIAL
-#define WAYLAND_SOCKET "wayland-0"
 #define PIPEWIRE_SOCKET "pipewire-0"
 #define SANDBOX_ENGINE "docker"
 #define FONT "Inter"
@@ -64,6 +63,10 @@
 #define STORES_MAX 32
 #define DEVICES_MAX 32
 #define DEPTH_MAX 4
+#define REQUESTS_MAX 16
+#define NO_ROW "no row on any screen matches "
+#define REQUEST_MAX PIPE_BUF
+#define JOB_FDS 2
 #define ROWS_MAX (GAMES_MAX + 1)
 #define TEXT_MAX 256
 #define GAME_KEY_MAX (2 * NAME_MAX + 2)
@@ -102,15 +105,25 @@
 #define ATTRACT_FADE_SECONDS 1.0
 
 enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, MICROPHONES, CONTROLLERS, CONTROLLER, SETTINGS, WHOIS, LOG_OUT, ATTRACT };
-static const struct { const char *name, *title; } screens[] = {
+enum plane { DASHBOARD_PLANE, GUIDE_PLANE, PICKER_PLANE };
+static const struct { const char *name, *title; enum plane plane; } screens[] = {
     [HOME] = {"home", "Home"}, [STORE] = {"store", "Store"}, [GAME] = {"game", ""},
-    [GUIDE] = {"guide", "Guide"}, [OUTPUTS] = {"outputs", "Output"}, [MICROPHONES] = {"microphones", "Microphone"},
-    [CONTROLLERS] = {"controllers", "Controllers"}, [CONTROLLER] = {"controller", ""}, [SETTINGS] = {"settings", "Settings"},
-    [WHOIS] = {"whois", ""}, [LOG_OUT] = {"logout", ""}, [ATTRACT] = {"attract", ""},
+    [GUIDE] = {"guide", "Guide", GUIDE_PLANE}, [OUTPUTS] = {"outputs", "Output", GUIDE_PLANE}, [MICROPHONES] = {"microphones", "Microphone", GUIDE_PLANE},
+    [CONTROLLERS] = {"controllers", "Controllers", GUIDE_PLANE}, [CONTROLLER] = {"controller", "", GUIDE_PLANE}, [SETTINGS] = {"settings", "Settings"},
+    [WHOIS] = {"whois", "", PICKER_PLANE}, [LOG_OUT] = {"logout", "", GUIDE_PLANE}, [ATTRACT] = {"attract", ""},
 };
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
               CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN };
+static const char *const actions[] = {
+    [NOTHING] = "nothing", [OPEN_STORE] = "open-store", [OPEN_SETTINGS] = "open-settings", [OPEN_GAME] = "open-game", [PLAY] = "play", [RESUME] = "resume",
+    [CLOSE] = "close", [UNINSTALL] = "uninstall", [INSTALL] = "install", [SHOW_DASHBOARD] = "dashboard", [VOLUME] = "volume", [OPEN_OUTPUTS] = "open-outputs",
+    [OPEN_MICROPHONES] = "open-microphones", [SET_DEVICE] = "set-device", [OPEN_CONTROLLERS] = "open-controllers", [PAIR] = "pair",
+    [OPEN_CONTROLLER] = "open-controller", [FORGET] = "forget", [RELOAD] = "reload", [RESTART] = "restart", [POWER_OFF] = "power-off",
+    [CHOOSE_DISPLAY] = "display", [CHOOSE_DISPLAY_MODE] = "display-mode", [APPLY_RESOLUTIONS] = "apply-resolutions", [CHOOSE_RESOLUTION] = "resolution",
+    [CHOOSE_SLEEP] = "sleep", [REWIND] = "rewind", [LOGIN] = "login", [EMULATE] = "emulate", [LOG_OUT_PLAYER] = "log-out",
+    [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen"};
+static const char *const criteria[] = {"action", "label", "value", "arg"};
 enum command { NONE, UP, DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
 static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [LEFT] = "left", [RIGHT] = "right",
                                        [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide"};
@@ -121,10 +134,10 @@ enum task { INSTALLING, UNINSTALLING, LAUNCHING };
 static const char *const tasks[] = {[INSTALLING] = "installing", [UNINSTALLING] = "uninstalling", [LAUNCHING] = "launching"};
 
 struct game {
-    char slug[NAME_MAX + 1], platform[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX];
+    char slug[NAME_MAX + 1], platform[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX], job_error[TEXT_MAX], error_line[TEXT_MAX];
     json_object *emulate;
-    int installed, commands, context, paused, closing, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown;
-    size_t job_length;
+    int installed, commands, context, paused, closing, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown, error_output;
+    size_t job_length, error_length;
     enum task task;
     unsigned stores;
     pid_t pid, job, freezer, probe;
@@ -137,6 +150,13 @@ struct member { int device, profile; };
 struct notification { char text[TEXT_MAX]; struct timespec expires; };
 struct window { struct zwlr_foreign_toplevel_handle_v1 *handle; struct ext_foreign_toplevel_handle_v1 *listed; char app_id[TEXT_MAX]; };
 struct buffer { struct wl_buffer *buffer; void *pixels; int busy; };
+struct request {
+    int fd, waiting, game;
+    size_t length;
+    ssize_t reply_length, sent;
+    char *reply, line[REQUEST_MAX], error[sizeof NO_ROW + REQUEST_MAX];
+    json_object *notifications, *wanted;
+};
 struct capture {
     struct ext_image_copy_capture_session_v1 *session;
     struct ext_image_copy_capture_frame_v1 *frame;
@@ -175,6 +195,8 @@ static cairo_surface_t *thumbnails[REWIND_STATES], *pending_screen, *current_scr
 static char newest_name[NAME_MAX + 1];
 static int pending_after;
 static struct capture capture;
+static struct request requests[REQUESTS_MAX];
+static int request_count;
 static int rewind_count, rewind_back;
 static char *written_state;
 static struct window windows[WINDOWS_MAX];
@@ -240,11 +262,11 @@ static void tell_padd(const char *format, ...) {
     if (fd >= 0) close(fd);
 }
 
-static pid_t spawn_reading(char *const argv[], int *output) {
+static pid_t spawn_reading(char *const argv[], int *output, int errors) {
     int pipe_ends[2];
     *output = -1;
     if (pipe2(pipe_ends, O_CLOEXEC) < 0) { perror(argv[0]); return -1; }
-    pid_t pid = spawn(argv, -1, pipe_ends[1], log_file);
+    pid_t pid = spawn(argv, -1, pipe_ends[1], errors);
     close(pipe_ends[1]);
     if (pid < 0) close(pipe_ends[0]);
     else *output = pipe_ends[0];
@@ -261,9 +283,22 @@ static void notify(const char *format, ...) {
     va_end(arguments);
     clock_gettime(CLOCK_MONOTONIC, &notification->expires);
     notification->expires.tv_sec += NOTIFICATION_SECONDS;
+    for (int i = 0; i < request_count; i++)
+        if (requests[i].waiting) json_object_array_add(requests[i].notifications, json_object_new_string(notification->text));
     struct itimerspec timer = {.it_value = notifications[0].expires};
     timerfd_settime(notification_timer, TFD_TIMER_ABSTIME, &timer, NULL);
     changed = 1;
+}
+
+static void fail(int index, const char *format, ...) {
+    char text[TEXT_MAX];
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(text, sizeof text, format, arguments);
+    va_end(arguments);
+    notify("%s", text);
+    for (int i = 0; i < request_count; i++)
+        if (requests[i].waiting && requests[i].game == index && !*requests[i].error) snprintf(requests[i].error, sizeof requests[i].error, "%s", text);
 }
 
 static void expire_notifications(void) {
@@ -575,7 +610,7 @@ static void start_monitor(void) {
     char socket_path[PATH_MAX];
     snprintf(socket_path, sizeof socket_path, "%s/" PIPEWIRE_SOCKET, getenv("XDG_RUNTIME_DIR"));
     if (monitor > 0 || access(socket_path, F_OK)) return;
-    monitor = spawn_reading((char *[]){"pw-dump", "--monitor", "--no-colors", NULL}, &monitor_output);
+    monitor = spawn_reading((char *[]){"pw-dump", "--monitor", "--no-colors", NULL}, &monitor_output, log_file);
     json_object_put(audio_nodes);
     json_object_put(audio_devices);
     audio_nodes = json_object_new_object();
@@ -897,7 +932,7 @@ static const char *mode_for(int profile, int game, json_object *device) {
 static const char *emulate_value(void) {
     static char value[TEXT_MAX];
     json_object *device = device_of(focus);
-    const char *chosen = string_at(emulate_of(profile_of(focus)), key(active), kind_of(focus));
+    const char *chosen = string_at(emulate_of(guide_profile), key(active), kind_of(focus));
     if (mode_index(device, chosen) >= 0) return mode_label(chosen);
     snprintf(value, sizeof value, "Default (%s)", mode_label(default_mode(active, device)));
     return value;
@@ -941,9 +976,9 @@ static void toggle_second_screen(void) {
 
 static void cycle_mode(int step) {
     json_object *device = device_of(focus), *modes = list_at(device, "modes");
-    int current = mode_index(device, string_at(emulate_of(profile_of(focus)), key(active), kind_of(focus))) + 1;
+    int current = mode_index(device, string_at(emulate_of(guide_profile), key(active), kind_of(focus))) + 1;
     int next = cycle(current, length_of(modes), step);
-    choose_mode(profile_of(focus), active, kind_of(focus), next ? json_object_get_string(json_object_array_get_idx(modes, next - 1)) : "");
+    choose_mode(guide_profile, active, kind_of(focus), next ? json_object_get_string(json_object_array_get_idx(modes, next - 1)) : "");
     apply_modes();
 }
 
@@ -992,7 +1027,7 @@ static int build(struct view *view) {
     case GUIDE:
         if (in_game()) count = add_row(count, SHOW_DASHBOARD, 0, "Dashboard", "");
         if (rewindable()) count = add_row(count, REWIND, 0, "Rewind", "%s", rewind_age());
-        if (in_game() && profile_of(focus)) count = add_row(count, EMULATE, 0, "Emulate", "%s", emulate_value());
+        if (in_game() && guide_profile) count = add_row(count, EMULATE, 0, "Emulate", "%s", emulate_value());
         if (in_game() && games[active].second_screen)
             count = add_row(count, SECOND_SCREEN, 0, "Second screen", "%s", games[active].screen_shown ? "Inset" : "Off");
         if (volume >= 0) snprintf(level, sizeof level, "%d%%", volume);
@@ -1016,7 +1051,7 @@ static int build(struct view *view) {
         }
         break;
     case LOG_OUT:
-        count = add_row(count, CONFIRM_LOG_OUT, 0, "Log out", "Closes %d games", owned_games(profile_of(focus)));
+        count = add_row(count, CONFIRM_LOG_OUT, 0, "Log out", "Closes %d games", owned_games(guide_profile));
         break;
     case ATTRACT:
         break;
@@ -1055,8 +1090,8 @@ static const char *title(struct view *view) {
     if (view->screen == GAME) return games[view->game].title;
     if (view->screen == CONTROLLER) return controller_name();
     if (view->screen == WHOIS) return player_count ? "Who is using this controller?" : "Who's playing?";
-    if (view->screen == LOG_OUT) snprintf(text, sizeof text, "Log out %s", profile_name(profile_of(focus)));
-    else if (view->screen == GUIDE && profile_of(focus)) snprintf(text, sizeof text, "%s  \u00b7  Pad %d", profile_name(profile_of(focus)), seat_of(profile_of(focus)) + 1);
+    if (view->screen == LOG_OUT) snprintf(text, sizeof text, "Log out %s", profile_name(guide_profile));
+    else if (view->screen == GUIDE && guide_profile) snprintf(text, sizeof text, "%s  \u00b7  Pad %d", profile_name(guide_profile), seat_of(guide_profile) + 1);
     else return screens[view->screen].title;
     return text;
 }
@@ -1076,27 +1111,46 @@ static void push(enum screen screen, int game) {
     } else if (dashboard_depth < DEPTH_MAX) dashboard[dashboard_depth++] = (struct view){.screen = screen, .game = game};
 }
 
+static void select_row(struct view *view, int selected) {
+    view->selected = selected;
+    view->action = rows[selected].action;
+    view->arg = rows[selected].arg;
+}
+
 static void show_game(int index) {
     if (game_window(index)) zwlr_foreign_toplevel_handle_v1_activate(game_window(index)->handle, seat);
 }
 
 static int launching(void) { return active >= 0 && !game_window(active); }
 
-static int listen_socket(int index, char *directory, size_t size) {
+static int bind_socket(const char *path, int flags) {
     struct sockaddr_un address = {.sun_family = AF_UNIX};
+    int fd = -1;
+    if (snprintf(address.sun_path, sizeof address.sun_path, "%s", path) >= (int)sizeof address.sun_path) {
+        errno = ENAMETOOLONG;
+    } else {
+        unlink(path);
+        fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | flags, 0);
+        if (fd >= 0 && (bind(fd, (struct sockaddr *)&address, sizeof address) < 0 || listen(fd, SOMAXCONN) < 0)) {
+            close(fd);
+            fd = -1;
+        }
+    }
+    if (fd < 0) perror(path);
+    return fd;
+}
+
+static int listen_socket(int index, char *directory, size_t size) {
+    char path[PATH_MAX + sizeof WAYLAND_SOCKET];
     int closer[2];
     snprintf(directory, size, SOCKETS_DIR "/%s", name(index));
-    if (snprintf(address.sun_path, sizeof address.sun_path, "%s/" WAYLAND_SOCKET, directory) >= (int)sizeof address.sun_path) {
-        fprintf(stderr, "%s: socket path too long\n", directory);
-        return 0;
-    }
+    snprintf(path, sizeof path, "%s/" WAYLAND_SOCKET, directory);
     mkdir(directory, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
-    unlink(address.sun_path);
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0 || bind(fd, (struct sockaddr *)&address, sizeof address) < 0 || listen(fd, SOMAXCONN) < 0 ||
-        pipe2(closer, O_CLOEXEC) < 0) {
-        perror(address.sun_path);
-        if (fd >= 0) close(fd);
+    int fd = bind_socket(path, 0);
+    if (fd < 0) return 0;
+    if (pipe2(closer, O_CLOEXEC) < 0) {
+        perror(path);
+        close(fd);
         return 0;
     }
     struct wp_security_context_v1 *context = wp_security_context_manager_v1_create_listener(security, fd, closer[0]);
@@ -1142,7 +1196,7 @@ static void ended(int index, int status) {
     snprintf(path, sizeof path, "%s/" WAYLAND_SOCKET, directory);
     unlink(path);
     rmdir(directory);
-    if (!game->closing && status) notify("%s stopped", game->title);
+    if (!game->closing && status) fail(index, "%s stopped", game->title);
     game->pid = 0;
     remove_rewinds(index);
     if (active == index) active = -1;
@@ -1192,7 +1246,6 @@ static void end_capture(int captured) {
         cairo_surface_destroy(current_screen);
         current_screen = cairo_surface_reference(screen);
         guide_shown = 1;
-        changed = 1;
     }
     cairo_surface_destroy(screen);
     if (capture.frame) ext_image_copy_capture_frame_v1_destroy(capture.frame);
@@ -1201,6 +1254,7 @@ static void end_capture(int captured) {
     ext_image_copy_capture_session_v1_destroy(capture.session);
     wl_array_release(&capture.modifiers);
     capture = (struct capture){0};
+    changed = 1;
 }
 
 static struct wl_shm_pool *create_pool(size_t size, void **pixels) {
@@ -1334,7 +1388,7 @@ static void freeze(int index, int pause) {
 
 static void probe_labels(int index) {
     struct game *game = &games[index];
-    game->probe = spawn_reading((char *[]){"games", "labels", game->platform, NULL}, &game->probe_output);
+    game->probe = spawn_reading((char *[]){"games", "labels", game->platform, NULL}, &game->probe_output, log_file);
     if (game->probe < 0) game->probe = 0;
 }
 
@@ -1373,12 +1427,13 @@ static void play(int index) {
     char directory[PATH_MAX], states[PATH_MAX], owner[TEXT_MAX];
     int commands[2];
     struct game *game = &games[index];
-    if (!listen_socket(index, directory, sizeof directory)) { notify("Could not start %s", game->title); return; }
-    if (pipe2(commands, O_CLOEXEC) < 0) { perror("pipe"); close(game->context); return; }
+    if (!listen_socket(index, directory, sizeof directory)) { fail(index, "Could not start %s", game->title); return; }
+    if (pipe2(commands, O_CLOEXEC) < 0) { perror("pipe"); close(game->context); fail(index, "Could not start %s", game->title); return; }
     int output = game_log(index);
     prepare_rewinds(index, states);
     memset(guide_depths, 0, sizeof guide_depths);
     game->rewinds = 0;
+    game->paused = game->closing = 0;
     show_game(index);
     snprintf(owner, sizeof owner, "%d", game->owner);
     game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, states, owner, NULL}, commands[0], output, output);
@@ -1390,7 +1445,6 @@ static void play(int index) {
         ended(index, 1);
         return;
     }
-    game->paused = game->closing = 0;
     resume(index);
 }
 
@@ -1402,8 +1456,14 @@ static void close_game(int index) {
 
 static void start_job(int index, enum task task, char *const argv[]) {
     struct game *game = &games[index];
-    game->job = spawn_reading(argv, &game->job_output);
-    if (game->job < 0) { game->job = 0; return; }
+    int errors[2];
+    if (pipe2(errors, O_CLOEXEC | O_NONBLOCK) < 0) { perror(argv[0]); fail(index, "Could not start %s", game->title); return; }
+    game->job = spawn_reading(argv, &game->job_output, errors[1]);
+    close(errors[1]);
+    if (game->job < 0) { game->job = 0; close(errors[0]); fail(index, "Could not start %s", game->title); return; }
+    game->error_output = errors[0];
+    game->error_length = 0;
+    *game->job_error = '\0';
     game->task = task;
     game->percent = -1;
     game->job_length = 0;
@@ -1415,9 +1475,9 @@ static void launch(int index) {
     if (games[index].job) resume(index);
 }
 
-static void read_lines(int fd, char *buffer, size_t size, size_t *length, void (*handle_line)(char *, void *), void *context) {
+static ssize_t read_lines(int fd, char *buffer, size_t size, size_t *length, void (*handle_line)(char *, void *), void *context) {
     ssize_t count = read(fd, buffer + *length, size - *length);
-    if (count <= 0) return;
+    if (count <= 0) return count;
     *length += count;
     char *start = buffer;
     for (char *end; (end = memchr(start, '\n', buffer + *length - start)); start = end + 1) {
@@ -1427,6 +1487,7 @@ static void read_lines(int fd, char *buffer, size_t size, size_t *length, void (
     *length -= start - buffer;
     memmove(buffer, start, *length);
     if (*length == size) *length = 0;
+    return count;
 }
 
 static void read_step(char *line, void *context) {
@@ -1444,18 +1505,33 @@ static void read_job(int index) {
     read_lines(game->job_output, game->job_line, sizeof game->job_line, &game->job_length, read_step, game);
 }
 
+static void read_error(char *line, void *context) {
+    struct game *game = context;
+    dprintf(log_file, "%s\n", line);
+    if (*line) snprintf(game->job_error, sizeof game->job_error, "%s", line);
+}
+
+static ssize_t read_errors(int index) {
+    struct game *game = &games[index];
+    return read_lines(game->error_output, game->error_line, sizeof game->error_line, &game->error_length, read_error, game);
+}
+
 static void job_done(int index, int status) {
     struct game *game = &games[index];
+    char detail[TEXT_MAX + 2] = "";
+    while (read_errors(index) > 0);
+    close(game->error_output);
     close(game->job_output);
     game->job = 0;
+    if (status && *game->job_error) snprintf(detail, sizeof detail, ": %s", game->job_error);
     if (game->task == LAUNCHING) {
-        if (status) notify("Could not start %s", game->title);
-        else if (seat_of(game->owner) >= 0) play(index);
+        if (!status && seat_of(game->owner) >= 0) { play(index); return; }
+        fail(index, "Could not start %s%s", game->title, detail);
         return;
     }
     rescan_installed();
-    if (game->task == INSTALLING) notify(status ? "Install failed: %s" : "Installed %s", game->title);
-    else notify(status ? "Uninstall failed: %s" : "Uninstalled %s", game->title);
+    if (!status) notify(game->task == INSTALLING ? "Installed %s" : "Uninstalled %s", game->title);
+    else fail(index, game->task == INSTALLING ? "Install failed: %s%s" : "Uninstall failed: %s%s", game->title, detail);
 }
 
 static void save_session(void) {
@@ -1534,7 +1610,7 @@ static void logout(int profile, int device) {
     if (!player_count && device != NO_DEVICE) open_picker(device);
 }
 
-static void act(struct row *row, int device) {
+static void act(struct row *row, int profile) {
     char id[TEXT_MAX], store[TEXT_MAX];
     struct view *view = top();
     struct game *game = view->game >= 0 ? &games[view->game] : NULL;
@@ -1543,10 +1619,10 @@ static void act(struct row *row, int device) {
     case REWIND: load_rewind(); break;
     case LOGIN: login(row->arg, picker); break;
     case LOG_OUT_PLAYER:
-        if (owned_games(profile_of(focus))) push(LOG_OUT, -1);
-        else logout(profile_of(focus), focus);
+        if (owned_games(guide_profile)) push(LOG_OUT, -1);
+        else logout(guide_profile, focus);
         break;
-    case CONFIRM_LOG_OUT: logout(profile_of(focus), focus); break;
+    case CONFIRM_LOG_OUT: logout(guide_profile, focus); break;
     case OPEN_STORE: push(STORE, -1); refresh(); break;
     case OPEN_SETTINGS:
         discard_staged();
@@ -1558,7 +1634,7 @@ static void act(struct row *row, int device) {
         break;
     case OPEN_GAME: push(GAME, row->arg); break;
     case PLAY:
-        game->owner = profile_of(device);
+        game->owner = profile;
         launch(view->game);
         break;
     case RESUME: resume(view->game); break;
@@ -1623,18 +1699,22 @@ static void open_guide(void) {
     capture.current = 1;
 }
 
+static void enter_guide(int profile, int device, int reset) {
+    guide_profile = profile;
+    if (reset || !guide_depths[profile]) {
+        guides[profile][0] = (struct view){.screen = GUIDE, .game = -1, .action = REWIND};
+        guide_depths[profile] = 1;
+    }
+    focus = device;
+    if (!guide_shown) open_guide();
+}
+
 static void toggle_guide(int device) {
     if (guide_shown && focus == device) {
         guide_shown = 0;
         return;
     }
-    guide_profile = profile_of(device);
-    if (!guide_depths[guide_profile]) {
-        guides[guide_profile][0] = (struct view){.screen = GUIDE, .game = -1, .action = REWIND};
-        guide_depths[guide_profile] = 1;
-    }
-    focus = device;
-    if (!guide_shown) open_guide();
+    enter_guide(profile_of(device), device, 0);
 }
 
 static void navigate(int device, enum command command) {
@@ -1645,7 +1725,7 @@ static void navigate(int device, enum command command) {
     case UP: if (view->selected > 0) view->selected--; break;
     case DOWN: if (view->selected < count - 1) view->selected++; break;
     case LEFT: case RIGHT: if (row) adjust(row->action, command == LEFT ? -1 : 1); break;
-    case CONFIRM: if (row) act(row, device); break;
+    case CONFIRM: if (row) act(row, profile_of(device)); break;
     case BACK: case GUIDE_BUTTON:
         if (picker != NO_DEVICE) picker = NO_DEVICE;
         else if (guide_shown && guide_depths[guide_profile] > 1) guide_depths[guide_profile]--;
@@ -1654,10 +1734,7 @@ static void navigate(int device, enum command command) {
         break;
     default: break;
     }
-    if (count && (command == UP || command == DOWN)) {
-        view->action = rows[view->selected].action;
-        view->arg = rows[view->selected].arg;
-    }
+    if (count && (command == UP || command == DOWN)) select_row(view, view->selected);
     if (command != UP && command != DOWN) changed = 1;
     else changed |= view->selected != selected;
 }
@@ -1979,7 +2056,7 @@ static void draw(int top_count) {
     wl_surface_commit(surface);
 }
 
-static char *serialize_state(int count) {
+static json_object *state_object(int count) {
     json_object *state = json_object_new_object(), *list = json_object_new_array(), *audio = json_object_new_object();
     json_object *history = json_object_new_object();
     struct view *view = top();
@@ -1987,6 +2064,7 @@ static char *serialize_state(int count) {
         json_object *row = json_object_new_object();
         json_object_object_add(row, "label", json_object_new_string(rows[i].label));
         json_object_object_add(row, "value", json_object_new_string(rows[i].value));
+        json_object_object_add(row, "action", json_object_new_string(actions[rows[i].action]));
         json_object_array_add(list, row);
     }
     json_object *session = json_object_new_object(), *entries = json_object_new_array();
@@ -2046,9 +2124,7 @@ static char *serialize_state(int count) {
     json_object_object_add(state, "settings", json_object_get(settings));
     json_object_object_add(state, "display", json_object_get(display_state));
     json_object_object_add(state, "controllers", json_object_get(controllers_state));
-    char *serialized = strdup(json_object_to_json_string_ext(state, JSON_C_TO_STRING_PLAIN));
-    json_object_put(state);
-    return serialized;
+    return state;
 }
 
 static void write_state(char *serialized) {
@@ -2082,6 +2158,45 @@ static void apply_governor(void) {
     if (running == boosted) return;
     boosted = running;
     set_governor(running ? BOOST_GOVERNOR : boot_governor);
+}
+
+static int settled(const struct request *request) {
+    if (capture.current || refresher > 0) return 0;
+    if (request->game < 0) return 1;
+    const struct game *game = &games[request->game];
+    return !game->job && !game->freezer && !(game->pid && (!game_window(request->game) || game->closing));
+}
+
+static void remove_request(int index) {
+    close(requests[index].fd);
+    json_object_put(requests[index].notifications);
+    json_object_put(requests[index].wanted);
+    free(requests[index].reply);
+    requests[index] = requests[--request_count];
+}
+
+static int flush_reply(struct request *request) {
+    while (request->sent < request->reply_length) {
+        ssize_t count = write(request->fd, request->reply + request->sent, request->reply_length - request->sent);
+        if (count < 0) return errno != EAGAIN && errno != EINTR;
+        request->sent += count;
+    }
+    return 1;
+}
+
+static void send_replies(json_object *state) {
+    for (int i = request_count - 1; i >= 0; i--) {
+        struct request *request = &requests[i];
+        if (!request->waiting || request->reply || !(*request->error || settled(request))) continue;
+        json_object *reply = json_object_new_object();
+        json_object_object_add(reply, "ok", json_object_new_boolean(!*request->error));
+        if (*request->error) json_object_object_add(reply, "error", json_object_new_string(request->error));
+        json_object_object_add(reply, "notifications", json_object_get(request->notifications));
+        json_object_object_add(reply, "state", json_object_get(state));
+        request->reply_length = asprintf(&request->reply, "%s\n", json_object_to_json_string_ext(reply, JSON_C_TO_STRING_PLAIN));
+        json_object_put(reply);
+        if (flush_reply(request)) remove_request(i);
+    }
 }
 
 static void settle(void) {
@@ -2118,10 +2233,13 @@ static void settle(void) {
         previewed = picker;
         previewed_seat = seat;
     }
-    char *serialized = serialize_state(count);
+    json_object *state = state_object(count);
+    char *serialized = strdup(json_object_to_json_string_ext(state, JSON_C_TO_STRING_PLAIN));
     if (width && (draw_pending || !written_state || strcmp(serialized, written_state))) draw(count);
     if (written_state && !strcmp(serialized, written_state)) free(serialized);
     else write_state(serialized);
+    send_replies(state);
+    json_object_put(state);
 }
 
 static void reap(void) {
@@ -2304,14 +2422,111 @@ static void connected(int device) {
     if (picker == NO_DEVICE && (int_at(entry, "bluetooth") || (player_count && !int_at(entry, "guide")))) open_picker(device);
 }
 
+static void refuse(struct request *request, const char *format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(request->error, sizeof request->error, format, arguments);
+    va_end(arguments);
+}
+
+static int matches(json_object *wanted, const struct row *row) {
+    char arg[TEXT_MAX];
+    snprintf(arg, sizeof arg, "%d", row->arg);
+    const char *actual[] = {actions[row->action], row->label, row->value, arg};
+    for (unsigned i = 0; i < sizeof criteria / sizeof *criteria; i++)
+        if (json_object_object_get_ex(wanted, criteria[i], NULL) && strcmp(string_at(wanted, criteria[i], NULL), actual[i])) return 0;
+    return 1;
+}
+
+static int find_row(json_object *wanted, struct view *view) {
+    int count = build(view);
+    for (int i = 0; i < count; i++)
+        if (matches(wanted, &rows[i])) return i;
+    return -1;
+}
+
+static void open_screen(enum screen screen, int game, int profile, int device) {
+    picker = NO_DEVICE;
+    switch (screens[screen].plane) {
+    case PICKER_PLANE:
+        if (device != NO_DEVICE) open_picker(device);
+        break;
+    case DASHBOARD_PLANE:
+        guide_shown = 0;
+        dashboard_open = 1;
+        dashboard_depth = 1;
+        if (screen != HOME) push(screen, game);
+        break;
+    case GUIDE_PLANE:
+        for (int i = 0; device == NO_DEVICE && i < member_count; i++)
+            if (members[i].profile == profile) device = members[i].device;
+        enter_guide(profile, device, 1);
+        if (screen != GUIDE) guides[profile][guide_depths[profile]++] = (struct view){.screen = screen, .game = game};
+        break;
+    }
+}
+
+static void run_request(struct request *request, json_object *wanted) {
+    int game = -1, given = 0, index;
+    for (unsigned i = 0; i < sizeof criteria / sizeof *criteria; i++) given += json_object_object_get_ex(wanted, criteria[i], NULL);
+    int profile = json_object_object_get_ex(wanted, "profile", NULL) ? int_at(wanted, "profile") : guide_shown ? guide_profile : player_count ? players[0] : 0;
+    struct view *view = top(), candidate;
+    enum screen found = view->screen;
+    if (!given) { refuse(request, "give at least one of action, label, value or arg"); return; }
+    if (profile < 0 || profile > PROFILES) { refuse(request, "no such profile %d", profile); return; }
+    if (json_object_object_get_ex(wanted, "game", NULL)) {
+        for (int i = 0; game < 0 && i < game_count; i++)
+            if (!strcmp(key(i), string_at(wanted, "game", NULL))) game = i;
+        if (game < 0) { refuse(request, "unknown game %s", string_at(wanted, "game", NULL)); return; }
+    }
+    index = game >= 0 && view->game >= 0 && view->game != game ? -1 : find_row(wanted, view);
+    for (enum screen screen = HOME; index < 0 && screen < sizeof screens / sizeof *screens; screen++) {
+        if (screen == GAME && game < 0) continue;
+        candidate = (struct view){.screen = screen, .game = game};
+        index = find_row(wanted, &candidate);
+        if (index < 0) continue;
+        found = screen;
+        open_screen(screen, game, profile, int_at(wanted, "device"));
+        if (capture.current) {
+            request->wanted = json_object_get(wanted);
+            return;
+        }
+    }
+    if (index < 0) { refuse(request, NO_ROW "%s", json_object_to_json_string_ext(wanted, JSON_C_TO_STRING_PLAIN)); return; }
+    view = top();
+    if (view->screen == found) select_row(view, index);
+    request->game = view->game;
+    if (json_object_object_get_ex(wanted, "step", NULL)) adjust(rows[index].action, int_at(wanted, "step"));
+    else act(&rows[index], profile);
+    if (request->game < 0) request->game = active;
+}
+
+static void handle_request(char *line, void *context) {
+    struct request *request = context;
+    if (request->waiting) return;
+    json_object *wanted = json_tokener_parse(line);
+    request->waiting = 1;
+    request->notifications = json_object_new_array();
+    request->game = -1;
+    if (json_object_is_type(wanted, json_type_object)) run_request(request, wanted);
+    else refuse(request, "request is not a JSON object");
+    json_object_put(wanted);
+    changed = 1;
+}
+
+static void accept_requests(int listener) {
+    for (int fd; (fd = accept4(listener, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC)) >= 0;) {
+        if (request_count == REQUESTS_MAX) close(fd);
+        else requests[request_count++] = (struct request){.fd = fd, .game = -1};
+    }
+}
+
 static void handle_message(char *line, void *context) {
     char name[WORD_MAX + 1];
-    int first, second = NO_DEVICE, value;
+    int first, value;
     (void)context;
     if (!strncmp(line, NOTIFY_PREFIX, strlen(NOTIFY_PREFIX))) notify("%s", line + strlen(NOTIFY_PREFIX));
     else if (!strcmp(line, "reset")) reset_devices();
-    else if (sscanf(line, "logout %d", &first) == 1) logout(first, NO_DEVICE);
-    else if (sscanf(line, "login %d %d", &first, &second) >= 1) login(first, second);
     else if (sscanf(line, "connect %d", &first) == 1) connected(first);
     else if (sscanf(line, "press %d %" STRINGIFY(WORD_MAX) "s %d", &first, name, &value) == 3) {
         know(first);
@@ -2337,9 +2552,9 @@ static int numbers(const char *list, int *parsed, int max) {
 }
 
 int main(void) {
-    enum { WAYLAND, CHANGES, SIGNALS, REPEAT, NOTIFICATIONS, MESSAGES, SAVE, MONITOR, FIXED };
-    struct pollfd watched[FIXED + GAMES_MAX];
-    int jobs[GAMES_MAX];
+    enum { WAYLAND, CHANGES, SIGNALS, REPEAT, NOTIFICATIONS, MESSAGES, SAVE, MONITOR, LISTENER, FIXED };
+    struct pollfd watched[FIXED + JOB_FDS * GAMES_MAX + REQUESTS_MAX];
+    int jobs[GAMES_MAX], served[REQUESTS_MAX];
     char stores_directory[PATH_MAX], display_directory[PATH_MAX], settings_directory[PATH_MAX], controllers_directory[PATH_MAX];
     sigset_t signals;
     signal(SIGPIPE, SIG_IGN);
@@ -2378,6 +2593,7 @@ int main(void) {
     watched[NOTIFICATIONS] = (struct pollfd){.fd = notification_timer, .events = POLLIN};
     watched[MESSAGES] = (struct pollfd){.fd = open(OVERLAY_FIFO, O_RDWR | O_NONBLOCK | O_CLOEXEC), .events = POLLIN};
     watched[SAVE] = (struct pollfd){.fd = save_timer, .events = POLLIN};
+    watched[LISTENER] = (struct pollfd){.fd = bind_socket(OVERLAY_SOCKET, SOCK_NONBLOCK), .events = POLLIN};
     splash = cairo_image_surface_create_from_png(SPLASH_IMAGE);
     read_stores();
     read_settings();
@@ -2390,12 +2606,18 @@ int main(void) {
     start_monitor();
     settle();
     for (;;) {
-        int count = FIXED, job_count = 0;
+        int count = FIXED, job_count = 0, served_count = 0;
         watched[MONITOR] = (struct pollfd){.fd = monitor > 0 ? monitor_output : -1, .events = POLLIN};
         for (int i = 0; i < game_count; i++) {
             if (!games[i].job) continue;
             jobs[job_count++] = i;
             watched[count++] = (struct pollfd){.fd = games[i].job_output, .events = POLLIN};
+            watched[count++] = (struct pollfd){.fd = games[i].error_output, .events = POLLIN};
+        }
+        for (int i = 0; i < request_count; i++) {
+            if (requests[i].waiting && !requests[i].reply) continue;
+            served[served_count++] = i;
+            watched[count++] = (struct pollfd){.fd = requests[i].fd, .events = requests[i].reply ? POLLOUT : POLLIN};
         }
         while (wl_display_prepare_read(display)) wl_display_dispatch_pending(display);
         wl_display_flush(display);
@@ -2415,8 +2637,25 @@ int main(void) {
         if (watched[MESSAGES].revents) read_messages(watched[MESSAGES].fd);
         if (watched[SAVE].revents && read(save_timer, &expirations, sizeof expirations) > 0) sample_screen();
         if (watched[MONITOR].revents) read_monitor();
-        for (int i = 0; i < job_count; i++)
-            if (watched[FIXED + i].revents) read_job(jobs[i]);
+        for (int i = 0; i < job_count; i++) {
+            if (watched[FIXED + JOB_FDS * i].revents) read_job(jobs[i]);
+            if (watched[FIXED + JOB_FDS * i + 1].revents) read_errors(jobs[i]);
+        }
+        if (watched[LISTENER].revents) accept_requests(watched[LISTENER].fd);
+        for (int i = served_count - 1; i >= 0; i--) {
+            struct request *request = &requests[served[i]];
+            if (!watched[FIXED + JOB_FDS * job_count + i].revents) continue;
+            if (request->reply ? flush_reply(request) : read_lines(request->fd, request->line, sizeof request->line, &request->length, handle_request, request) <= 0)
+                remove_request(served[i]);
+        }
+        for (int i = 0; !capture.current && i < request_count; i++) {
+            json_object *wanted = requests[i].wanted;
+            if (!wanted) continue;
+            requests[i].wanted = NULL;
+            run_request(&requests[i], wanted);
+            json_object_put(wanted);
+            changed = 1;
+        }
         settle();
     }
 }
