@@ -179,6 +179,10 @@ COPY asound.conf /etc/asound.conf
 COPY joystick-guid /usr/local/bin/
 VOLUME /engine
 
+FROM x11 AS x11-rewind
+RUN apt-get update && apt-get install -y --no-install-recommends inotify-tools && rm -rf /var/lib/apt/lists/*
+COPY rewind /usr/local/bin/
+
 FROM debian:trixie-slim AS fetch
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates libxml2-utils 7zip && rm -rf /var/lib/apt/lists/*
 COPY appimage github-release /usr/local/bin/
@@ -191,11 +195,20 @@ FROM fetch AS redream-download
 COPY --from=redream-release /url /url
 RUN mkdir /redream && curl -fsSL "$(cat /url)" | tar xz -C /redream
 
+FROM debian:trixie-slim AS redream-commands
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev python3-capstone python3-pyelftools && rm -rf /var/lib/apt/lists/*
+COPY --from=redream-download /redream/redream /redream
+COPY redream/addresses redream/commands.c /
+RUN /addresses /redream > /addresses.flags \
+ && gcc -O2 -Wall -Wextra -Werror -shared -fPIC $(cat /addresses.flags) -o /commands.so /commands.c
+
 # dreamcast Sega Dreamcast
-FROM x11 AS dreamcast
-LABEL anyconsole.launch="m3u gdi chd cdi cue" anyconsole.bios="/bios"
+FROM x11-rewind AS dreamcast
+LABEL anyconsole.launch="m3u gdi chd cdi cue" anyconsole.bios="/bios" anyconsole.rewind="true"
 COPY --from=redream-download /redream/redream /opt/redream/redream
+COPY --from=redream-commands /commands.so /opt/redream/
 COPY redream/ /opt/redream/
+ENV REDREAM_COMMANDS=/tmp/redream-commands
 ENTRYPOINT ["/opt/redream/launch"]
 
 FROM fetch AS cemu-release
@@ -241,8 +254,8 @@ COPY --from=pcsx2-release /url /url
 RUN appimage /pcsx2
 
 # ps2 PlayStation 2
-FROM x11 AS ps2
-RUN apt-get update && apt-get install -y --no-install-recommends libfontconfig1 libfreetype6 libharfbuzz0b libcom-err2 libgpg-error0 libsm6 libice6 matchbox-window-manager inotify-tools && rm -rf /var/lib/apt/lists/*
+FROM x11-rewind AS ps2
+RUN apt-get update && apt-get install -y --no-install-recommends libfontconfig1 libfreetype6 libharfbuzz0b libcom-err2 libgpg-error0 libsm6 libice6 matchbox-window-manager && rm -rf /var/lib/apt/lists/*
 LABEL anyconsole.launch="chd iso cso" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true"
 COPY --from=pcsx2-download /pcsx2 /opt/pcsx2
 COPY pcsx2/ /opt/pcsx2/

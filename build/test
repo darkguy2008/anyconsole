@@ -29,6 +29,7 @@ LOW_BATTERY=10
 DEFAULT_SLEEP=${SLEEP_MINUTES%% *}
 STRONG_RUMBLE_EFFECT=4
 REDREAM_ENGINE=$ENGINES/dreamcast/engine
+REDREAM_LICENSE=dreamcast/redream.key
 VIRGL_GPU=virtio_gpu
 AREA_SIZE='(.display.area_box | "\(.width)x\(.height)")'
 
@@ -90,6 +91,7 @@ choose() {
   tap a
 }
 snapshot() { wait_for $STEP_SECONDS gvnccapture "127.0.0.1:$VNC_TEST_DISPLAY" "$OUT/$1.png"; }
+screen_moves() { gvnccapture "127.0.0.1:$VNC_TEST_DISPLAY" "$OUT/before.png" && gvnccapture "127.0.0.1:$VNC_TEST_DISPLAY" "$OUT/after.png" && ! cmp -s "$OUT/before.png" "$OUT/after.png"; }
 booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /data/boots) = $1 ] && pidof overlay && [ -s $STATE_FILE ]"; }
 
 start_vm() {
@@ -505,6 +507,30 @@ redream_gave_second_pad() {
   [ -n "$port" ] && guest "grep -qF '$port name=$PAD_NAME #2' $REDREAM_ENGINE/redream.log"
 }
 
+push_test_bios() { [ ! -d "$TEST_BIOS" ] || tar -C "$TEST_BIOS" -c . | guest "mkdir -p $BIOS_DIR && tar -C $BIOS_DIR -x"; }
+
+redream_preloaded() { guest "tr '\\0' '\\n' < /proc/\$(pidof redream)/environ | grep -q '^LD_PRELOAD='"; }
+redream_read_loaded_state() { guest "for state in $REWIND_DIR/$(game_name "$1")/states/*.2.sav; do [ \"\$(stat -c %x \"\$state\")\" \\> \"\$(stat -c %y \"\$state\")\" ] || exit 1; done"; }
+
+rewind_dreamcast() {
+  if [ ! -f "$TEST_BIOS/$REDREAM_LICENSE" ]; then
+    log skip "rewinding $1: no redream premium key at $TEST_BIOS/$REDREAM_LICENSE on the build host"
+    return
+  fi
+  wait_for $STEP_SECONDS redream_preloaded
+  expect '.rewind.states >= 1'
+  open_rewind_row "$1"
+  tap dpleft
+  expect '.rewind.back == 1'
+  tap a
+  expect "(.guide | not) and .rewind.back == 0 and ($(status_of "$1" running))"
+  wait_for $STEP_SECONDS redream_read_loaded_state "$1"
+  guest "! grep -q '^\[[A-Z]*\] *SAVE ' $(game_log "$1")" || { log FAIL "redream logged a save state error" >&2; diagnose; exit 1; }
+  wait_for $STEP_SECONDS screen_moves
+  expect "$(status_of "$1" running)"
+  log ok "redream saved a state, read it back for rewind and kept running"
+}
+
 test_logout() {
   ensure_installed alter-ego/nes "Alter Ego"
   choose "Alter Ego"
@@ -628,6 +654,7 @@ test_dreamcast() {
   send "1 righty $AXIS_CENTER"
   log ok "the manifest's pad map moves with the left stick and aims with the right"
   second_player_joins_and_leaves gravity-wave/dreamcast redream_gave_second_pad
+  rewind_dreamcast gravity-wave/dreamcast
   close_game gravity-wave/dreamcast "Gravity Wave"
 }
 
@@ -698,6 +725,7 @@ done
 start_vm
 install_from_stick
 wait_for $BOOT_SECONDS booted 1
+push_test_bios
 sign_in_from_attract
 expect ".screen == \"home\" and .dashboard and (.rows | length) == 2 and (.display.displays | length) == 2 and .display.canvas == $AREA_SIZE and .display.filter == \"nearest\""
 api POST stores "$TEST_STORE_URL" >/dev/null

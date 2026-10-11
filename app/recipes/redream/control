@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+printf '%s %s\n' "$1" "$2" > "$REDREAM_COMMANDS"

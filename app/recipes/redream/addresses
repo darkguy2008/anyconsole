@@ -1,0 +1,230 @@
+#!/usr/bin/python3
+import bisect
+import sys
+
+from capstone import CS_ARCH_X86, CS_MODE_64, CS_OP_IMM, CS_OP_MEM, CS_OP_REG, Cs
+from capstone.x86 import X86_REG_RDI, X86_REG_RIP, X86_REG_RSP
+from elftools.elf.elffile import ELFFile
+
+STATE_MAGIC = 0x55E63B88C230E77F
+STATE_TAG = 0x20444552
+JUMP_TABLE_ENTRY_SIZE = 4
+CASE_INSTRUCTIONS = 2
+MESSAGE_FIELD_SIZE = 4
+MESSAGE_FIELD_STRIDE = 8
+
+
+def fail(message):
+    sys.exit(f"{sys.argv[1]}: {message}")
+
+
+def unique(found, what):
+    if len(found) != 1:
+        fail(f"{what} not uniquely identified: {sorted(hex(address) for address in found)}")
+    return next(iter(found))
+
+
+with open(sys.argv[1], "rb") as binary:
+    elf = ELFFile(binary)
+    text = elf.get_section_by_name(".text")
+    rodata = elf.get_section_by_name(".rodata")
+    code, text_start, text_end = text.data(), text["sh_addr"], text["sh_addr"] + text["sh_size"]
+    constants, constants_start = rodata.data(), rodata["sh_addr"]
+    plt = elf.get_section_by_name(".plt")
+    plt_code, plt_start = plt.data(), plt["sh_addr"]
+    dynamic_symbols = elf.get_section_by_name(".dynsym")
+    condition_wait_slots = {relocation["r_offset"] for relocation in elf.get_section_by_name(".rela.plt").iter_relocations()
+                            if dynamic_symbols.get_symbol(relocation["r_info_sym"]).name == "pthread_cond_wait"}
+
+disassembler = Cs(CS_ARCH_X86, CS_MODE_64)
+disassembler.detail = True
+instructions = list(disassembler.disasm(code, text_start))
+addresses = [instruction.address for instruction in instructions]
+
+
+def target(instruction):
+    for operand in instruction.operands:
+        if operand.type == CS_OP_IMM:
+            return operand.imm
+        if operand.type == CS_OP_MEM and operand.mem.base == X86_REG_RIP:
+            return instruction.address + instruction.size + operand.mem.disp
+    return None
+
+
+def calls(instruction):
+    return instruction.mnemonic == "call" and instruction.operands[0].type == CS_OP_IMM
+
+
+entries = sorted({target(instruction) for instruction in instructions
+                  if calls(instruction) or (instruction.mnemonic == "lea" and text_start <= (target(instruction) or 0) < text_end)})
+
+
+def function_of(address):
+    return entries[bisect.bisect_right(entries, address) - 1]
+
+
+def body_of(function):
+    start = bisect.bisect_left(addresses, function)
+    end = bisect.bisect_left(addresses, entries[bisect.bisect_right(entries, function)])
+    return instructions[start:end]
+
+
+def functions_with(predicate):
+    return {function_of(instruction.address) for instruction in instructions if predicate(instruction)}
+
+
+def immediates(instruction):
+    return {operand.imm for operand in instruction.operands if operand.type == CS_OP_IMM}
+
+
+def calling(callee):
+    return lambda instruction: calls(instruction) and instruction.operands[0].imm == callee
+
+
+def stores_tag(instruction):
+    return instruction.mnemonic == "mov" and STATE_TAG in immediates(instruction)
+
+
+def compares_tag(instruction):
+    return instruction.mnemonic != "mov" and STATE_TAG in immediates(instruction)
+
+
+save_state = unique(functions_with(lambda instruction: STATE_MAGIC in immediates(instruction)) & functions_with(stores_tag), "save_state")
+load_state = unique(functions_with(compares_tag) - {save_state}, "load_state")
+save_slot = unique(functions_with(calling(save_state)), "save_slot")
+load_slot = unique(functions_with(calling(load_state)), "load_slot")
+dispatcher = unique(functions_with(calling(save_slot)) & functions_with(calling(load_slot)), "message dispatcher")
+
+
+def case_bound_and_table():
+    body = body_of(dispatcher)
+    for index, instruction in enumerate(body):
+        if instruction.mnemonic == "jmp" and instruction.operands[0].type != CS_OP_IMM:
+            bound = next(max(immediates(earlier)) for earlier in reversed(body[:index]) if earlier.mnemonic == "cmp" and immediates(earlier))
+            table = next(target(earlier) for earlier in reversed(body[:index]) if earlier.mnemonic == "lea")
+            return bound, table
+    fail("message dispatcher has no jump table")
+
+
+def message_cases():
+    bound, table = case_bound_and_table()
+    return {message: table + int.from_bytes(constants[offset:offset + JUMP_TABLE_ENTRY_SIZE], "little", signed=True)
+            for message in range(bound + 1)
+            for offset in [table - constants_start + message * JUMP_TABLE_ENTRY_SIZE]}
+
+
+cases = message_cases()
+
+
+def message_types():
+    types = {}
+    for message, case in cases.items():
+        start = bisect.bisect_left(addresses, case)
+        for instruction in instructions[start:start + CASE_INSTRUCTIONS]:
+            if calls(instruction):
+                types.setdefault(instruction.operands[0].imm, set()).add(message)
+    return unique(types.get(save_slot, set()), "save message type"), unique(types.get(load_slot, set()), "load message type")
+
+
+def mov_to_memory(instruction, base):
+    return instruction.mnemonic == "mov" and len(instruction.operands) == 2 \
+        and instruction.operands[0].type == CS_OP_MEM and instruction.operands[0].mem.base == base
+
+
+def stack_store(instruction):
+    return mov_to_memory(instruction, X86_REG_RSP) and instruction.operands[0].size == MESSAGE_FIELD_SIZE
+
+
+def stores_message(instruction, message):
+    return stack_store(instruction) and instruction.operands[1].type == CS_OP_IMM and instruction.operands[1].imm == message
+
+
+def next_call_or_return(index):
+    return next(later for later in range(index + 1, len(instructions)) if instructions[later].mnemonic in ("call", "ret"))
+
+
+def postings(message):
+    for index, instruction in enumerate(instructions):
+        if stores_message(instruction, message):
+            call = next_call_or_return(index)
+            if calls(instructions[call]):
+                yield function_of(instruction.address), index, call
+
+
+def posters(message):
+    return {function: instructions[call].operands[0].imm for function, _, call in postings(message)}
+
+
+save_message, load_message = message_types()
+save_posters, load_posters = posters(save_message), posters(load_message)
+post = unique(set(save_posters.values()) & set(load_posters.values()), "message post function")
+
+
+def function_mapped_to(mapping, value, what):
+    return unique({function for function, mapped in mapping.items() if mapped == value}, what)
+
+
+emu_save_slot = function_mapped_to(save_posters, post, "save slot API")
+emu_load_slot = function_mapped_to(load_posters, post, "load slot API")
+
+
+def is_global_load(instruction):
+    return instruction.mnemonic == "mov" and len(instruction.operands) == 2 and instruction.operands[0].type == CS_OP_REG \
+        and instruction.operands[1].type == CS_OP_MEM and instruction.operands[1].mem.base == X86_REG_RIP
+
+
+def is_global_store(instruction, address, source_type):
+    return mov_to_memory(instruction, X86_REG_RIP) and target(instruction) == address and instruction.operands[1].type == source_type
+
+
+running = unique({target(instruction) for instruction in body_of(emu_load_slot) if is_global_load(instruction)}, "running global")
+running_store = unique({instruction.address for instruction in body_of(dispatcher) if is_global_store(instruction, running, CS_OP_REG)}, "running store")
+state_case = max(case for case in cases.values() if case <= running_store)
+state_message = unique({message for message, case in cases.items() if case == state_case}, "state message type")
+
+
+def state_posters():
+    found = {}
+    for function, store, call in postings(state_message):
+        if instructions[call].operands[0].imm != post:
+            continue
+        argument_disp = instructions[store].operands[0].mem.disp + MESSAGE_FIELD_STRIDE
+        arguments = {later.operands[1].imm for later in instructions[store + 1:call]
+                     if stack_store(later) and later.operands[0].mem.disp == argument_disp and later.operands[1].type == CS_OP_IMM}
+        if not arguments:
+            continue
+        wait = instructions[next_call_or_return(call)]
+        if not calls(wait):
+            fail(f"{function:#x} does not wait after posting")
+        found[function] = unique(arguments, "state argument"), wait.operands[0].imm
+    return found
+
+
+def compared_running():
+    return {instructions[index + 1].operands[1].imm for index, instruction in enumerate(instructions[:-1])
+            if is_global_load(instruction) and target(instruction) == running
+            and instructions[index + 1].mnemonic == "cmp" and instructions[index + 1].operands[1].type == CS_OP_IMM}
+
+
+states = state_posters()
+state_arguments = {function: argument for function, (argument, _) in states.items()}
+arguments = set(state_arguments.values())
+stored_running = {instruction.operands[1].imm for instruction in instructions if is_global_store(instruction, running, CS_OP_IMM)}
+resume_argument = unique(arguments & stored_running, "resume argument")
+pause_argument = unique((arguments & compared_running()) - {resume_argument}, "pause argument")
+emu_pause = function_mapped_to(state_arguments, pause_argument, "pause API")
+emu_resume = function_mapped_to(state_arguments, resume_argument, "resume API")
+wait = unique({states[emu_pause][1], states[emu_resume][1]}, "synchronous wait function")
+
+condition_wait = unique({instruction.address for instruction in disassembler.disasm(plt_code, plt_start)
+                         if instruction.mnemonic == "jmp" and instruction.operands[0].type == CS_OP_MEM and target(instruction) in condition_wait_slots},
+                        "pthread_cond_wait stub")
+condition_waiter = unique(functions_with(calling(condition_wait)), "condition wait wrapper")
+waiter_call = unique({index for index, instruction in enumerate(instructions)
+                      if calling(condition_waiter)(instruction) and function_of(instruction.address) == wait}, "condition wait call")
+condition_loader = next(earlier for earlier in reversed(instructions[:waiter_call])
+                        if earlier.operands and earlier.operands[0].type == CS_OP_REG and earlier.operands[0].reg == X86_REG_RDI)
+if not is_global_load(condition_loader):
+    fail("condition wait call takes no global as its condition")
+frame_condition = target(condition_loader)
+print(f"-DSAVE_SLOT={emu_save_slot:#x} -DLOAD_SLOT={emu_load_slot:#x} -DPAUSE={emu_pause:#x} -DRESUME={emu_resume:#x} -DFRAME_CONDITION={frame_condition:#x}")
