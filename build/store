@@ -10,8 +10,6 @@ GITHUB=https://github.com
 ARCHIVE=https://archive.org/download
 TWIN_STICK='{"-lefty": "y", "+lefty": "a", "-leftx": "x", "+leftx": "b", "rightx": "leftx", "righty": "lefty"}'
 
-fetch() { if curl -fsSL -R --remove-on-error -z "$DOWNLOADS/$1" -o "$DOWNLOADS/$1.part" "$2"; then [ ! -f "$DOWNLOADS/$1.part" ] || mv "$DOWNLOADS/$1.part" "$DOWNLOADS/$1"; else [ -f "$DOWNLOADS/$1" ]; fi; }
-
 add_game() {
   mkdir -p "$TEST_STORE/$1/$3/rom"
   jq -n --arg title "$2" --arg platform "$3" --argjson config "${5:-null}" \
@@ -20,13 +18,13 @@ add_game() {
 }
 
 extract() {
-  fetch "$1" "$2"
+  fetch "$DOWNLOADS" "$1" "$2"
   mkdir "$SCRATCH/$1" && unzip -q "$DOWNLOADS/$1" -d "$SCRATCH/$1"
 }
 
 add_download() {
   file=${4##*/}
-  fetch "$file" "$4"
+  fetch "$DOWNLOADS" "$file" "$4"
   add_game "$1" "$2" "$3" "$DOWNLOADS/$file" "${5:-}"
 }
 

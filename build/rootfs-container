@@ -28,8 +28,6 @@ make_skeleton() {
   ln -s /run $ROOTFS/var/run
 }
 
-fetch() { if curl -fsSL -R --remove-on-error -z "$DOWNLOAD_CACHE/$1" -o "$DOWNLOAD_CACHE/$1.part" "$2"; then [ ! -f "$DOWNLOAD_CACHE/$1.part" ] || mv "$DOWNLOAD_CACHE/$1.part" "$DOWNLOAD_CACHE/$1"; else [ -f "$DOWNLOAD_CACHE/$1" ]; fi; }
-
 write_shared_header() {
   {
     for name in $SHARED_WITH_C; do
@@ -59,7 +57,7 @@ generate_protocol() {
 }
 
 fetch_wlr_protocols() {
-  for name in $WLR_PROTOCOLS; do fetch "$name.xml" "$WLR_PROTOCOLS_URL/$name.xml"; done
+  for name in $WLR_PROTOCOLS; do fetch "$DOWNLOAD_CACHE" "$name.xml" "$WLR_PROTOCOLS_URL/$name.xml"; done
 }
 
 build_splash() {

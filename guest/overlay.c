@@ -75,7 +75,6 @@
 #define SLEEP_CHOICES_MAX 8
 #define AUTO "Auto"
 #define BOOST_GOVERNOR "performance"
-#define MHZ_PER_HZ 1000
 #define REFRESH_PRECISION 100
 #define BYTES_PER_PIXEL 4
 #define BUFFERS 2
