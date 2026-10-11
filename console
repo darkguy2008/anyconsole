@@ -13,11 +13,7 @@ build_image() {
 on_vm_host() {
   ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && { flock -n $VM_FILE true && { echo 'no VM is running for this worktree, start one with: console start' >&2; exit 1; }; . ./$VM_FILE && $1; }"
 }
-if [ -n "${CONSOLE_BOX:-}" ]; then
-  SSH_HOST=root@$CONSOLE_BOX
-else
-  SSH_HOST=root@127.0.0.1
-fi
+SSH_HOST=root@${CONSOLE_BOX:-127.0.0.1}
 ssh_route() {
   [ -z "${CONSOLE_BOX:-}" ] || return 0
   port=$(on_vm_host 'echo $VM_SSH_PORT') || return

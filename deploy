@@ -16,6 +16,7 @@ build_release() {
   date -u > app/changelog
   printf '#!/bin/sh\necho "feature %s online"\n' "$1" > "app/feature-$1"
   chmod +x "app/feature-$1"
+  mkdir -p "${ROOTFS_LOG%/*}"
   sh build/host sh build/rootfs > "$ROOTFS_LOG" 2>&1 || { tail -n 40 "$ROOTFS_LOG" >&2; exit 1; }
 }
 
