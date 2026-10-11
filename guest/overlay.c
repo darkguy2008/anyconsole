@@ -1155,7 +1155,7 @@ static void prepare_rewinds(int index, char *states) {
     remove_rewinds(index);
     mkdir(rewind_path(path, index, ""), S_IRWXU);
     mkdir(rewind_path(states, index, "/" STATES), S_IRWXU);
-    games[index].states_watch = inotify_add_watch(watcher, states, IN_CLOSE_WRITE);
+    games[index].states_watch = inotify_add_watch(watcher, states, IN_CLOSE_WRITE | IN_MOVED_TO);
 }
 
 static cairo_surface_t *captured_screen(void) {

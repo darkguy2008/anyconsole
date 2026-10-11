@@ -26,8 +26,10 @@ FAKEPAD_CROSS=2
 REMOTE_PAD="$REMOTE_PAD_NAME 1"
 SECOND_REMOTE_PAD="$REMOTE_PAD_NAME 2"
 LOW_BATTERY=10
+DEFAULT_SLEEP=${SLEEP_MINUTES%% *}
 STRONG_RUMBLE_EFFECT=4
 REDREAM_ENGINE=$ENGINES/dreamcast/engine
+REDREAM_LICENSE=dreamcast/redream.key
 VIRGL_GPU=virtio_gpu
 AREA_SIZE='(.display.area_box | "\(.width)x\(.height)")'
 
@@ -89,6 +91,7 @@ choose() {
   tap a
 }
 snapshot() { wait_for $STEP_SECONDS gvnccapture "127.0.0.1:$VNC_TEST_DISPLAY" "$OUT/$1.png"; }
+screen_moves() { gvnccapture "127.0.0.1:$VNC_TEST_DISPLAY" "$OUT/before.png" && gvnccapture "127.0.0.1:$VNC_TEST_DISPLAY" "$OUT/after.png" && ! cmp -s "$OUT/before.png" "$OUT/after.png"; }
 booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /data/boots) = $1 ] && pidof overlay && [ -s $STATE_FILE ]"; }
 
 start_vm() {
@@ -126,6 +129,22 @@ finish_install() {
 install_game() {
   start_install "$2"
   finish_install "$1"
+}
+
+ensure_installed() {
+  if holds "$(status_of "$1" "")" >/dev/null; then
+    open_store
+    install_game "$1" "$2"
+    tap b
+    expect '.screen == "store"'
+    tap b
+    expect '.screen == "home"'
+  fi
+}
+
+uninstall_game() {
+  choose Uninstall
+  expect "[.games[] | select(.key == \"$1\")] | all(.status == \"\")"
 }
 
 install_watching_home() {
@@ -244,6 +263,12 @@ apply_resolution_from_guide() {
   expect '.guide | not'
 }
 
+open_rewind_row() {
+  tap guide
+  expect ".guide and .rows[1].label == \"Rewind\" and .rewind.back == 0 and ($(status_of "$1" paused))"
+  highlight Rewind
+}
+
 rewind_to_older_state() {
   if [ "$(state | jq -r .display.gpu)" = "$VIRGL_GPU" ]; then
     log skip "rewinding $1: virgl reads the overlay's shared capture buffer back as black until Mesa ships virgl-exported-readback"
@@ -252,9 +277,7 @@ rewind_to_older_state() {
   expect '.rewind.states >= 2'
   wait_for $STEP_SECONDS guest "[ \$(ls $REWIND_DIR/$(game_name "$1")/states/*.screen.png | wc -l) -ge 2 ]"
   log ok "the saved $1 states have screen captures"
-  tap guide
-  expect ".guide and .rows[1].label == \"Rewind\" and .rewind.back == 0 and ($(status_of "$1" paused))"
-  highlight Rewind
+  open_rewind_row "$1"
   tap dpleft
   expect '.rewind.back == 1 and .rows[.selected].value != "Now"'
   tap guide
@@ -273,9 +296,9 @@ rewind_to_older_state() {
   log ok "rewound $1 to an older state"
 }
 
-play_new_game() {
-  open_store
-  install_game "$1" "$2"
+install_and_play() {
+  ensure_installed "$1" "$2"
+  choose "$2"
   play_game "$1"
 }
 
@@ -301,7 +324,7 @@ play_every_other_game() {
     key=${key%/}
     holds "$(status_of "$key" "")" >/dev/null || continue
     title=$(jq -r .title "$TEST_STORE/${key%/*}/manifest.json")
-    play_new_game "$key" "$title"
+    install_and_play "$key" "$title"
     snapshot "$(game_name "$key")"
     wait_for $STEP_SECONDS core_options_hold "$key" "$(jq -c --arg platform "${key#*/}" '.[$platform].options // {}' "$TEST_STORE/${key%/*}/manifest.json")"
     log ok "$key core options reached RetroArch"
@@ -310,6 +333,7 @@ play_every_other_game() {
 }
 
 build_fakepad() {
+  ! guest "docker image inspect $FAKEPAD_IMAGE" >/dev/null 2>&1 || return 0
   guest "mkdir -p $FAKEPAD_DIR"
   for file in Dockerfile ds4.py; do guest "cat > $FAKEPAD_DIR/$file" < "build/fakepad/$file"; done
   guest "docker build -q --network host -t $FAKEPAD_IMAGE $FAKEPAD_DIR"
@@ -366,7 +390,7 @@ play_wireless_controller() {
   expect '(.controllers.controllers | length) == 0'
 }
 
-hotplug_controllers() {
+test_controllers() {
   build_fakepad
   hotplug_wired_controller
   play_wireless_controller
@@ -374,6 +398,8 @@ hotplug_controllers() {
   expect '.settings.sleep == 30'
   ! api POST settings "sleep 7" 2>/dev/null || { log FAIL "accepted a sleep outside SLEEP_MINUTES" >&2; exit 1; }
   log ok "rejected a sleep outside SLEEP_MINUTES"
+  api POST settings "sleep $DEFAULT_SLEEP" >/dev/null
+  expect ".settings.sleep == $DEFAULT_SLEEP"
 }
 
 blow_amplitude() {
@@ -481,19 +507,32 @@ redream_gave_second_pad() {
   [ -n "$port" ] && guest "grep -qF '$port name=$PAD_NAME #2' $REDREAM_ENGINE/redream.log"
 }
 
-play_dreamcast_with_two_players() {
-  play_new_game gravity-wave/dreamcast "Gravity Wave"
-  send "1 lefty 0"
-  wait_for $STEP_SECONDS input_holds $PAD_NODES "$PAD_NAME" BTN_NORTH 1 ABS_Y $AXIS_CENTER
-  send "1 lefty $AXIS_CENTER" "1 righty 0"
-  wait_for $STEP_SECONDS input_holds $PAD_NODES "$PAD_NAME" BTN_NORTH 0 ABS_Y 0
-  send "1 righty $AXIS_CENTER"
-  log ok "the manifest's pad map moves with the left stick and aims with the right"
-  second_player_joins_and_leaves gravity-wave/dreamcast redream_gave_second_pad
-  close_game gravity-wave/dreamcast "Gravity Wave"
+push_test_bios() { [ ! -d "$TEST_BIOS" ] || tar -C "$TEST_BIOS" -c . | guest "mkdir -p $BIOS_DIR && tar -C $BIOS_DIR -x"; }
+
+redream_preloaded() { guest "tr '\\0' '\\n' < /proc/\$(pidof redream)/environ | grep -q '^LD_PRELOAD='"; }
+redream_read_loaded_state() { guest "for state in $REWIND_DIR/$(game_name "$1")/states/*.2.sav; do [ \"\$(stat -c %x \"\$state\")\" \\> \"\$(stat -c %y \"\$state\")\" ] || exit 1; done"; }
+
+rewind_dreamcast() {
+  if [ ! -f "$TEST_BIOS/$REDREAM_LICENSE" ]; then
+    log skip "rewinding $1: no redream premium key at $TEST_BIOS/$REDREAM_LICENSE on the build host"
+    return
+  fi
+  wait_for $STEP_SECONDS redream_preloaded
+  expect '.rewind.states >= 1'
+  open_rewind_row "$1"
+  tap dpleft
+  expect '.rewind.back == 1'
+  tap a
+  expect "(.guide | not) and .rewind.back == 0 and ($(status_of "$1" running))"
+  wait_for $STEP_SECONDS redream_read_loaded_state "$1"
+  guest "! grep -q '^\[[A-Z]*\] *SAVE ' $(game_log "$1")" || { log FAIL "redream logged a save state error" >&2; diagnose; exit 1; }
+  wait_for $STEP_SECONDS screen_moves
+  expect "$(status_of "$1" running)"
+  log ok "redream saved a state, read it back for rewind and kept running"
 }
 
-log_out_closing_games() {
+test_logout() {
+  ensure_installed alter-ego/nes "Alter Ego"
   choose "Alter Ego"
   choose Play
   expect ".active == \"alter-ego/nes\" and ($(status_of alter-ego/nes running)) and (.games[] | select(.key == \"alter-ego/nes\") | .owner) == 1"
@@ -506,6 +545,7 @@ log_out_closing_games() {
   tap b
   expect '.screen == "attract"'
   snapshot attract-after-logout
+  sign_in_from_attract
 }
 
 back_to_dashboard() {
@@ -515,108 +555,181 @@ back_to_dashboard() {
   expect '.dashboard and (.guide | not) and .screen == "home"'
 }
 
+test_capture() {
+  snapshot home
+  wait_for $STEP_SECONDS guest ". /etc/profile; WAYLAND_DISPLAY=wayland-0 grim /tmp/home.png && [ -s /tmp/home.png ]"
+  log ok "grim captures the idle screen"
+}
+
+test_display() {
+  change_resolution_in_settings
+  stage_display_mode_until_saved
+}
+
+test_audio() {
+  wait_for $STEP_SECONDS guest "! grep -q '^snd_pcsp ' /proc/modules && ! grep -q 'BlueZ SPA plugin is missing' $LOG_DIR/pipewire.log"
+  log ok "the PC speaker is no audio output and PipeWire loaded its Bluetooth plugin"
+  volume=$(state | jq .audio.volume)
+  api POST volume $TEST_VOLUME >/dev/null
+  expect ".audio.volume == $TEST_VOLUME"
+  api POST volume "$volume" >/dev/null
+  expect ".audio.volume == $volume"
+}
+
+test_nes() {
+  holds "$(status_of alter-ego/nes "")" >/dev/null || {
+    choose "Alter Ego"
+    expect '.screen == "game"'
+    uninstall_game alter-ego/nes
+    tap b
+  }
+  open_store
+  install_watching_home alter-ego/nes "Alter Ego"
+  play_game alter-ego/nes
+  wait_for $STEP_SECONDS guest "grep -qF 'configured in port 1' $(game_log alter-ego/nes)"
+  log ok "RetroArch configured the virtual pad"
+  wait_for $STEP_SECONDS guest "[ -d $PROFILES_DIR/1/saves/$(game_name alter-ego/nes) ]"
+  log ok "Player 1 plays with its own saves"
+  snapshot alter-ego
+  api POST settings "resolution 1080" >/dev/null
+  expect ".display.canvas == \"1920x1080\" and .display.frame == .display.canvas and ($(status_of alter-ego/nes running))"
+  snapshot alter-ego-1080
+  api POST settings "resolution 0" >/dev/null
+  expect ".display.canvas == $AREA_SIZE and .display.frame == .display.canvas and ($(status_of alter-ego/nes running))"
+  wait_for $STEP_SECONDS guest ". /etc/profile; pw-dump | jq -e '[.[] | select(.info.props[\"media.class\"]? == \"Stream/Output/Audio\" and .info.state == \"running\")] | length == 1'"
+  log ok "the game plays sound into PipeWire"
+  remember_guide_position
+  apply_resolution_from_guide
+  blow_into_microphone
+  change_emulation
+  second_player_joins_and_leaves alter-ego/nes
+
+  tap guide
+  expect ".guide and .screen == \"guide\" and ($(status_of alter-ego/nes paused)) and .audio.output != \"\""
+  snapshot guide
+  choose Dashboard
+  expect '.dashboard and (.guide | not) and .screen == "home"'
+
+  install_and_play lan-master/nes "LAN Master"
+  expect "$(status_of alter-ego/nes paused)"
+
+  join_keyboard
+  key KEY_LEFTMETA
+  expect ".guide and ($(status_of lan-master/nes paused))"
+  key KEY_ESC
+  expect "(.guide | not) and ($(status_of lan-master/nes running))"
+  send "1 back 1" "1 start 1" "1 start 0" "1 back 0"
+  expect '.guide'
+  tap guide
+  expect "(.guide | not) and ($(status_of lan-master/nes running))"
+
+  back_to_dashboard
+  choose "Alter Ego"
+  choose Resume
+  expect ".active == \"alter-ego/nes\" and ($(status_of alter-ego/nes running)) and ($(status_of lan-master/nes paused))"
+
+  back_to_dashboard
+  choose "LAN Master"
+  expect '.screen == "game"'
+  choose Close
+  expect "$(status_of lan-master/nes installed)"
+  uninstall_game lan-master/nes
+
+  tap b
+  choose "Alter Ego"
+  expect '.screen == "game"'
+  choose Close
+  expect "$(status_of alter-ego/nes installed)"
+  tap b
+  expect '.screen == "home"'
+}
+
+test_dreamcast() {
+  build_fakepad
+  install_and_play gravity-wave/dreamcast "Gravity Wave"
+  send "1 lefty 0"
+  wait_for $STEP_SECONDS input_holds $PAD_NODES "$PAD_NAME" BTN_NORTH 1 ABS_Y $AXIS_CENTER
+  send "1 lefty $AXIS_CENTER" "1 righty 0"
+  wait_for $STEP_SECONDS input_holds $PAD_NODES "$PAD_NAME" BTN_NORTH 0 ABS_Y 0
+  send "1 righty $AXIS_CENTER"
+  log ok "the manifest's pad map moves with the left stick and aims with the right"
+  second_player_joins_and_leaves gravity-wave/dreamcast redream_gave_second_pad
+  rewind_dreamcast gravity-wave/dreamcast
+  close_game gravity-wave/dreamcast "Gravity Wave"
+}
+
+test_msdos() {
+  build_fakepad
+  install_and_play commander-keen/msdos "Commander Keen"
+  expect '.rewind.states >= 1'
+  emulate_keyboard_with_pad
+  wait_for $STEP_SECONDS guest "grep -q 'DOSBOX STATUS\] Program: KEEN1 ' $(game_log commander-keen/msdos)"
+  log ok "DOSBox Pure started the only executable, KEEN1"
+  snapshot keen
+  rewind_to_older_state commander-keen/msdos
+  send "1 a 1"
+  wait_for $STEP_SECONDS input_holds $INPUT_NODES "$KEYBOARD_NAME" KEY_ENTER 1
+  send "1 a 0"
+  wait_for $STEP_SECONDS input_holds $INPUT_NODES "$KEYBOARD_NAME" KEY_ENTER 0
+  log ok "the pad's A pressed and released Enter on the virtual keyboard"
+  key KEY_LEFTMETA
+  expect ".guide and ($(status_of commander-keen/msdos paused))"
+  tap guide
+  expect "($(row_value Emulate)) == \"Keyboard\""
+  highlight Emulate
+  adjust_to Emulate "Default (Analog pad)"
+  tap guide
+  close_game commander-keen/msdos "Commander Keen"
+}
+
+test_stores() {
+  ensure_installed alter-ego/nes "Alter Ego"
+  ensure_installed commander-keen/msdos "Commander Keen"
+  api DELETE stores/1 >/dev/null
+  expect '(.stores | length) == 0 and all(.games[]; (.stores | length) == 0)'
+  expect '[.games[] | select(.key == "alter-ego/nes" or .key == "commander-keen/msdos") | .status != ""] | length == 2 and all'
+  api POST stores "$TEST_STORE_URL" >/dev/null
+  expect '.stores[0].online and all(.games[]; (.stores | length) == 1)'
+}
+
+test_gpu() {
+  install_and_play alter-ego/nes "Alter Ego"
+  switch_gpu_after_games alter-ego/nes
+  play_every_other_game
+  api POST settings "resolution 0" >/dev/null
+  expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
+}
+
+test_reboot() {
+  ensure_installed alter-ego/nes "Alter Ego"
+  ensure_installed commander-keen/msdos "Commander Keen"
+  api POST settings "resolution 720" >/dev/null
+  expect '.settings.resolution == 720'
+  guest reboot
+  wait_for $BOOT_SECONDS booted 2
+  expect ".screen == \"attract\" and ($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed)) and .settings.resolution == 720"
+  sign_in_from_attract
+  api POST settings "resolution 0" >/dev/null
+  expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
+}
+
+TESTS="capture display audio controllers nes dreamcast msdos stores gpu logout reboot"
+names=${*:-$TESTS}
+for name in $names; do
+  case " $TESTS " in
+    *" $name "*) ;;
+    *) log FAIL "no test named $name, tests are: $TESTS" >&2; exit 1 ;;
+  esac
+done
+
 start_vm
 install_from_stick
 wait_for $BOOT_SECONDS booted 1
+push_test_bios
 sign_in_from_attract
 expect ".screen == \"home\" and .dashboard and (.rows | length) == 2 and (.display.displays | length) == 2 and .display.canvas == $AREA_SIZE and .display.filter == \"nearest\""
-snapshot home
-wait_for $STEP_SECONDS guest ". /etc/profile; WAYLAND_DISPLAY=wayland-0 grim /tmp/home.png && [ -s /tmp/home.png ]"
-log ok "grim captures the idle screen"
-change_resolution_in_settings
-stage_display_mode_until_saved
-wait_for $STEP_SECONDS guest "! grep -q '^snd_pcsp ' /proc/modules && ! grep -q 'BlueZ SPA plugin is missing' $LOG_DIR/pipewire.log"
-log ok "the PC speaker is no audio output and PipeWire loaded its Bluetooth plugin"
-hotplug_controllers
-
 api POST stores "$TEST_STORE_URL" >/dev/null
 expect '.stores[0].online and ([.games[].key] | index("alter-ego/nes") != null)'
 
-open_store
-install_watching_home alter-ego/nes "Alter Ego"
-play_game alter-ego/nes
-wait_for $STEP_SECONDS guest "grep -qF 'configured in port 1' $(game_log alter-ego/nes)"
-log ok "RetroArch configured the virtual pad"
-wait_for $STEP_SECONDS guest "[ -d $PROFILES_DIR/1/saves/$(game_name alter-ego/nes) ]"
-log ok "Player 1 plays with its own saves"
-snapshot alter-ego
-api POST settings "resolution 1080" >/dev/null
-expect ".display.canvas == \"1920x1080\" and .display.frame == .display.canvas and ($(status_of alter-ego/nes running))"
-snapshot alter-ego-1080
-api POST settings "resolution 0" >/dev/null
-expect ".display.canvas == $AREA_SIZE and .display.frame == .display.canvas and ($(status_of alter-ego/nes running))"
-wait_for $STEP_SECONDS guest ". /etc/profile; pw-dump | jq -e '[.[] | select(.info.props[\"media.class\"]? == \"Stream/Output/Audio\" and .info.state == \"running\")] | length == 1'"
-log ok "the game plays sound into PipeWire"
-remember_guide_position
-apply_resolution_from_guide
-blow_into_microphone
-change_emulation
-second_player_joins_and_leaves alter-ego/nes
-
-tap guide
-expect ".guide and .screen == \"guide\" and ($(status_of alter-ego/nes paused)) and .audio.output != \"\""
-snapshot guide
-choose Dashboard
-expect '.dashboard and (.guide | not) and .screen == "home"'
-
-play_new_game lan-master/nes "LAN Master"
-expect "$(status_of alter-ego/nes paused)"
-
-join_keyboard
-key KEY_LEFTMETA
-expect ".guide and ($(status_of lan-master/nes paused))"
-key KEY_ESC
-expect "(.guide | not) and ($(status_of lan-master/nes running))"
-send "1 back 1" "1 start 1" "1 start 0" "1 back 0"
-expect '.guide'
-tap guide
-expect "(.guide | not) and ($(status_of lan-master/nes running))"
-
-back_to_dashboard
-choose "Alter Ego"
-choose Resume
-expect ".active == \"alter-ego/nes\" and ($(status_of alter-ego/nes running)) and ($(status_of lan-master/nes paused))"
-
-back_to_dashboard
-choose "LAN Master"
-expect '.screen == "game"'
-choose Close
-expect "$(status_of lan-master/nes installed)"
-choose Uninstall
-expect '[.games[] | select(.key == "lan-master/nes")] | all(.status == "")'
-
-tap b
-play_new_game commander-keen/msdos "Commander Keen"
-expect '.rewind.states >= 1'
-emulate_keyboard_with_pad
-wait_for $STEP_SECONDS guest "grep -q 'DOSBOX STATUS\] Program: KEEN1 ' $(game_log commander-keen/msdos)"
-log ok "DOSBox Pure started the only executable, KEEN1"
-snapshot keen
-rewind_to_older_state commander-keen/msdos
-send "1 a 1"
-wait_for $STEP_SECONDS input_holds $INPUT_NODES "$KEYBOARD_NAME" KEY_ENTER 1
-send "1 a 0"
-wait_for $STEP_SECONDS input_holds $INPUT_NODES "$KEYBOARD_NAME" KEY_ENTER 0
-log ok "the pad's A pressed and released Enter on the virtual keyboard"
-key KEY_LEFTMETA
-expect ".guide and ($(status_of commander-keen/msdos paused))"
-tap guide
-
-api POST volume $TEST_VOLUME >/dev/null
-expect ".audio.volume == $TEST_VOLUME"
-
-api DELETE stores/1 >/dev/null
-expect '(.stores | length) == 0 and all(.games[]; (.stores | length) == 0)'
-expect '[.games[] | select(.key == "alter-ego/nes" or .key == "commander-keen/msdos") | .status != ""] | length == 2 and all'
-api POST stores "$TEST_STORE_URL" >/dev/null
-expect '.stores[0].online and all(.games[]; (.stores | length) == 1)'
-
-switch_gpu_after_games commander-keen/msdos
-play_dreamcast_with_two_players
-play_every_other_game
-log_out_closing_games
-
-guest reboot
-wait_for $BOOT_SECONDS booted 2
-expect ".screen == \"attract\" and ($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed)) and .settings.resolution == 720"
-log PASS "v$VERSION installed from USB, signed players in and out, installed games from the store, played, emulated, switched, closed, uninstalled, rescaled, moved to another GPU once games quit, and kept them across a reboot"
+for name in $names; do "test_$name"; done
+log PASS "v$VERSION installed from USB, then passed: $names"

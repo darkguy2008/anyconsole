@@ -11,6 +11,7 @@ TEST_STORE_URL=smb://10.0.2.4/qemu
 OVMF_DIR=build/out
 OVMF_CODE=$OVMF_DIR/OVMF_CODE.fd
 OVMF_VARS=$OVMF_DIR/OVMF_VARS.fd
+TEST_BIOS=build/out/bios
 
 run_qemu() {
   vars=$1 disk=$2 forwards=$3

@@ -5,7 +5,12 @@ PICTURE_HEIGHT=3
 PORTS="0 1 2 3"
 FIRST_JOYSTICK_DEVICE=4
 CONFIG=/engine/redream.cfg
-cp -u /opt/redream/redream /engine/
+LICENSE=/bios/redream.key
+REDREAM_STATES=/engine/states
+MENU_STATES=/engine/menu-states
+SAVE_SLOT=1
+LOAD_SLOT=2
+cp /opt/redream/redream /engine/
 find /bios -maxdepth 1 -type f -exec ln -sf {} /engine/ \;
 for port in $PORTS; do ln -sf "/saves/vmu$port.bin" "/engine/vmu$port.bin"; done
 touch "$CONFIG"
@@ -14,4 +19,16 @@ guid=$(joystick-guid)
 for port in $PORTS; do echo "port$port=dev:$((FIRST_JOYSTICK_DEVICE + port)),desc:$guid,type:controller" >> "$CONFIG"; done
 height=${CANVAS#*x}
 width=$((height * PICTURE_WIDTH / PICTURE_HEIGHT))
-exec xwayland-run -geometry "${width}x$height" -- /engine/redream --width="$width" --height="$height" "$@"
+preload=
+exec 3<&0
+if [ -e "$LICENSE" ]; then
+  mkfifo "$REDREAM_COMMANDS"
+  if [ -d "$REDREAM_STATES" ] && [ ! -L "$REDREAM_STATES" ]; then mv "$REDREAM_STATES" "$MENU_STATES"; fi
+  ln -sfT /states "$REDREAM_STATES"
+  rewind /opt/redream/control $SAVE_SLOT $LOAD_SLOT .sav <&3 &
+  preload=LD_PRELOAD=/opt/redream/commands.so
+else
+  echo "no $LICENSE: rewind needs redream premium" >&2
+  cat <&3 > /dev/null &
+fi
+exec xwayland-run -geometry "${width}x$height" -- env $preload /engine/redream --width="$width" --height="$height" "$@"
