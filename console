@@ -10,23 +10,26 @@ build_image() {
   on_host sh "$DEPLOY_PATH/build/host" sh build/image >/dev/null
   rsync -S --mkpath --progress "$DEPLOY_HOST:$DEPLOY_PATH/$INSTALLER" "$INSTALLER"
 }
-vm_port() {
-  ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && { flock -n $VM_FILE true && { echo 'no VM is running for this worktree, start one with: console start' >&2; exit 1; }; . ./$VM_FILE && echo \$$1; }"
+on_vm_host() {
+  ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && { flock -n $VM_FILE true && { echo 'no VM is running for this worktree, start one with: console start' >&2; exit 1; }; . ./$VM_FILE && $1; }"
 }
 if [ -n "${CONSOLE_BOX:-}" ]; then
-  SSH_HOST=root@$CONSOLE_BOX API_VIA= API_HOST=$CONSOLE_BOX
+  SSH_HOST=root@$CONSOLE_BOX
 else
-  SSH_HOST=root@127.0.0.1 API_VIA="ssh $DEPLOY_HOST" API_HOST=localhost
+  SSH_HOST=root@127.0.0.1
 fi
 ssh_route() {
   [ -z "${CONSOLE_BOX:-}" ] || return 0
-  port=$(vm_port VM_SSH_PORT) || return
+  port=$(on_vm_host 'echo $VM_SSH_PORT') || return
   echo "-J $DEPLOY_HOST -p $port"
 }
 api_raw() {
-  port=$API_PORT
-  [ -n "${CONSOLE_BOX:-}" ] || port=$(vm_port VM_API_PORT) || return
-  printf '%s' "${3:-}" | $API_VIA curl --fail-with-body -sS ${API_TIMEOUT:+-m $API_TIMEOUT} -X "$1" --data-binary @- "$API_HOST:$port/cgi-bin/api/$2"
+  request="curl --fail-with-body -sS ${API_TIMEOUT:+-m $API_TIMEOUT} -X $1 --data-binary @-"
+  if [ -n "${CONSOLE_BOX:-}" ]; then
+    printf '%s' "${3:-}" | $request "$CONSOLE_BOX:$API_PORT/cgi-bin/api/$2"
+  else
+    printf '%s' "${3:-}" | on_vm_host "$request localhost:\$VM_API_PORT/cgi-bin/api/$2"
+  fi
 }
 api() { api_raw "$@"; echo; }
 action() { api POST action "$(jq -n '[$ARGS.positional[] | index("=") as $at | {(.[:$at]): .[$at + 1:]}] | add' --args "$@")"; }

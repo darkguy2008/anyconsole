@@ -68,7 +68,6 @@
 #define IMAGE_COPY_CAPTURE_VERSION 1
 #define USEC_PER_MSEC 1000
 #define CORNERS 4
-#define MHZ_PER_HZ 1000
 #define GAME_REFRESH_MHZ (60 * MHZ_PER_HZ)
 
 enum filter { NEAREST, LINEAR, PIXEL };

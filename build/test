@@ -38,12 +38,13 @@ guest() {
     -o LogLevel=ERROR -o ConnectTimeout=1 -o ServerAliveInterval=$SSH_ALIVE_SECONDS -o ServerAliveCountMax=$((STEP_SECONDS / SSH_ALIVE_SECONDS)) -o ControlMaster=auto -o ControlPath=$OUT/ssh.sock -o ControlPersist=yes \
     -p $VM_SSH_PORT root@127.0.0.1 "$@"
 }
-api() { curl -fsS -X "$1" --data-binary "${3:-}" "127.0.0.1:$VM_API_PORT/cgi-bin/api/$2"; }
+api_url() { echo "127.0.0.1:$VM_API_PORT/cgi-bin/api/$1"; }
+api() { curl -fsS -X "$1" --data-binary "${3:-}" "$(api_url "$2")"; }
 state() { api GET state; }
 expect_reply() {
   seconds=$1 status=$2 filter=$3
   shift 3
-  code=$(jq -n '$ARGS.named' "$@" | curl -sS -m "$seconds" -X POST --data-binary @- -o $OUT/reply.json -w '%{http_code}' "127.0.0.1:$VM_API_PORT/cgi-bin/api/action") || code=$?
+  code=$(jq -n '$ARGS.named' "$@" | curl -sS -m "$seconds" -X POST --data-binary @- -o $OUT/reply.json -w '%{http_code}' "$(api_url action)") || code=$?
   if [ "$code" != "$status" ] || ! jq -e "$filter" $OUT/reply.json >/dev/null; then
     log FAIL "$* did not answer $status with: $filter, got $code: $(cat $OUT/reply.json 2>&1)" >&2
     diagnose
@@ -52,7 +53,7 @@ expect_reply() {
   log ok "$filter"
 }
 screenshot_is_png() {
-  curl -fsS -m $STEP_SECONDS -o $OUT/screenshot.png "127.0.0.1:$VM_API_PORT/cgi-bin/api/screenshot" &&
+  curl -fsS -m $STEP_SECONDS -o $OUT/screenshot.png "$(api_url screenshot)" &&
     [ "$(od -An -tx1 -N8 $OUT/screenshot.png | tr -d ' \n')" = $PNG_SIGNATURE ]
 }
 log() { echo "$1 +$(($(date +%s) - STARTED))s: $2"; }
@@ -104,8 +105,9 @@ choose() {
   highlight "$1"
   tap a
 }
-snapshot() { wait_for $STEP_SECONDS gvnccapture "127.0.0.1:$VM_VNC_DISPLAY" "$OUT/$1.png"; }
-screen_moves() { gvnccapture "127.0.0.1:$VM_VNC_DISPLAY" "$OUT/before.png" && gvnccapture "127.0.0.1:$VM_VNC_DISPLAY" "$OUT/after.png" && ! cmp -s "$OUT/before.png" "$OUT/after.png"; }
+capture() { gvnccapture "127.0.0.1:$VM_VNC_DISPLAY" "$OUT/$1.png"; }
+snapshot() { wait_for $STEP_SECONDS capture "$1"; }
+screen_moves() { capture before && capture after && ! cmp -s "$OUT/before.png" "$OUT/after.png"; }
 booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /data/boots) = $1 ] && pidof overlay && [ -s $STATE_FILE ]"; }
 
 start_vm() {
