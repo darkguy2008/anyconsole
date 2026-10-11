@@ -32,8 +32,6 @@ REDREAM_ENGINE=$ENGINES/dreamcast/engine
 REDREAM_LICENSE=dreamcast/redream.key
 VIRGL_GPU=virtio_gpu
 PNG_SIGNATURE=89504e470d0a1a0a
-LAN_MASTER_ROM=$TEST_STORE/lan-master/nes/rom
-LAN_MASTER_HIDDEN_ROM=$LAN_MASTER_ROM.hidden
 AREA_SIZE='(.display.area_box | "\(.width)x\(.height)")'
 
 monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
@@ -55,7 +53,6 @@ expect_reply() {
   fi
   log ok "$filter"
 }
-restore_rom() { [ ! -d "$LAN_MASTER_HIDDEN_ROM" ] || mv "$LAN_MASTER_HIDDEN_ROM" "$LAN_MASTER_ROM"; }
 screenshot_is_png() {
   curl -fsS -m $STEP_SECONDS -o $OUT/screenshot.png "127.0.0.1:$API_TEST_PORT/cgi-bin/api/screenshot" &&
     [ "$(od -An -tx1 -N8 $OUT/screenshot.png | tr -d ' \n')" = $PNG_SIGNATURE ]
@@ -123,7 +120,7 @@ start_vm() {
     "hostfwd=tcp:127.0.0.1:$SSH_TEST_PORT-:22,hostfwd=tcp:127.0.0.1:$API_TEST_PORT-:$API_PORT" \
     -device qemu-xhci -drive file=build/out/installer.img,format=raw,if=none,id=usb0 -device usb-storage,drive=usb0,id=stick \
     -device virtio-gpu-pci,xres=$SECOND_DISPLAY_WIDTH,yres=$SECOND_DISPLAY_HEIGHT -vnc :$VNC_TEST_DISPLAY -monitor unix:$OUT/monitor.sock,server,nowait -serial file:$OUT/serial.log &
-  trap 'restore_rom; monitor quit' EXIT
+  trap 'monitor quit' EXIT
 }
 
 install_from_stick() {
@@ -671,11 +668,10 @@ test_actions() {
   expect_reply $STEP_SECONDS 200 '.ok and .state.dashboard' --arg action dashboard
   expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of lan-master/nes installed))" --arg action close --arg game lan-master/nes
   expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of lan-master/nes ''))" --arg action uninstall --arg game lan-master/nes
-  mv "$LAN_MASTER_ROM" "$LAN_MASTER_HIDDEN_ROM"
-  wait_for $STEP_SECONDS guest "[ ! -d $STORE_MOUNTS/1/lan-master/nes/rom ]"
-  expect_reply $INSTALL_SECONDS 409 '(.ok | not) and (.error | startswith("Install failed: LAN Master: rsync")) and (.error as $error | any(.notifications[]; . == $error))' \
+  guest "touch $GAMES_DIR/lan-master"
+  expect_reply $INSTALL_SECONDS 409 '(.ok | not) and (.error | startswith("Install failed: LAN Master: ")) and (.error as $error | any(.notifications[]; . == $error))' \
     --arg action install --arg game lan-master/nes
-  restore_rom
+  guest "rm $GAMES_DIR/lan-master"
   expect "$(status_of lan-master/nes "")"
   expect_reply $STEP_SECONDS 409 '(.ok | not) and (.error | startswith("no row on any screen matches"))' --arg action nope
   wait_for $STEP_SECONDS screenshot_is_png
