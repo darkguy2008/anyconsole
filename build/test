@@ -784,6 +784,7 @@ test_reboot() {
   wait_for $STEP_SECONDS guest "grep -qF ' $KERNEL_ARGS' /proc/cmdline"
   log ok "the kernel booted with $KERNEL_ARGS"
   expect ".screen == \"attract\" and ($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed)) and .settings.resolution == 720"
+  expect_reply $STEP_SECONDS 409 '.error == "Could not start Alter Ego: log in a player first"' --arg action play --arg game alter-ego/nes
   sign_in_from_attract
   api POST settings "resolution 0" >/dev/null
   expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"

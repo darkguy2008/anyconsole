@@ -1471,7 +1471,14 @@ static void start_job(int index, enum task task, char *const argv[]) {
     snprintf(game->job_text, sizeof game->job_text, "%s", tasks[task]);
 }
 
+static int owner_seated(int index) {
+    if (seat_of(games[index].owner) >= 0) return 1;
+    fail(index, "Could not start %s: log in a player first", games[index].title);
+    return 0;
+}
+
 static void launch(int index) {
+    if (!owner_seated(index)) return;
     start_job(index, LAUNCHING, (char *[]){"games", "prepare", games[index].platform, NULL});
     if (games[index].job) resume(index);
 }
@@ -1526,8 +1533,8 @@ static void job_done(int index, int status) {
     game->job = 0;
     if (status && *game->job_error) snprintf(detail, sizeof detail, ": %s", game->job_error);
     if (game->task == LAUNCHING) {
-        if (!status && seat_of(game->owner) >= 0) { play(index); return; }
-        fail(index, "Could not start %s%s", game->title, detail);
+        if (status) fail(index, "Could not start %s%s", game->title, detail);
+        else if (owner_seated(index)) play(index);
         return;
     }
     rescan_installed();
