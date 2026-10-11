@@ -5,7 +5,10 @@ cd "$(dirname "$0")/.."
 . guest/config
 . build/slot
 VERSION=$(cat VERSION)
-OUT=build/out/test
+TEST_OUT=build/out/test
+TEST_IMAGE=$TEST_IMAGE_PREFIX-${PWD##*/}
+TEST_IMAGES=$TEST_OUT/images.tar
+TEST_VMS=4
 TARGET_SIZE=16G
 POLLS_PER_SECOND=10
 SSH_ALIVE_SECONDS=1
@@ -18,7 +21,6 @@ TEST_VOLUME=10
 SECOND_DISPLAY_WIDTH=1920
 SECOND_DISPLAY_HEIGHT=1080
 FAKEPAD_IMAGE=anyconsole-fakepad
-FAKEPAD_DIR=/tmp/fakepad
 FAKEPAD_NAME="PS4 Controller"
 FAKEPAD_CROSS=2
 REMOTE_PAD="$REMOTE_PAD_NAME 1"
@@ -30,6 +32,10 @@ REDREAM_ENGINE=$ENGINES/dreamcast/engine
 REDREAM_LICENSE=dreamcast/redream.key
 VIRGL_GPU=virtio_gpu
 PNG_SIGNATURE=89504e470d0a1a0a
+REAL_GAMES=/tmp/real-games
+PACED_GAMES=/tmp/paced-games
+INSTALL_STEPS=/tmp/install-steps
+HALFWAY_PERCENT=50
 AREA_SIZE='(.display.area_box | "\(.width)x\(.height)")'
 
 monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
@@ -56,7 +62,7 @@ screenshot_is_png() {
   curl -fsS -m $STEP_SECONDS -o $OUT/screenshot.png "$(api_url screenshot)" &&
     [ "$(od -An -tx1 -N8 $OUT/screenshot.png | tr -d ' \n')" = $PNG_SIGNATURE ]
 }
-log() { echo "$1 +$(($(date +%s) - STARTED))s: $2"; }
+log() { echo "$1 +$(($(date +%s) - STARTED))s${slot:+ vm $slot}: $2"; }
 diagnose() {
   guest "cat $STATE_FILE /tmp/install.log; echo; docker ps -a --format '{{.Names}} {{.Status}}'; for container in \$(docker ps -q); do docker top \$container -o pid,stat,args; for pid in \$(docker top \$container -o pid | tail -n +2); do echo \"\$pid \$(cat /proc/\$pid/wchan)\"; done; done; for log in $LOG_DIR/*.log; do echo \"== \$log\"; tail -n 15 \"\$log\"; done" >&2 || true
   guest ". /etc/profile; wpctl status; pw-dump | jq -c '.[] | select(.info.props[\"media.class\"]? == \"Audio/Source\") | {id, props: [.info.params.Props[]? | {channelVolumes, softVolumes, volume}]}'" >&2 || true
@@ -112,14 +118,14 @@ booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /
 
 start_vm() {
   claim_slot
-  sh build/store
+  OUT=$TEST_OUT/$slot
   rm -rf $OUT
   mkdir -p $OUT
   truncate -s $TARGET_SIZE $OUT/target.img
   cp $OVMF_VARS $OUT/efivars.fd
   run_qemu $OUT/efivars.fd $OUT/target.img \
     "hostfwd=tcp:127.0.0.1:$VM_SSH_PORT-:22,hostfwd=tcp:127.0.0.1:$VM_API_PORT-:$API_PORT" \
-    -device qemu-xhci -drive file=build/out/installer.img,format=raw,if=none,id=usb0 -device usb-storage,drive=usb0,id=stick \
+    -device qemu-xhci -drive file=build/out/installer.img,format=raw,if=none,id=usb0,snapshot=on -device usb-storage,drive=usb0,id=stick \
     -device virtio-gpu-pci,xres=$SECOND_DISPLAY_WIDTH,yres=$SECOND_DISPLAY_HEIGHT -vnc :$VM_VNC_DISPLAY -monitor unix:$OUT/monitor.sock,server,nowait -serial file:$OUT/serial.log &
   trap 'monitor quit' EXIT
 }
@@ -164,18 +170,35 @@ uninstall_game() {
   expect "[.games[] | select(.key == \"$1\")] | all(.status == \"\")"
 }
 
+pace_installs() {
+  guest "cp /bin/games $REAL_GAMES && mkfifo $INSTALL_STEPS && cat > $PACED_GAMES && chmod +x $PACED_GAMES && nsenter -t \$(pidof overlay) -m mount --bind $PACED_GAMES /bin/games" <<PACED
+#!/bin/sh
+[ "\$1" = install ] || exec $REAL_GAMES "\$@"
+while step=\$(cat $INSTALL_STEPS) && [ -n "\$step" ]; do echo "\$step"; done
+exec $REAL_GAMES "\$@"
+PACED
+}
+install_step() {
+  guest "timeout $STEP_SECONDS sh -c 'echo $1 > $INSTALL_STEPS'" || { log FAIL "no install read the step \"$1\" within ${STEP_SECONDS}s" >&2; diagnose; exit 1; }
+}
+unpace_installs() { guest "nsenter -t \$(pidof overlay) -m umount /bin/games && rm $REAL_GAMES $PACED_GAMES $INSTALL_STEPS"; }
+
 install_watching_home() {
   row=$(row_value "$2")
+  pace_installs
   start_install "$2"
-  expect ".games[] | select(.key == \"$1\") | .status | test(\"^building [0-9]+%$\")"
+  install_step "copying 0"
+  expect "$(status_of "$1" "copying 0%")"
   tap b
   expect '.screen == "store"'
   tap b
-  expect ".screen == \"home\" and ($row | test(\"^${1#*/}  (building|copying) [0-9]+%$\"))"
-  shown=$(state | jq -r "$row")
-  wait_for $INSTALL_SECONDS holds "$row != \"$shown\""
-  log ok "the home list moved on from \"$shown\" while $1 installed"
+  expect ".screen == \"home\" and ($row) == \"${1#*/}  copying 0%\""
+  install_step "copying $HALFWAY_PERCENT"
+  expect "($row) == \"${1#*/}  copying $HALFWAY_PERCENT%\""
+  log ok "the home list followed $1's install progress"
+  install_step ""
   finish_install "$1"
+  unpace_installs
   choose "$2"
   expect '.screen == "game"'
 }
@@ -351,11 +374,22 @@ play_every_other_game() {
   done
 }
 
-build_fakepad() {
-  ! guest "docker image inspect $FAKEPAD_IMAGE" >/dev/null 2>&1 || return 0
-  guest "mkdir -p $FAKEPAD_DIR"
-  for file in Dockerfile ds4.py; do guest "cat > $FAKEPAD_DIR/$file" < "build/fakepad/$file"; done
-  guest "docker build -q --network host -t $FAKEPAD_IMAGE $FAKEPAD_DIR"
+save_test_images() (
+  flock 7
+  [ ! -f $TEST_IMAGES ] || exit 0
+  docker build -q --network host -t "$TEST_IMAGE:$FAKEPAD_IMAGE" build/fakepad >/dev/null
+  for platform in $PLATFORMS; do
+    docker build -q --network host --label "$RECIPE_LABEL=$1" --target "$platform" -t "$TEST_IMAGE:$platform" app/recipes >/dev/null
+  done
+  docker save -o $TEST_IMAGES.part "$TEST_IMAGE:$FAKEPAD_IMAGE" $(printf "$TEST_IMAGE:%s " $PLATFORMS)
+  mv $TEST_IMAGES.part $TEST_IMAGES
+) 7>"$TEST_OUT/images.lock"
+
+preload_images() {
+  save_test_images "$(guest games recipe_sum)"
+  guest "docker load -q" < $TEST_IMAGES >/dev/null
+  guest "docker tag $TEST_IMAGE:$FAKEPAD_IMAGE $FAKEPAD_IMAGE && for platform in $PLATFORMS; do docker tag $TEST_IMAGE:\$platform $GAME_IMAGE/\$platform; done && docker image rm \$(docker image ls --format '{{.Repository}}:{{.Tag}}' $TEST_IMAGE) >/dev/null"
+  log ok "preloaded the fakepad and $(echo $PLATFORMS | wc -w) platform images"
 }
 fakepad_logs() { guest "docker logs fakepad-$1 2>&1"; }
 fakepad_created() { fakepad_logs "$1" | grep -qx created; }
@@ -410,7 +444,6 @@ play_wireless_controller() {
 }
 
 test_controllers() {
-  build_fakepad
   hotplug_wired_controller
   play_wireless_controller
   api POST settings "sleep 30" >/dev/null
@@ -462,6 +495,7 @@ sign_in_from_attract() {
 }
 
 join_keyboard() {
+  ! holds "[$(device_named "$REMOTE_KEYBOARD_NAME") | .id] as \$ids | any(.session.players[].devices[]; . as \$id | \$ids | index(\$id) != null)" >/dev/null || return 0
   key KEY_UP
   keyboard=$(device_id "$REMOTE_KEYBOARD_NAME")
   expect ".screen == \"whois\" and .session.picker == $keyboard and (.guide | not)"
@@ -686,7 +720,6 @@ test_actions() {
 }
 
 test_dreamcast() {
-  build_fakepad
   install_and_play gravity-wave/dreamcast "Gravity Wave"
   send "1 lefty 0"
   wait_for $STEP_SECONDS input_holds $PAD_NODES "$PAD_NAME" BTN_NORTH 1 ABS_Y $AXIS_CENTER
@@ -700,7 +733,6 @@ test_dreamcast() {
 }
 
 test_msdos() {
-  build_fakepad
   install_and_play commander-keen/msdos "Commander Keen"
   expect '.rewind.states >= 1'
   emulate_keyboard_with_pad
@@ -713,6 +745,7 @@ test_msdos() {
   send "1 a 0"
   wait_for $STEP_SECONDS input_holds $INPUT_NODES "$KEYBOARD_NAME" KEY_ENTER 0
   log ok "the pad's A pressed and released Enter on the virtual keyboard"
+  join_keyboard
   key KEY_LEFTMETA
   expect ".guide and ($(status_of commander-keen/msdos paused))"
   tap guide
@@ -763,14 +796,31 @@ for name in $names; do
   esac
 done
 
-start_vm
-install_from_stick
-wait_for $BOOT_SECONDS booted 1
-push_test_bios
-sign_in_from_attract
-expect ".screen == \"home\" and .dashboard and (.rows | length) == 2 and (.display.displays | length) == 2 and .display.canvas == $AREA_SIZE and .display.filter == \"nearest\""
-api POST stores "$TEST_STORE_URL" >/dev/null
-expect '.stores[0].online and ([.games[].key] | index("alter-ego/nes") != null)'
+run_tests() {
+  start_vm
+  install_from_stick
+  wait_for $BOOT_SECONDS booted 1
+  log ok "booted v$VERSION from the installed disk"
+  push_test_bios
+  preload_images
+  sign_in_from_attract
+  expect ".screen == \"home\" and .dashboard and (.rows | length) == 2 and (.display.displays | length) == 2 and .display.canvas == $AREA_SIZE and .display.filter == \"nearest\""
+  api POST stores "$TEST_STORE_URL" >/dev/null
+  expect '.stores[0].online and ([.games[].key] | index("alter-ego/nes") != null)'
+  for name; do "test_$name"; done
+  log PASS "v$VERSION installed from USB, then passed: $*"
+}
 
-for name in $names; do "test_$name"; done
-log PASS "v$VERSION installed from USB, then passed: $names"
+sh build/store
+PLATFORMS=$(basename -a "$TEST_STORE"/*/*/ | sort -u | paste -sd " " -)
+mkdir -p $TEST_OUT
+rm -f $TEST_IMAGES
+pids=
+for vm in $(seq $TEST_VMS); do
+  group=$(echo $names | awk -v vms=$TEST_VMS -v vm=$vm '{ for (name = vm; name <= NF; name += vms) printf "%s ", $name }')
+  [ -z "$group" ] || { (run_tests $group) & pids="$pids $!"; }
+done
+failed=0
+for pid in $pids; do wait $pid || failed=1; done
+[ $failed = 0 ] || { log FAIL "a test VM failed, see its lines above" >&2; exit 1; }
+log PASS "v$VERSION passed: $names"

@@ -1,7 +1,7 @@
 CONSOLE_PASSWORD=anyconsole
 
 NIC=nic0
-VM_MEMORY_MIB=4096
+VM_MEMORY_MIB=2048
 SLOT_SSH_PORT=2300
 SLOT_API_PORT=8100
 SLOT_VNC_DISPLAY=10
@@ -13,6 +13,7 @@ HOST_DIR=/srv/anyconsole
 RELEASES_DIR=$HOST_DIR/rel
 LOCK_DIR=/run/anyconsole
 BASE_IMAGE_PREFIX=anyconsole-rootfs-base
+TEST_IMAGE_PREFIX=anyconsole-test
 
 TEST_STORE=build/out/store
 TEST_STORE_URL=smb://10.0.2.4/qemu

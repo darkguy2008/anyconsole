@@ -6,8 +6,9 @@ cd "$(dirname "$0")"
 INSTALLER=build/out/installer.img
 REBOOT_SECONDS=300
 POLL_SECONDS=2
+build_on_host() { on_host sh "$DEPLOY_PATH/build/host" sh build/image >/dev/null; }
 build_image() {
-  on_host sh "$DEPLOY_PATH/build/host" sh build/image >/dev/null
+  build_on_host
   rsync -S --mkpath --progress "$DEPLOY_HOST:$DEPLOY_PATH/$INSTALLER" "$INSTALLER"
 }
 on_vm_host() {
@@ -84,7 +85,7 @@ case "${1:-status}" in
   test)
     shift
     sync_host
-    build_image
+    build_on_host
     on_host sh "$DEPLOY_PATH/build/test" "$@" ;;
   start) on_host sh "$DEPLOY_PATH/build/run" ;;
   link) ssh "$DEPLOY_HOST" "echo set_link $NIC $2 | socat - UNIX-CONNECT:$DEPLOY_PATH/build/out/monitor.sock" >/dev/null ;;
@@ -115,7 +116,7 @@ usage: console [box address] <command>
   push       deploy a new release, then update and reboot it
   image      build disk + USB installer in this worktree's workspace on the build host, fetch installer.img
   flash      write installer.img to an external disk (erases it)
-  test [name...]  build, then install from the USB image in QEMU on a VM slot of its own and run the named tests (default: all, see TESTS in build/test)
+  test [name...]  build, then split the named tests over TEST_VMS QEMU VMs on slots of their own, each installed from the USB image (default: all, see TESTS and TEST_VMS in build/test)
   start      boot this worktree's QEMU test VM on the build host and print its VNC address
   link on|off  connect or unplug the VM's network cable
   ssh [cmd]  shell into the running console

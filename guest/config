@@ -31,6 +31,7 @@ VOLUME_LIMIT=1.0
 GAME_IMAGE=anyconsole
 REWIND_LABEL=anyconsole.rewind
 GAME_LABEL=anyconsole.game
+RECIPE_LABEL=anyconsole.recipe
 BIOS_DIR=/data/bios
 ENGINES=/data/engines
 PROFILES_DIR=/data/profiles
