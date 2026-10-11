@@ -1,7 +1,6 @@
 #!/bin/sh
 set -eu
 . /etc/anyconsole.conf
-MOUNTS=/run/stores
 RECIPES=/opt/anyconsole/recipes
 PLATFORMS=/run/platforms
 LAUNCH_LABEL=anyconsole.launch
@@ -65,18 +64,18 @@ mount_store() {
     *@*) credentials=${share%%@*} share=${share#*@} ;;
     *) credentials= options=$options,guest ;;
   esac
-  mkdir -p "$MOUNTS/$1"
-  mounted=$(awk -v point="$MOUNTS/$1" '$2 == point { print $1 }' /proc/mounts)
+  mkdir -p "$STORE_MOUNTS/$1"
+  mounted=$(awk -v point="$STORE_MOUNTS/$1" '$2 == point { print $1 }' /proc/mounts)
   [ "$mounted" != "//$share" ] || return 0
-  [ -z "$mounted" ] || umount -l "$MOUNTS/$1"
-  USER=${credentials%%:*} PASSWD=${credentials#*:} mount.cifs "//$share" "$MOUNTS/$1" -o "$options"
+  [ -z "$mounted" ] || umount -l "$STORE_MOUNTS/$1"
+  USER=${credentials%%:*} PASSWD=${credentials#*:} mount.cifs "//$share" "$STORE_MOUNTS/$1" -o "$options"
 }
 
 refresh_store() {
   mount_store "$1" "$2" &&
     rsync -a --delete --delay-updates --include='/*/' --include='/*/manifest.json' \
-      $(platforms | sed 's|.*|--include=/*/&/|') --exclude='*' "$MOUNTS/$1/" "$CATALOG_DIR/$1/" ||
-    { rm -rf "${CATALOG_DIR:?}/$1"; ! mountpoint -q "$MOUNTS/$1" || umount -l "$MOUNTS/$1"; return; }
+      $(platforms | sed 's|.*|--include=/*/&/|') --exclude='*' "$STORE_MOUNTS/$1/" "$CATALOG_DIR/$1/" ||
+    { rm -rf "${CATALOG_DIR:?}/$1"; ! mountpoint -q "$STORE_MOUNTS/$1" || umount -l "$STORE_MOUNTS/$1"; return; }
   rsync -rt --omit-dir-times --existing --include='/*/' --include="/*/$MANIFEST" --exclude='*' "$CATALOG_DIR/$1/" "$GAMES_DIR/"
 }
 
@@ -84,7 +83,7 @@ prune() {
   for catalog in "$CATALOG_DIR"/*; do
     [ ! -d "$catalog" ] || [ "${catalog##*/}" -le "$1" ] || rm -rf "$catalog"
   done
-  for mount in "$MOUNTS"/*; do
+  for mount in "$STORE_MOUNTS"/*; do
     [ ! -d "$mount" ] || [ "${mount##*/}" -le "$1" ] || { ! mountpoint -q "$mount" || umount -l "$mount"; rmdir "$mount"; }
   done
 }
@@ -111,8 +110,8 @@ install() {
   prepare "$3"
   rm -rf "$GAMES_DIR/$2/.$3"
   mkdir -p "$GAMES_DIR/$2/.$3"
-  cp "$MOUNTS/$1/$2/manifest.json" "$GAMES_DIR/$2/"
-  copy "$MOUNTS/$1/$2/$3/rom/" "$GAMES_DIR/$2/.$3/rom/"
+  cp "$STORE_MOUNTS/$1/$2/manifest.json" "$GAMES_DIR/$2/"
+  copy "$STORE_MOUNTS/$1/$2/$3/rom/" "$GAMES_DIR/$2/.$3/rom/"
   hook=$(label_of "$image" "$INSTALL_LABEL")
   [ -z "$hook" ] || { echo "installing"; docker run --rm $SANDBOX $(platform_access "$3") -v "$GAMES_DIR/$2/.$3/rom:/game" --entrypoint "$hook" "$GAME_IMAGE/$3" >&2; }
   mv "$GAMES_DIR/$2/.$3" "$GAMES_DIR/$2/$3"
