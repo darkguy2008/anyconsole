@@ -11,7 +11,7 @@ MENU_STATES=/engine/menu-states
 SAVE_SLOT=1
 LOAD_SLOT=2
 cp /opt/redream/redream /engine/
-find /bios -maxdepth 1 -type f -exec ln -sf {} /engine/ \;
+find /bios -maxdepth 1 -type f -exec cp --remove-destination -t /engine/ {} +
 for port in $PORTS; do ln -sf "/saves/vmu$port.bin" "/engine/vmu$port.bin"; done
 touch "$CONFIG"
 sed -i '/^port[0-9]*=/d' "$CONFIG"

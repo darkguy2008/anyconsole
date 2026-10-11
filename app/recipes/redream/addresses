@@ -164,7 +164,6 @@ def function_mapped_to(mapping, value, what):
     return unique({function for function, mapped in mapping.items() if mapped == value}, what)
 
 
-emu_save_slot = function_mapped_to(save_posters, post, "save slot API")
 emu_load_slot = function_mapped_to(load_posters, post, "load slot API")
 
 
@@ -227,4 +226,9 @@ condition_loader = next(earlier for earlier in reversed(instructions[:waiter_cal
 if not is_global_load(condition_loader):
     fail("condition wait call takes no global as its condition")
 frame_condition = target(condition_loader)
-print(f"-DSAVE_SLOT={emu_save_slot:#x} -DLOAD_SLOT={emu_load_slot:#x} -DPAUSE={emu_pause:#x} -DRESUME={emu_resume:#x} -DFRAME_CONDITION={frame_condition:#x}")
+
+save_slot_body = body_of(save_slot)
+save_call = unique({index for index, instruction in enumerate(save_slot_body) if calling(save_state)(instruction)}, "save_state call")
+state_path = unique({target(earlier) for earlier in save_slot_body[:save_call] if calls(earlier)}, "state path function")
+current_game = unique({target(earlier) for earlier in save_slot_body[:save_call] if is_global_load(earlier)}, "current game global")
+print(f"-DSAVE_STATE={save_state:#x} -DSTATE_PATH={state_path:#x} -DCURRENT_GAME={current_game:#x} -DLOAD_SLOT={emu_load_slot:#x} -DPAUSE={emu_pause:#x} -DRESUME={emu_resume:#x} -DFRAME_CONDITION={frame_condition:#x}")
