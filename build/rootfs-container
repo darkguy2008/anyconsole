@@ -143,6 +143,9 @@ install_system() {
   cp /src/guest/daemon.json $ROOTFS/etc/docker/
   cp /src/guest/bluez-input.conf $ROOTFS/etc/bluetooth/input.conf
   cp /src/guest/gamecontrollerdb.txt "$ROOTFS$CONTROLLER_MAPPINGS"
+  sed "s/@KERNEL_ARGS@/$KERNEL_ARGS/" /src/guest/grub.cfg > "$ROOTFS$GRUB_CONFIG"
+  grub-editenv $ROOTFS/boot/kernel.env create
+  grub-editenv $ROOTFS/boot/kernel.env set extra="$KERNEL_ARGS"
   sed -e "s/@MICROPHONE_NODE@/$MICROPHONE_NODE/g" -e "s/@BLOW_NODE@/$BLOW_NODE/g" /src/guest/pipewire.conf > $ROOTFS/etc/pipewire/pipewire.conf.d/anyconsole.conf
   cp /src/guest/wireplumber.conf $ROOTFS/etc/wireplumber/wireplumber.conf.d/anyconsole.conf
   cp /src/guest/find-detected-profile.lua $ROOTFS/usr/local/share/wireplumber/scripts/device/

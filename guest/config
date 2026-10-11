@@ -73,4 +73,8 @@ OTA_INTERVAL=5
 SYNC_DELAY=20
 AUTO_INSTALL=0
 AUTO_REBOOT=0
-GRUBENV=/boot/efi/grub/grubenv
+GRUB_DIR=/boot/efi/grub
+GRUBENV=$GRUB_DIR/grubenv
+GRUB_CONFIG=/usr/share/anyconsole/grub.cfg
+KERNEL_ARGS="drm_kms_helper.fbdev_emulation=0 mitigations=off"
+IDLE_LATENCIES="/sys/devices/system/cpu/cpu*/cpuidle/state*/latency"

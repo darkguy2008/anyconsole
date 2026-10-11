@@ -26,31 +26,7 @@ desktop-image-scale-method: "padding"
 desktop-color: "#000000"
 + boot_menu { width = 0 height = 0 }
 THEME
-  cat > "$ESP/grub/grub.cfg" <<'GRUB'
-set timeout=2
-load_env
-set gfxpayload=keep
-set theme=$prefix/theme.txt
-terminal_output gfxterm
-if search --no-floppy --label installer --set=root; then
-  set label=installer
-  set extra="console=tty0 quiet init=/bin/installer"
-else
-  set extra="drm_kms_helper.fbdev_emulation=0"
-  set target="$prev"
-  if [ "$tries" = "1" ]; then
-    set target="$slot"
-    set tries=0
-    save_env tries
-  fi
-  set label="root-$target"
-  search --no-floppy --label "$label" --set=root
-fi
-menuentry "anyconsole ($label)" {
-  linux /boot/kernel console=ttyS0 rootfstype=ext4 rw root=LABEL=$label $extra
-  initrd /boot/initramfs
-}
-GRUB
+  cp "$RELEASE$GRUB_CONFIG" "$ESP/grub/"
   grub-editenv "$ESP/grub/grubenv" create
   grub-editenv "$ESP/grub/grubenv" set slot=a prev=a tries=1 gfxmode=auto
 }
