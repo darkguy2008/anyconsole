@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
+. ./config
 . guest/config
 DISK_SIZE=${DISK_SIZE:-8G}
 ESP_SLACK_MIB=64
@@ -101,4 +102,5 @@ sh build/rootfs
 build_esp
 build_disk
 build_installer
-cp -f /usr/share/OVMF/OVMF_VARS.fd build/out/efivars.fd
+cp /usr/share/OVMF/OVMF_CODE.fd /usr/share/OVMF/OVMF_VARS.fd "$OVMF_DIR"/
+cp -f "$OVMF_VARS" build/out/efivars.fd

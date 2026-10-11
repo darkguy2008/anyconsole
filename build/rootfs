@@ -15,8 +15,6 @@ MODULE_FEATURES=build/out/features
 RELEASE=rel/$VERSION
 BASE_IMAGE=anyconsole-rootfs-base
 
-install_firmware() { apk add -q linux-firmware; }
-
 stage_kernel() {
   rm -rf "$STAGE"
   mkdir -p "$STAGE/boot" build/out/cache
@@ -29,8 +27,8 @@ stage_kernel() {
 stage_modules() {
   rm -rf "$MODULE_TREE"
   mkdir -p "$MODULE_FEATURES" "$STAGE/lib"
-  softdeps=$(modinfo -F softdep $MODULES | tr ' ' '\n' | grep -v ':$')
-  { { modinfo -n $MODULES; modprobe -S "$KERNEL_VERSION" -q -D -a $softdeps | awk '$1 == "insmod" { print $2 }'; } |
+  softdeps=$(modinfo -k "$KERNEL_VERSION" -F softdep $MODULES | tr ' ' '\n' | grep -v ':$')
+  { { modinfo -k "$KERNEL_VERSION" -n $MODULES; modprobe -S "$KERNEL_VERSION" -q -D -a $softdeps | awk '$1 == "insmod" { print $2 }'; } |
       grep "^$MODULE_DIR/" | sed "s|^$MODULE_DIR/||"; printf "%s\n" $MODULE_TREES; } > "$MODULE_FEATURES/anyconsole.modules"
   mkinitfs -l -k -t "$PWD/$MODULE_TREE" -P "$PWD/$MODULE_FEATURES" -F "base kms anyconsole" "$KERNEL_VERSION" >/dev/null
   cp -a "$MODULE_TREE/lib/modules" "$MODULE_TREE/lib/firmware" "$STAGE/lib/"
@@ -53,7 +51,6 @@ build_userspace() {
 
 dedup_releases() { hardlink -q -t rel; }
 
-install_firmware
 stage_kernel
 stage_modules
 build_base

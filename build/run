@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-. config
+. ./config
 . guest/config
 sh build/store
 run_qemu build/out/efivars.fd build/out/disk.img \

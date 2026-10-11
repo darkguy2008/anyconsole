@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-. config
+. ./config
 . guest/config
 VERSION=$(cat VERSION)
 OUT=build/out/test
@@ -96,7 +96,7 @@ start_vm() {
   rm -rf $OUT
   mkdir -p $OUT
   truncate -s $TARGET_SIZE $OUT/target.img
-  cp /usr/share/OVMF/OVMF_VARS.fd $OUT/efivars.fd
+  cp $OVMF_VARS $OUT/efivars.fd
   run_qemu $OUT/efivars.fd $OUT/target.img \
     "hostfwd=tcp:127.0.0.1:$SSH_TEST_PORT-:22,hostfwd=tcp:127.0.0.1:$API_TEST_PORT-:$API_PORT" \
     -device qemu-xhci -drive file=build/out/installer.img,format=raw,if=none,id=usb0 -device usb-storage,drive=usb0,id=stick \

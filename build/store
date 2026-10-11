@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-. config
+. ./config
 DOWNLOADS=build/out/cache/downloads
 SHIRU=https://web.archive.org/web/2020id_/https://shiru.untergrund.net/files
 INUFUTO=https://web.archive.org/web/2024id_/http://inufuto.web.fc2.com

@@ -1,13 +1,13 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")"
-. config
+. ./config
 . guest/config
 INSTALLER=build/out/installer.img
 REBOOT_SECONDS=300
 POLL_SECONDS=2
 build_image() {
-  ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/image >/dev/null"
+  ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/host sh build/image >/dev/null"
   rsync -S --mkpath --progress "$DEPLOY_HOST:$DEPLOY_PATH/$INSTALLER" "$INSTALLER"
 }
 if [ -n "${CONSOLE_BOX:-}" ]; then
