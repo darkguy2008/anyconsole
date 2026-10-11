@@ -4,6 +4,8 @@ cd "$(dirname "$0")"
 . ./config
 INDEX=rel/index
 ROOTFS_LOG=build/out/rootfs.log
+RSYNCD_CONF=build/out/rsyncd.conf
+RSYNCD_PID=/run/rsyncd.pid
 
 push_to_host() {
   [ "${1:-}" = force ] || echo $(( $(cat VERSION) + 1 )) > VERSION
@@ -19,9 +21,10 @@ build_release() {
 }
 
 serve_releases() {
-  printf 'use chroot = no\nuid = root\ngid = root\n[rel]\npath = %s/rel\nread only = yes\n' \
-    "$PWD" > /etc/rsyncd.conf
-  rc-service rsyncd status >/dev/null || rc-service rsyncd start
+  mkdir -p "${RSYNCD_CONF%/*}"
+  printf 'use chroot = no\nuid = root\ngid = root\npid file = %s\n[rel]\npath = %s/rel\nread only = yes\n' \
+    "$RSYNCD_PID" "$PWD" > "$RSYNCD_CONF"
+  pgrep -F "$RSYNCD_PID" -L >/dev/null 2>&1 || rsync --daemon --config="$PWD/$RSYNCD_CONF"
 }
 
 [ "${ANYCONSOLE_ONHOST:-}" = 1 ] || push_to_host "$@"
