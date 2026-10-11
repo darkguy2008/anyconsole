@@ -162,10 +162,12 @@ resume() {
   [ -z "$hook" ] || printf '%s\n' $running | xargs -r -I{} docker exec {} "$hook" "$(screen_state "$1" "$2")"
 }
 
+close() { containers "$1" "$2" | xargs -r docker stop >/dev/null; }
+
 stop() { containers | xargs -r docker rm -f >/dev/null; }
 
 case "${1:-}" in
-  refresh|prepare|install|uninstall|run|pause|resume|stop|labels|recipe_sum) command=$1; shift; $command "$@" ;;
+  refresh|prepare|install|uninstall|run|pause|resume|close|stop|labels|recipe_sum) command=$1; shift; $command "$@" ;;
   *) cat >&2 <<'USAGE'
 usage: games <command>
   refresh                         mount every store in /data/stores and list its games
@@ -175,6 +177,7 @@ usage: games <command>
   run <slug> <platform> <wayland dir> <states dir> <profile>  play an installed game in its sandbox with the profile's saves
   pause <slug> <platform>         freeze a running game
   resume <slug> <platform>        unfreeze a running game and show its second screen if chosen
+  close <slug> <platform>         stop a running game, killing it if it hasn't quit by docker's stop timeout
   stop                            remove every running game container
   labels <platform>               print the labels of the platform's image as JSON
   recipe_sum                      print the checksum every current platform image is labeled with
