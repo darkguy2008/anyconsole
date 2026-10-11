@@ -1,26 +1,52 @@
 CONSOLE_PASSWORD=anyconsole
 
-SSH_PORT=2222
 NIC=nic0
+VM_MEMORY_MIB=4096
+SLOT_SSH_PORT=2300
+SLOT_API_PORT=8100
+SLOT_VNC_DISPLAY=10
+VM_FILE=build/out/vm
 
 DEPLOY_HOST=ale
-DEPLOY_PATH=anyconsole
+WORKSPACES=anyconsole-workspaces
+HOST_DIR=/srv/anyconsole
+RELEASES_DIR=$HOST_DIR/rel
+LOCK_DIR=/run/anyconsole
+BASE_IMAGE_PREFIX=anyconsole-rootfs-base
 
 TEST_STORE=build/out/store
 TEST_STORE_URL=smb://10.0.2.4/qemu
 OVMF_DIR=build/out
 OVMF_CODE=$OVMF_DIR/OVMF_CODE.fd
 OVMF_VARS=$OVMF_DIR/OVMF_VARS.fd
-TEST_BIOS=build/out/bios
+TEST_BIOS=$HOST_DIR/bios
 
 run_qemu() {
   vars=$1 disk=$2 forwards=$3
   shift 3
-  qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 4 -m 4096 \
+  qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 4 -m $VM_MEMORY_MIB \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" -drive if=pflash,format=raw,file="$vars" \
     -device ich9-ahci,id=ahci -drive file="$disk",format=raw,if=none,id=d0 -device ide-hd,drive=d0,bus=ahci.0 \
     -netdev user,id=net0,$forwards,smb=$PWD/$TEST_STORE -device e1000e,netdev=net0,id=$NIC \
     -audiodev none,id=sound -device ich9-intel-hda -device hda-micro,audiodev=sound -vga none -device virtio-vga-gl -display egl-headless "$@"
 }
 with_password() { SSH_ASKPASS="$PWD/build/askpass" SSH_ASKPASS_REQUIRE=force "$@"; }
-sync_host() { rsync -a --delete --exclude .git --exclude-from=.gitignore ./ "$DEPLOY_HOST:$DEPLOY_PATH/"; }
+workspace_name() { printf '%s-%s\n' "$(printf %s "${1##*/}" | tr -c 'a-z0-9._-' _)" "$(printf %s "$1" | cksum | cut -d' ' -f1)"; }
+live_workspaces() {
+  git worktree list --porcelain | while read -r key path; do
+    if [ "$key" = worktree ]; then workspace_name "$path"; fi
+  done
+}
+DEPLOY_PATH=$WORKSPACES/$(workspace_name "$(pwd -P)")
+sync_host() {
+  rsync -a --mkpath --delete --exclude .git --exclude-from=.gitignore ./ "$DEPLOY_HOST:$DEPLOY_PATH/"
+  ssh "$DEPLOY_HOST" sh "$DEPLOY_PATH/build/prune" "${DEPLOY_PATH##*/}" "$(live_workspaces | tr '\n' ' ')"
+}
+on_host() { ssh "$DEPLOY_HOST" flock -s -o "$DEPLOY_PATH.lock" "$@"; }
+published_version() {
+  if [ -f "$RELEASES_DIR/index" ]; then (. "$RELEASES_DIR/index"; echo "$REL"); else echo 0; fi
+}
+require_newer() {
+  published=$(published_version)
+  [ "$1" -gt "$published" ] || { echo "v$1 is not newer than the published v$published; raise VERSION first" >&2; exit 1; }
+}

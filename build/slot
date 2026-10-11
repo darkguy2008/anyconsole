@@ -1,0 +1,23 @@
+#!/bin/sh
+SLOT_DIR=$LOCK_DIR/slots
+SLOT_COUNT=$(awk -v vm_mib="$VM_MEMORY_MIB" '$1 == "MemTotal:" { print int($2 / 1024 / vm_mib) }' /proc/meminfo)
+VNC_BASE_PORT=5900
+
+claim_slot_number() {
+  exec 9>>"$SLOT_DIR/$slot"
+  flock -n 9 || return 1
+  for port in $((SLOT_SSH_PORT + slot)) $((SLOT_API_PORT + slot)) $((VNC_BASE_PORT + SLOT_VNC_DISPLAY + slot)); do
+    ! ss -Hltn "sport = :$port" | grep -q . || return 1
+  done
+}
+
+claim_slot() {
+  mkdir -p "$SLOT_DIR"
+  slot=0
+  until claim_slot_number; do
+    slot=$((slot + 1))
+    [ "$slot" -lt "$SLOT_COUNT" ] || { echo "all $SLOT_COUNT VM slots on $DEPLOY_HOST are taken" >&2; exit 1; }
+  done
+  VM_SSH_PORT=$((SLOT_SSH_PORT + slot)) VM_API_PORT=$((SLOT_API_PORT + slot)) VM_VNC_DISPLAY=$((SLOT_VNC_DISPLAY + slot))
+  echo "VM slot $slot: ssh $VM_SSH_PORT, api $VM_API_PORT, vnc $DEPLOY_HOST:$((VNC_BASE_PORT + VM_VNC_DISPLAY))"
+}

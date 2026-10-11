@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
+. ./config
 . guest/config
 . build/apt-cache
 
@@ -13,7 +14,7 @@ INITRAMFS_CACHE=build/out/cache/initramfs-$KERNEL_VERSION-$(echo $INITRAMFS_FEAT
 MODULE_TREE=build/out/module-tree
 MODULE_FEATURES=build/out/features
 RELEASE=rel/$VERSION
-BASE_IMAGE=anyconsole-rootfs-base
+BASE_IMAGE=$BASE_IMAGE_PREFIX-$(basename "$PWD")
 
 stage_kernel() {
   rm -rf "$STAGE"

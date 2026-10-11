@@ -3,12 +3,10 @@ set -eu
 cd "$(dirname "$0")/.."
 . ./config
 . guest/config
+. build/slot
 VERSION=$(cat VERSION)
 OUT=build/out/test
 TARGET_SIZE=16G
-SSH_TEST_PORT=2223
-API_TEST_PORT=8081
-VNC_TEST_DISPLAY=1
 POLLS_PER_SECOND=10
 SSH_ALIVE_SECONDS=1
 POLL_INTERVAL=$(awk "BEGIN { print 1 / $POLLS_PER_SECOND }")
@@ -38,14 +36,14 @@ monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
 guest() {
   with_password ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o LogLevel=ERROR -o ConnectTimeout=1 -o ServerAliveInterval=$SSH_ALIVE_SECONDS -o ServerAliveCountMax=$((STEP_SECONDS / SSH_ALIVE_SECONDS)) -o ControlMaster=auto -o ControlPath=$OUT/ssh.sock -o ControlPersist=yes \
-    -p $SSH_TEST_PORT root@127.0.0.1 "$@"
+    -p $VM_SSH_PORT root@127.0.0.1 "$@"
 }
-api() { curl -fsS -X "$1" --data-binary "${3:-}" "127.0.0.1:$API_TEST_PORT/cgi-bin/api/$2"; }
+api() { curl -fsS -X "$1" --data-binary "${3:-}" "127.0.0.1:$VM_API_PORT/cgi-bin/api/$2"; }
 state() { api GET state; }
 expect_reply() {
   seconds=$1 status=$2 filter=$3
   shift 3
-  code=$(jq -n '$ARGS.named' "$@" | curl -sS -m "$seconds" -X POST --data-binary @- -o $OUT/reply.json -w '%{http_code}' "127.0.0.1:$API_TEST_PORT/cgi-bin/api/action") || code=$?
+  code=$(jq -n '$ARGS.named' "$@" | curl -sS -m "$seconds" -X POST --data-binary @- -o $OUT/reply.json -w '%{http_code}' "127.0.0.1:$VM_API_PORT/cgi-bin/api/action") || code=$?
   if [ "$code" != "$status" ] || ! jq -e "$filter" $OUT/reply.json >/dev/null; then
     log FAIL "$* did not answer $status with: $filter, got $code: $(cat $OUT/reply.json 2>&1)" >&2
     diagnose
@@ -54,7 +52,7 @@ expect_reply() {
   log ok "$filter"
 }
 screenshot_is_png() {
-  curl -fsS -m $STEP_SECONDS -o $OUT/screenshot.png "127.0.0.1:$API_TEST_PORT/cgi-bin/api/screenshot" &&
+  curl -fsS -m $STEP_SECONDS -o $OUT/screenshot.png "127.0.0.1:$VM_API_PORT/cgi-bin/api/screenshot" &&
     [ "$(od -An -tx1 -N8 $OUT/screenshot.png | tr -d ' \n')" = $PNG_SIGNATURE ]
 }
 log() { echo "$1 +$(($(date +%s) - STARTED))s: $2"; }
@@ -106,20 +104,21 @@ choose() {
   highlight "$1"
   tap a
 }
-snapshot() { wait_for $STEP_SECONDS gvnccapture "127.0.0.1:$VNC_TEST_DISPLAY" "$OUT/$1.png"; }
-screen_moves() { gvnccapture "127.0.0.1:$VNC_TEST_DISPLAY" "$OUT/before.png" && gvnccapture "127.0.0.1:$VNC_TEST_DISPLAY" "$OUT/after.png" && ! cmp -s "$OUT/before.png" "$OUT/after.png"; }
+snapshot() { wait_for $STEP_SECONDS gvnccapture "127.0.0.1:$VM_VNC_DISPLAY" "$OUT/$1.png"; }
+screen_moves() { gvnccapture "127.0.0.1:$VM_VNC_DISPLAY" "$OUT/before.png" && gvnccapture "127.0.0.1:$VM_VNC_DISPLAY" "$OUT/after.png" && ! cmp -s "$OUT/before.png" "$OUT/after.png"; }
 booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /data/boots) = $1 ] && pidof overlay && [ -s $STATE_FILE ]"; }
 
 start_vm() {
+  claim_slot
   sh build/store
   rm -rf $OUT
   mkdir -p $OUT
   truncate -s $TARGET_SIZE $OUT/target.img
   cp $OVMF_VARS $OUT/efivars.fd
   run_qemu $OUT/efivars.fd $OUT/target.img \
-    "hostfwd=tcp:127.0.0.1:$SSH_TEST_PORT-:22,hostfwd=tcp:127.0.0.1:$API_TEST_PORT-:$API_PORT" \
+    "hostfwd=tcp:127.0.0.1:$VM_SSH_PORT-:22,hostfwd=tcp:127.0.0.1:$VM_API_PORT-:$API_PORT" \
     -device qemu-xhci -drive file=build/out/installer.img,format=raw,if=none,id=usb0 -device usb-storage,drive=usb0,id=stick \
-    -device virtio-gpu-pci,xres=$SECOND_DISPLAY_WIDTH,yres=$SECOND_DISPLAY_HEIGHT -vnc :$VNC_TEST_DISPLAY -monitor unix:$OUT/monitor.sock,server,nowait -serial file:$OUT/serial.log &
+    -device virtio-gpu-pci,xres=$SECOND_DISPLAY_WIDTH,yres=$SECOND_DISPLAY_HEIGHT -vnc :$VM_VNC_DISPLAY -monitor unix:$OUT/monitor.sock,server,nowait -serial file:$OUT/serial.log &
   trap 'monitor quit' EXIT
 }
 

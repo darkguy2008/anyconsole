@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+. "$(dirname "$0")/../config"
+cd "$(dirname "$0")/../.."
+for workspace in */; do
+  name=${workspace%/}
+  case " $* " in *" $name "*) continue ;; esac
+  (
+    flock -n 9 || exit 0
+    docker image rm "$BASE_IMAGE_PREFIX-$name" >/dev/null 2>&1 || true
+    rm -rf "$name" "$name.lock"
+    echo "removed workspace $name"
+  ) 9>"$name.lock"
+done

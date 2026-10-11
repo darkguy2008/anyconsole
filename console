@@ -7,15 +7,27 @@ INSTALLER=build/out/installer.img
 REBOOT_SECONDS=300
 POLL_SECONDS=2
 build_image() {
-  ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/host sh build/image >/dev/null"
+  on_host sh "$DEPLOY_PATH/build/host" sh build/image >/dev/null
   rsync -S --mkpath --progress "$DEPLOY_HOST:$DEPLOY_PATH/$INSTALLER" "$INSTALLER"
 }
+vm_port() {
+  ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && { flock -n $VM_FILE true && { echo 'no VM is running for this worktree, start one with: console start' >&2; exit 1; }; . ./$VM_FILE && echo \$$1; }"
+}
 if [ -n "${CONSOLE_BOX:-}" ]; then
-  SSH_ROUTE= SSH_HOST=root@$CONSOLE_BOX API_VIA= API_HOST=$CONSOLE_BOX
+  SSH_HOST=root@$CONSOLE_BOX API_VIA= API_HOST=$CONSOLE_BOX
 else
-  SSH_ROUTE="-J $DEPLOY_HOST -p $SSH_PORT" SSH_HOST=root@127.0.0.1 API_VIA="ssh $DEPLOY_HOST" API_HOST=localhost
+  SSH_HOST=root@127.0.0.1 API_VIA="ssh $DEPLOY_HOST" API_HOST=localhost
 fi
-api_raw() { printf '%s' "${3:-}" | $API_VIA curl --fail-with-body -sS ${API_TIMEOUT:+-m $API_TIMEOUT} -X "$1" --data-binary @- "$API_HOST:$API_PORT/cgi-bin/api/$2"; }
+ssh_route() {
+  [ -z "${CONSOLE_BOX:-}" ] || return 0
+  port=$(vm_port VM_SSH_PORT) || return
+  echo "-J $DEPLOY_HOST -p $port"
+}
+api_raw() {
+  port=$API_PORT
+  [ -n "${CONSOLE_BOX:-}" ] || port=$(vm_port VM_API_PORT) || return
+  printf '%s' "${3:-}" | $API_VIA curl --fail-with-body -sS ${API_TIMEOUT:+-m $API_TIMEOUT} -X "$1" --data-binary @- "$API_HOST:$port/cgi-bin/api/$2"
+}
 api() { api_raw "$@"; echo; }
 action() { api POST action "$(jq -n '[$ARGS.positional[] | index("=") as $at | {(.[:$at]): .[$at + 1:]}] | add' --args "$@")"; }
 
@@ -74,15 +86,15 @@ case "${1:-status}" in
     shift
     sync_host
     build_image
-    ssh "$DEPLOY_HOST" "cd $DEPLOY_PATH && sh build/test $*" ;;
-  start) ssh "$DEPLOY_HOST" "setsid $DEPLOY_PATH/build/run >/dev/null 2>&1 &" ;;
+    on_host sh "$DEPLOY_PATH/build/test" "$@" ;;
+  start) on_host sh "$DEPLOY_PATH/build/run" ;;
   link) ssh "$DEPLOY_HOST" "echo set_link $NIC $2 | socat - UNIX-CONNECT:$DEPLOY_PATH/build/out/monitor.sock" >/dev/null ;;
-  ssh) shift; with_password ssh $SSH_ROUTE "$SSH_HOST" "$@" ;;
-  bios) with_password rsync -a -e "ssh $SSH_ROUTE" "$2/" "$SSH_HOST:$BIOS_DIR/" ;;
+  ssh) shift; route=$(ssh_route); with_password ssh $route "$SSH_HOST" "$@" ;;
+  bios) route=$(ssh_route); with_password rsync -a -e "ssh $route" "$2/" "$SSH_HOST:$BIOS_DIR/" ;;
   log) ssh "$DEPLOY_HOST" "tail -n ${2:-40} $DEPLOY_PATH/build/out/boot.log" ;;
   help) cat >&2 <<'USAGE'
 usage: console [box address] <command>
-  without an address, commands go to the QEMU test VM
+  without an address, commands go to this worktree's QEMU test VM
   status     show the running console's OTA state
   state      show the console's screen, games, stores, audio and controllers
   store add smb://[user:password@]host/share/path  add a game store
@@ -102,10 +114,10 @@ usage: console [box address] <command>
   reboot     reboot it
   poweroff   power it off
   push       deploy a new release, then update and reboot it
-  image      build disk + USB installer on the build host, fetch installer.img
+  image      build disk + USB installer in this worktree's workspace on the build host, fetch installer.img
   flash      write installer.img to an external disk (erases it)
-  test [name...]  build, then install from the USB image in QEMU and run the named tests (default: all, see TESTS in build/test)
-  start      boot the QEMU test VM on the build host
+  test [name...]  build, then install from the USB image in QEMU on a VM slot of its own and run the named tests (default: all, see TESTS in build/test)
+  start      boot this worktree's QEMU test VM on the build host and print its VNC address
   link on|off  connect or unplug the VM's network cable
   ssh [cmd]  shell into the running console
   bios <folder>  copy <folder>/<platform>/<files> into the console's BIOS store

@@ -3,6 +3,7 @@ set -eu
 cd "$(dirname "$0")/.."
 . ./config
 DOWNLOADS=build/out/cache/downloads
+SCRATCH=$PWD/build/out/store-scratch
 SHIRU=https://web.archive.org/web/2020id_/https://shiru.untergrund.net/files
 INUFUTO=https://web.archive.org/web/2024id_/http://inufuto.web.fc2.com
 GITHUB=https://github.com
@@ -20,7 +21,7 @@ add_game() {
 
 extract() {
   fetch "$1" "$2"
-  rm -rf "/tmp/$1" && mkdir "/tmp/$1" && unzip -q "$DOWNLOADS/$1" -d "/tmp/$1"
+  mkdir "$SCRATCH/$1" && unzip -q "$DOWNLOADS/$1" -d "$SCRATCH/$1"
 }
 
 add_download() {
@@ -32,19 +33,19 @@ add_download() {
 add_zipped() {
   file=${4##*/}
   extract "$file" "$4"
-  add_game "$1" "$2" "$3" "$(find "/tmp/$file" -iname "$5" | head -1)"
+  add_game "$1" "$2" "$3" "$(find "$SCRATCH/$file" -iname "$5" | head -1)"
 }
 
 add_zipped_without() {
   slug=$1 title=$2 platform=$3 file=$1-${4##*/}
   extract "$file" "$4"
   shift 4
-  (cd "/tmp/$file" && rm "$@" && python3 -m zipfile -c "/tmp/$slug.zip" *)
-  add_game "$slug" "$title" "$platform" "/tmp/$slug.zip"
+  (cd "$SCRATCH/$file" && rm "$@" && python3 -m zipfile -c "$SCRATCH/$slug.zip" *)
+  add_game "$slug" "$title" "$platform" "$SCRATCH/$slug.zip"
 }
 
-mkdir -p "$DOWNLOADS"
-rm -rf "$TEST_STORE"
+rm -rf "$SCRATCH" "$TEST_STORE"
+mkdir -p "$DOWNLOADS" "$SCRATCH"
 add_zipped alter-ego "Alter Ego" nes "$SHIRU/nes/alter_ego.zip" '*.nes'
 add_zipped lan-master "LAN Master" nes "$SHIRU/nes/lan_master.zip" '*.nes'
 add_zipped_without commander-keen "Commander Keen" msdos "$ARCHIVE/keen1-sw/keen1.zip" CATALOG.EXE DEALERS.EXE
