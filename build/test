@@ -76,7 +76,15 @@ wait_for() {
     sleep $POLL_INTERVAL
   done
 }
-holds() { state | jq -e "$1"; }
+exec 4>&2
+holds() {
+  verdict=0
+  state | jq -e "$1" 2>&4 || verdict=$?
+  case $verdict in
+    0|1|4) return $verdict ;;
+    *) log FAIL "jq could not evaluate: $1" >&4; exit 1 ;;
+  esac
+}
 expect() { wait_for $STEP_SECONDS holds "$1"; log ok "$1"; }
 game_name() { echo "${1%/*}-${1#*/}"; }
 game_log() { echo "$LOG_DIR/$(game_name "$1").log"; }
