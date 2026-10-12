@@ -59,6 +59,8 @@ build_installer() {
   root_mib=$(du --apparent-size -m "$INSTALLER_ROOT" | cut -f1)
   truncate -s "$((ALIGNMENT_MIB + esp_mib + root_mib + ALIGNMENT_MIB))M" "$INSTALLER"
   loop=$(losetup -fP --show "$INSTALLER")
+  exec 9<"$loop"
+  flock 9
   sfdisk -q "$loop" <<TABLE
 label: gpt
 size=${esp_mib}MiB, type=uefi, name=INSTALL
@@ -71,6 +73,7 @@ TABLE
   mount "${loop}p1" "$MOUNT"
   cp -a "$ESP"/. "$MOUNT"/
   umount "$MOUNT"
+  exec 9<&-
   losetup -d "$loop"
 }
 
