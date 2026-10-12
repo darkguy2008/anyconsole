@@ -133,7 +133,7 @@ launch_file() {
 hold_idle_latency() {
   latency=$(cat $IDLE_LATENCIES 2>/dev/null | sort -n | grep -vxm1 0) || return 0
   exec 3>/dev/cpu_dma_latency
-  printf '%08x\n' "$latency" >&3
+  printf '%#010x' "$latency" >&3
 }
 
 run() {
