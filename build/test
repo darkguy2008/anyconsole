@@ -4,10 +4,16 @@ cd "$(dirname "$0")/.."
 . ./config
 . guest/config
 . build/slot
+. guest/oci
 VERSION=$(cat VERSION)
 TEST_OUT=build/out/test
 TEST_IMAGE=$TEST_IMAGE_PREFIX-${PWD##*/}
-TEST_IMAGES=$TEST_OUT/images.tar
+FAKEPAD_TAR=$TEST_OUT/fakepad.tar
+TEST_SUBNET=${OTA_HOST%.*}
+TEST_SMB_SERVER=$TEST_SUBNET.4
+TEST_STORE_URL=smb://$TEST_SMB_SERVER/qemu
+RSYNC_PORT=873
+ENGINE_LIST=rel/$ENGINES_MODULE/contracts/$(engine_contract .)
 TEST_VMS=4
 TARGET_SIZE=16G
 POLLS_PER_SECOND=10
@@ -81,7 +87,8 @@ expect() { wait_for $STEP_SECONDS holds "$1"; log ok "$1"; }
 game_name() { echo "${1%/*}-${1#*/}"; }
 game_log() { echo "$LOG_DIR/$(game_name "$1").log"; }
 saves_of() { echo "$PROFILES_DIR/1/saves/$(game_name "$1")"; }
-status_of() { echo ".games[] | select(.key == \"$1\") | .status == \"$2\""; }
+status_of() { echo "(.games[] | select(.key == \"$1\") | .status == \"$2\")"; }
+close_by_action() { expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of "$1" installed))" --arg action close --arg game "$1"; }
 row_value() { echo ".rows[] | select(.label == \"$1\") | .value"; }
 send() { api POST input "$(printf '%s\n' "$@")" >/dev/null; }
 tap() { send "${PAD:-1} $1 1" "${PAD:-1} $1 0"; }
@@ -123,13 +130,14 @@ start_vm() {
   OUT=$TEST_OUT/$slot
   rm -rf $OUT
   mkdir -p $OUT
+  serve_engines
   truncate -s $TARGET_SIZE $OUT/target.img
   cp $OVMF_VARS $OUT/efivars.fd
   run_qemu $OUT/efivars.fd $OUT/target.img \
-    "hostfwd=tcp:127.0.0.1:$VM_SSH_PORT-:22,hostfwd=tcp:127.0.0.1:$VM_API_PORT-:$API_PORT" \
+    "hostfwd=tcp:127.0.0.1:$VM_SSH_PORT-:22,hostfwd=tcp:127.0.0.1:$VM_API_PORT-:$API_PORT,net=$TEST_SUBNET.0/24,smbserver=$TEST_SMB_SERVER,guestfwd=tcp:$OTA_HOST:$RSYNC_PORT-cmd:rsync --daemon --config=$PWD/$OUT/rsyncd.conf" \
     -device qemu-xhci -drive file=build/out/installer.img,format=raw,if=none,id=usb0,snapshot=on -device usb-storage,drive=usb0,id=stick \
     -device virtio-gpu-pci,xres=$SECOND_DISPLAY_WIDTH,yres=$SECOND_DISPLAY_HEIGHT -vnc :$VM_VNC_DISPLAY -monitor unix:$OUT/monitor.sock,server,nowait -serial file:$OUT/serial.log &
-  trap 'monitor quit' EXIT
+  trap 'monitor quit; [ ! -p $OUT/gate ] || release_downloads' EXIT
 }
 
 install_from_stick() {
@@ -376,23 +384,134 @@ play_every_other_game() {
   done
 }
 
-save_test_images() (
+save_fakepad() (
   flock 7
-  [ ! -f $TEST_IMAGES ] || exit 0
+  [ ! -f $FAKEPAD_TAR ] || exit 0
   docker build -q --network host -t "$TEST_IMAGE:$FAKEPAD_IMAGE" build/fakepad >/dev/null
-  for platform in $PLATFORMS; do
-    docker build -q --network host --label "$RECIPE_LABEL=$1" --target "$platform" -t "$TEST_IMAGE:$platform" app/recipes >/dev/null
-  done
-  docker save -o $TEST_IMAGES.part "$TEST_IMAGE:$FAKEPAD_IMAGE" $(printf "$TEST_IMAGE:%s " $PLATFORMS)
-  mv $TEST_IMAGES.part $TEST_IMAGES
-) 7>"$TEST_OUT/images.lock"
+  docker save -o $FAKEPAD_TAR.part "$TEST_IMAGE:$FAKEPAD_IMAGE"
+  mv $FAKEPAD_TAR.part $FAKEPAD_TAR
+) 7>"$TEST_OUT/fakepad.lock"
 
-preload_images() {
-  save_test_images "$(guest games recipe_sum)"
-  guest "docker load -q" < $TEST_IMAGES >/dev/null
-  guest "docker tag $TEST_IMAGE:$FAKEPAD_IMAGE $FAKEPAD_IMAGE && for platform in $PLATFORMS; do docker tag $TEST_IMAGE:\$platform $GAME_IMAGE/\$platform; done && docker image rm \$(docker image ls --format '{{.Repository}}:{{.Tag}}' $TEST_IMAGE) >/dev/null"
-  log ok "preloaded the fakepad and $(echo $PLATFORMS | wc -w) platform images"
+preload_fakepad() {
+  save_fakepad
+  guest "docker load -q" < $FAKEPAD_TAR >/dev/null
+  guest "docker tag $TEST_IMAGE:$FAKEPAD_IMAGE $FAKEPAD_IMAGE && docker image rm $TEST_IMAGE:$FAKEPAD_IMAGE >/dev/null"
+  log ok "preloaded the fakepad"
 }
+serve_engines() {
+  cp -al build/out/rel $OUT/rel
+  touch $OUT/rsyncd.log
+  served=$PWD/$OUT
+  cat > $OUT/hold-blobs <<HOLD
+[ "\$RSYNC_REQUEST" != $ENGINES_MODULE/ ] || [ ! -p $served/gate ] || { touch $served/held; cat $served/gate >/dev/null; }
+HOLD
+  releases_rsyncd_conf "$served/rel" "log file = $served/rsyncd.log" "transfer logging = yes" "pre-xfer exec = sh $served/hold-blobs" > $OUT/rsyncd.conf
+}
+hold_downloads() { rm -f $OUT/held; mkfifo $OUT/gate; }
+download_held() { [ -e $OUT/held ]; }
+console_sees_nes() { [ "$(guest "jq -r '.manifests[0].digest' $ENGINE_IMAGES/published/nes.json")" = "$(published_digest $OUT/$ENGINE_LIST/nes.json)" ]; }
+release_downloads() { exec 3<>$OUT/gate; rm $OUT/gate; exec 3>&-; }
+publish_nes() { cp "$1" $OUT/$ENGINE_LIST/nes.json.new && mv $OUT/$ENGINE_LIST/nes.json.new $OUT/$ENGINE_LIST/nes.json; }
+console_nes() { guest "docker image inspect -f '{{.Id}}' $GAME_IMAGE/nes"; }
+nes_is_published() { [ "$(console_nes)" = "$(published_digest $OUT/$ENGINE_LIST/nes.json)" ]; }
+build_prepared_nes() {
+  { cat app/recipes/Dockerfile; cat <<'STAGE'; } > $OUT/Dockerfile
+FROM nes AS nes-prepared
+RUN printf '#!/bin/sh\ntouch /engine/prepared\n' > /prepare && chmod +x /prepare
+VOLUME /engine
+LABEL anyconsole.prepare=/prepare
+STAGE
+  export_engine_image "docker.io/$GAME_IMAGE/nes:latest" $OUT/prepared -f $OUT/Dockerfile --target nes-prepared app/recipes
+  rsync -a --ignore-existing $OUT/prepared/blobs/ $OUT/rel/$ENGINES_MODULE/blobs/
+  jq '.manifests |= [last]' $OUT/prepared/index.json > $OUT/prepared-nes.json
+}
+act_in_background() {
+  reply=$OUT/$1.json
+  shift
+  jq -n '$ARGS.named' "$@" | curl -sS -m $INSTALL_SECONDS -X POST --data-binary @- -o "$reply" "$(api_url action)"
+}
+replied() {
+  jq -e "$2" $OUT/$1.json >/dev/null || { log FAIL "$1 did not answer: $2, got: $(cat $OUT/$1.json 2>&1)" >&2; diagnose; exit 1; }
+  log ok "$1: $2"
+}
+leave_game() {
+  ! holds "$(status_of "$1" running) or $(status_of "$1" paused)" >/dev/null ||
+    close_by_action "$1"
+  ! holds "$(status_of "$1" installed)" >/dev/null ||
+    expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of "$1" ''))" --arg action uninstall --arg game "$1"
+}
+blobs_fetched_since() { tail -n +$(($1 + 1)) $OUT/rsyncd.log | grep -o 'blobs/[^ ]*'; }
+
+install_nes_twice_at_once() {
+  leave_game alter-ego/nes
+  leave_game lan-master/nes
+  wait_for $STEP_SECONDS guest "[ -z \"\$(docker image ls -q $GAME_IMAGE/nes)\" ] && [ ! -e $ENGINE_IMAGES/loaded/nes.json ]"
+  log ok "uninstalling the last nes game deleted the nes engine"
+  logged=$(wc -l < $OUT/rsyncd.log)
+  act_in_background install-alter-ego --arg action install --arg game alter-ego/nes & first=$!
+  act_in_background install-lan-master --arg action install --arg game lan-master/nes & second=$!
+  wait $first
+  wait $second
+  replied install-alter-ego ".ok and (.state | $(status_of alter-ego/nes installed))"
+  replied install-lan-master ".ok and (.state | $(status_of lan-master/nes installed))"
+  fetched=$(blobs_fetched_since "$logged")
+  [ -n "$fetched" ] && [ -z "$(echo "$fetched" | sort | uniq -d)" ] ||
+    { log FAIL "the two nes installs did not download each engine blob exactly once" >&2; diagnose; exit 1; }
+  log ok "two nes installs at once downloaded the nes engine once"
+}
+
+update_nes_in_background() {
+  logged=$(wc -l < $OUT/rsyncd.log)
+  blobs_of $OUT/rel/$ENGINES_MODULE $OUT/nes.json > $OUT/nes-blobs
+  publish_nes $OUT/prepared-nes.json
+  wait_for $STEP_SECONDS nes_is_published
+  wait_for $STEP_SECONDS guest "[ -f $ENGINES/nes/engine/prepared ]"
+  fetched=$(blobs_fetched_since "$logged")
+  [ -n "$fetched" ] && [ -z "$(echo "$fetched" | grep -xFf $OUT/nes-blobs)" ] ||
+    { log FAIL "the nes update downloaded blobs the console already had" >&2; diagnose; exit 1; }
+  log ok "the console updated its nes engine in the background with only the new blobs and ran its prepare hook"
+}
+
+launch_waits_for_background_download() {
+  hold_downloads
+  publish_nes $OUT/nes.json
+  wait_for $STEP_SECONDS download_held
+  act_in_background play-alter-ego --arg action play --arg game alter-ego/nes & playing=$!
+  expect "$(status_of alter-ego/nes "downloading 0%")"
+  release_downloads
+  wait $playing
+  replied play-alter-ego ".ok and (.state | $(status_of alter-ego/nes running))"
+  nes_is_published
+  log ok "the launch followed the background download, then played"
+  close_by_action alter-ego/nes
+}
+
+cancel_launch_download() {
+  expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of lan-master/nes running))" --arg action play --arg game lan-master/nes
+  before=$(console_nes)
+  hold_downloads
+  publish_nes $OUT/prepared-nes.json
+  wait_for $STEP_SECONDS console_sees_nes
+  act_in_background play-alter-ego --arg action play --arg game alter-ego/nes & playing=$!
+  wait_for $STEP_SECONDS download_held
+  expect "$(status_of alter-ego/nes "downloading 0%")"
+  tap b
+  wait $playing
+  replied play-alter-ego ".ok and (.state | ($(status_of alter-ego/nes installed)) and ($(status_of lan-master/nes paused) or $(status_of lan-master/nes running)) and all(.notifications[]; startswith(\"Could not start\") | not))"
+  [ "$(console_nes)" = "$before" ] || { log FAIL "the cancelled launch changed the nes engine" >&2; diagnose; exit 1; }
+  release_downloads
+  log ok "Back cancelled the launch's download and kept the engine it had"
+  close_by_action lan-master/nes
+  wait_for $STEP_SECONDS nes_is_published
+  log ok "with no game running, the console downloaded the cancelled engine in the background"
+}
+
+forget_self_built_engines() {
+  guest "docker create --name self-built $FAKEPAD_IMAGE >/dev/null && docker commit --change 'LABEL $RECIPE_LABEL=self-built' self-built $GAME_IMAGE/self-built >/dev/null && docker rm self-built >/dev/null && rm $ENGINE_IMAGES/forgot-built"
+  wait_for $STEP_SECONDS guest "[ -z \"\$(docker image ls -q $GAME_IMAGE/self-built)\" ]"
+  log ok "the console deleted an engine it had built itself"
+}
+
 fakepad_logs() { guest "docker logs fakepad-$1 2>&1"; }
 fakepad_created() { fakepad_logs "$1" | grep -qx created; }
 fakepad_rumbled() { fakepad_logs bluetooth | grep -q '^rumble '; }
@@ -689,6 +808,16 @@ test_audio() {
   expect ".audio.volume == $volume"
 }
 
+test_engines() {
+  cp $OUT/$ENGINE_LIST/nes.json $OUT/nes.json
+  build_prepared_nes
+  install_nes_twice_at_once
+  update_nes_in_background
+  launch_waits_for_background_download
+  cancel_launch_download
+  forget_self_built_engines
+}
+
 test_nes() {
   holds "$(status_of alter-ego/nes "")" >/dev/null || {
     choose "Alter Ego"
@@ -764,7 +893,7 @@ test_actions() {
     --arg action play --arg game lan-master/nes
   expect_reply $STEP_SECONDS 200 '.ok and .state.dashboard' --arg action dashboard
   guest "docker top $(game_container lan-master/nes) -o pid | tail -n +2 | xargs kill -STOP"
-  expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of lan-master/nes installed))" --arg action close --arg game lan-master/nes
+  close_by_action lan-master/nes
   log ok "Close ended a game that stopped answering signals"
   expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of lan-master/nes ''))" --arg action uninstall --arg game lan-master/nes
   guest "touch $GAMES_DIR/lan-master"
@@ -855,7 +984,7 @@ test_reboot() {
   expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
 }
 
-TESTS="capture symlinks display audio controllers nes actions dreamcast msdos stores gpu logout reboot skins"
+TESTS="capture symlinks display audio controllers nes actions dreamcast msdos stores gpu logout reboot skins engines"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in
@@ -870,7 +999,7 @@ run_tests() {
   wait_for $BOOT_SECONDS booted 1
   log ok "booted v$VERSION from the installed disk"
   push_test_bios
-  preload_images
+  preload_fakepad
   sign_in_from_attract
   expect ".screen == \"home\" and .dashboard and (.rows | length) == 2 and (.display.displays | length) == 2 and .display.canvas == $AREA_SIZE and .display.filter == \"nearest\""
   api POST stores "$TEST_STORE_URL" >/dev/null
@@ -880,9 +1009,9 @@ run_tests() {
 }
 
 sh build/store
-PLATFORMS=$(basename -a "$TEST_STORE"/*/*/ | sort -u | paste -sd " " -)
+sh build/engines build
 mkdir -p $TEST_OUT
-rm -f $TEST_IMAGES
+rm -f $FAKEPAD_TAR
 pids=
 for vm in $(seq $TEST_VMS); do
   group=$(echo $names | awk -v vms=$TEST_VMS -v vm=$vm '{ for (name = vm; name <= NF; name += vms) printf "%s ", $name }')

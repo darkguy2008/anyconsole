@@ -2,14 +2,22 @@
 set -eu
 cd "$(dirname "$0")"
 . ./config
+. guest/config
 ROOTFS_LOG=build/out/rootfs.log
+ENGINES_LOG=build/out/engines.log
 RSYNCD_CONF=$HOST_DIR/rsyncd.conf
 RSYNCD_PID=/run/rsyncd.pid
 
 push_to_host() {
-  [ "${1:-}" = force ] || echo $(( $(cat VERSION) + 1 )) > VERSION
+  case "${1:-}" in force|engines) ;; *) echo $(( $(cat VERSION) + 1 )) > VERSION ;; esac
   sync_host
   on_host env ANYCONSOLE_ONHOST=1 sh "$DEPLOY_PATH/deploy" "$@"
+}
+
+logged() {
+  log=$1
+  shift
+  "$@" > "$log" 2>&1 || { tail -n 40 "$log" >&2; exit 1; }
 }
 
 build_release() {
@@ -17,18 +25,22 @@ build_release() {
   printf '#!/bin/sh\necho "feature %s online"\n' "$1" > "app/feature-$1"
   chmod +x "app/feature-$1"
   mkdir -p "${ROOTFS_LOG%/*}"
-  sh build/host sh build/rootfs > "$ROOTFS_LOG" 2>&1 || { tail -n 40 "$ROOTFS_LOG" >&2; exit 1; }
+  logged "$ROOTFS_LOG" sh build/host sh build/rootfs
+}
+
+publish_engines() {
+  logged "$ENGINES_LOG" sh -c 'sh build/engines build && sh build/engines publish'
 }
 
 serve_releases() {
-  printf 'use chroot = no\nuid = root\ngid = root\npid file = %s\n[rel]\npath = %s\nread only = yes\n' \
-    "$RSYNCD_PID" "$RELEASES_DIR" > "$RSYNCD_CONF"
+  releases_rsyncd_conf "$RELEASES_DIR" "pid file = $RSYNCD_PID" > "$RSYNCD_CONF"
   pgrep -F "$RSYNCD_PID" -L >/dev/null 2>&1 || rsync --daemon --config="$RSYNCD_CONF"
 }
 
 [ "${ANYCONSOLE_ONHOST:-}" = 1 ] || { push_to_host "$@"; exit; }
 
 case "${1:-}" in
+  engines) publish_engines; serve_releases; echo "published the engines"; exit ;;
   force) mode=${2:-} ;;
   --now) mode=all ;;
   *) mode= ;;
@@ -36,7 +48,7 @@ esac
 
 version=$(cat VERSION)
 release=
-[ "${1:-}" = force ] || { require_newer "$version"; build_release "$version"; release=rel/$version; }
+[ "${1:-}" = force ] || { require_newer "$version"; build_release "$version"; publish_engines; release=rel/$version; }
 
 {
   echo "REL=$version"

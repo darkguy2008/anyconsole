@@ -130,7 +130,7 @@ static const char *const tasks[] = {[INSTALLING] = "installing", [UNINSTALLING] 
 struct game {
     char slug[NAME_MAX + 1], platform[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX], job_error[TEXT_MAX], error_line[TEXT_MAX];
     json_object *emulate;
-    int installed, commands, context, paused, closing, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown, error_output;
+    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown, error_output;
     size_t job_length, error_length;
     enum task task;
     unsigned stores;
@@ -226,7 +226,7 @@ static pid_t spawn(char *const argv[], int input, int output, int errors) {
     sigemptyset(&piped);
     sigaddset(&piped, SIGPIPE);
     posix_spawnattr_init(&attributes);
-    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETPGROUP);
     posix_spawnattr_setsigmask(&attributes, &none);
     posix_spawnattr_setsigdefault(&attributes, &piped);
     posix_spawn_file_actions_init(&actions);
@@ -1598,7 +1598,8 @@ static void job_done(int index, int status) {
     game->job = 0;
     if (status && *game->job_error) snprintf(detail, sizeof detail, ": %s", game->job_error);
     if (game->task == LAUNCHING) {
-        if (status) fail(index, "Could not start %s%s", game->title, detail);
+        if (game->cancelled) game->cancelled = 0;
+        else if (status) fail(index, "Could not start %s%s", game->title, detail);
         else if (owner_seated(index)) play(index);
         return;
     }
@@ -1828,6 +1829,9 @@ static void press(int device, enum command command) {
     } else if (command == GUIDE_BUTTON) {
         toggle_guide(device);
         changed = 1;
+    } else if (command == BACK && launching() && games[active].job) {
+        games[active].cancelled = 1;
+        if (kill(-games[active].job, SIGTERM) < 0) perror("cancel launch");
     } else if (interactive() && (!guide_shown || device == focus)) {
         navigate(device, command);
     }
@@ -1855,7 +1859,9 @@ double skin_now(void) {
     return now.tv_sec + now.tv_nsec / NS_PER_SECOND;
 }
 
-static int surface_wanted(void) { return attract() || interactive() || launching() || notification_count; }
+static int menu_wanted(void) { return attract() || interactive() || launching(); }
+
+static int surface_wanted(void) { return menu_wanted() || notification_count; }
 
 static void hide(void) {
     if (!layer) return;
@@ -2186,8 +2192,8 @@ static void settle(void) {
         freeze(i, pause);
     }
     apply_governor();
-    if (menu_told != (attract() || interactive())) {
-        menu_told = attract() || interactive();
+    if (menu_told != menu_wanted()) {
+        menu_told = menu_wanted();
         tell_padd("menu %d", menu_told);
         if (!menu_told) hold(repeating_device, repeating, 0);
     }

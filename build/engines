@@ -1,0 +1,45 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+. ./config
+. guest/config
+. guest/oci
+RECIPES=app/recipes
+BUILT=build/out/rel/$ENGINES_MODULE
+PUBLISHED=$RELEASES_DIR/$ENGINES_MODULE
+LIST=contracts/$(engine_contract .)
+
+platforms() { docker build -q --call targets,format=json $RECIPES | jq -r '.targets[] | select(.description) | .name'; }
+
+export_engine() {
+  name=docker.io/$GAME_IMAGE/$1:latest
+  export_engine_image "$name" "$BUILT" --target "$1" $RECIPES
+  jq --arg name "$name" '.manifests |= [map(select(.annotations["io.containerd.image.name"] == $name)) | last]' "$BUILT/index.json" > "$BUILT/$LIST/$1.json"
+}
+
+fetch_blobs() { echo "$1 lacks a blob its engine lists name" >&2; return 1; }
+
+prune() {
+  keep=$(mktemp)
+  prune_blobs "$1" "$keep" "$1"/contracts/*/*.json || { rm "$keep"; echo "kept every blob in $1" >&2; return 1; }
+  rm "$keep"
+}
+
+build() {
+  rm -rf "$BUILT/index.json" "$BUILT/contracts"
+  mkdir -p "$BUILT/$LIST"
+  for platform in $(platforms); do export_engine "$platform"; done
+  prune "$BUILT"
+}
+
+publish() {
+  lock_releases
+  rsync -a --ignore-existing --mkpath "$BUILT/oci-layout" "$BUILT/blobs" "$PUBLISHED/"
+  rsync -a --delete --mkpath "$BUILT/$LIST/" "$PUBLISHED/$LIST/"
+  prune "$PUBLISHED"
+}
+
+case "${1:-}" in
+  build|publish) "$1" ;;
+  *) echo "usage: build/engines build|publish" >&2; exit 1 ;;
+esac

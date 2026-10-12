@@ -1,0 +1,22 @@
+published_digest() { jq -r '.manifests[0].digest' "$1"; }
+
+blob_paths() { jq -r "$1" "$2" | sed 's|^\([^:]*\):|blobs/\1/|'; }
+
+blobs_of() (
+  set -o pipefail
+  manifests=$(blob_paths '.manifests[]?.digest' "$2") || exit
+  for manifest in $manifests; do
+    echo "$manifest"
+    [ -f "$1/$manifest" ] || echo "$manifest" | fetch_blobs || exit
+    blobs_of "$1" "$1/$manifest" || exit
+  done
+  blob_paths '.config.digest // empty, .layers[]?.digest' "$2"
+)
+
+prune_blobs() {
+  layout=$1 keep=$2
+  shift 2
+  : > "$keep"
+  for index; do blobs_of "$layout" "$index" >> "$keep" || return; done
+  (cd "$layout" && find blobs -type f) | grep -vxF -f "$keep" | (cd "$layout" && xargs -r rm -f)
+}

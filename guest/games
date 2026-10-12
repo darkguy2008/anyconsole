@@ -1,35 +1,95 @@
 #!/bin/sh
 set -eu
 . /etc/anyconsole.conf
-RECIPES=/opt/anyconsole/recipes
-PLATFORMS=/run/platforms
+. /etc/anyconsole-release
+. /usr/share/anyconsole/oci
 LAUNCH_LABEL=anyconsole.launch
 VULKAN_LABEL=anyconsole.vulkan
 BIOS_LABEL=anyconsole.bios
 INSTALL_LABEL=anyconsole.install
+PREPARE_LABEL=anyconsole.prepare
 DEVICES_LABEL=anyconsole.devices
 TOUCHPAD_LABEL=anyconsole.touchpad
 SHARED_LABEL=anyconsole.shared
 SANDBOX="--init --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp --tmpfs /dev/shm"
+ENGINE_SOURCE=rsync://$OTA_HOST/$ENGINES_MODULE
+ENGINE_RUN=/run/engines
+PUBLISHED=$ENGINE_IMAGES/published
+LOADED=$ENGINE_IMAGES/loaded
+PREPARED=$ENGINE_IMAGES/prepared
+FAILED=$ENGINE_IMAGES/failed
+STORE=$ENGINE_IMAGES/store
+STAGING=$ENGINE_IMAGES/staging
+
+fetch_published() { rsync -rt --delete --mkpath "$ENGINE_SOURCE/contracts/$ENGINE_CONTRACT/" "$PUBLISHED/"; }
 
 platforms() {
-  [ -s $PLATFORMS ] || docker build -q --call targets,format=json $RECIPES |
-    jq -r '.targets[] | select(.description) | .name' > $PLATFORMS
-  cat $PLATFORMS
+  [ -d "$PUBLISHED" ] || fetch_published
+  ls "$PUBLISHED" | sed -n 's/\.json$//p'
 }
 
-recipe_sum() { find $RECIPES -type f | sort | xargs cat | sha256sum | cut -d' ' -f1; }
-
-build() (
-  set -o pipefail
-  docker build --progress=rawjson --network host --label "$RECIPE_LABEL=$2" --target "$1" -t "$GAME_IMAGE/$1" $RECIPES 2>&1 >/dev/null |
-    jq -nR --unbuffered -r 'foreach (inputs | fromjson? // ("\(.)\n" | stderr | empty) | .vertexes[]? | select(.name | startswith("[internal]") | not)) as $vertex
-      ({done: {}, percent: -1}; .done[$vertex.digest] = $vertex.completed | .shown = .percent
-        | .percent = ([.percent, ((.done | map_values(values) | length) * 100 / (.done | length) | floor)] | max);
-      select(.percent > .shown) | "building \(.percent)")'
-)
+progress() { awk -v RS='\r' -v step="$1" '$2 != shown { shown = $2; print step, $2 + 0; fflush() }'; }
 
 image_config() { docker image inspect -f '{{json .Config}}' "$GAME_IMAGE/$1" 2>/dev/null || echo '{}'; }
+
+image_id() { docker image inspect -f '{{.Id}}' "$GAME_IMAGE/$1" 2>/dev/null || :; }
+
+engines() { docker image ls --format '{{.Repository}}' "$GAME_IMAGE/*" | sed "s|^$GAME_IMAGE/||"; }
+
+fetch_blobs() { rsync -rt --ignore-existing --mkpath --files-from=- "$@" "$ENGINE_SOURCE/" "$STORE/"; }
+
+lock_store() {
+  exec 7>"$ENGINE_RUN/store.lock"
+  flock -s 7
+}
+
+prune_store() {
+  flock -n -x 7 || return 0
+  set -- "$LOADED"/*.json
+  [ -f "$1" ] || set --
+  prune_blobs "$STORE" "$ENGINE_RUN/keep" "$@" || return 0
+}
+
+download() (
+  set -o pipefail
+  lock_store
+  staged=$STAGING/$1
+  rm -rf "$staged"
+  mkdir -p "$staged" "$LOADED"
+  cp "$PUBLISHED/$1.json" "$staged/index.json"
+  echo "downloading 0"
+  blobs=$(blobs_of "$STORE" "$staged/index.json")
+  printf 'oci-layout\n%s\n' "$blobs" | fetch_blobs --no-inc-recursive --info=progress2 | progress downloading
+  for blob in oci-layout $blobs; do
+    mkdir -p "$staged/$(dirname "$blob")"
+    ln "$STORE/$blob" "$staged/$blob"
+  done
+  echo unpacking
+  tar -c -C "$staged" . | docker load -q >/dev/null
+  [ "$(image_id "$1")" = "$(published_digest "$staged/index.json")" ] || { echo "the downloaded $1 engine is not the published one" >&2; exit 1; }
+  mv "$staged/index.json" "$LOADED/$1.json"
+  rm -rf "$staged"
+  docker image prune -f >/dev/null
+  prune_store
+)
+
+follow() {
+  tail -n 1 -F "$ENGINE_RUN/$1.progress" 2>/dev/null &
+  follower=$!
+  flock 8
+  kill "$follower"
+}
+
+prepare_engine() {
+  [ "$(cat "$PREPARED/$1" 2>/dev/null)" != "$2" ] || return 0
+  hook=$(label_of "$image" "$PREPARE_LABEL")
+  [ -z "$hook" ] || {
+    echo building | tee -a "$ENGINE_RUN/$1.progress"
+    docker run --rm $SANDBOX $(platform_access "$1") --entrypoint "$hook" "$GAME_IMAGE/$1" >&2
+  }
+  mkdir -p "$PREPARED"
+  echo "$2" > "$PREPARED/$1"
+}
 
 label_of() { printf '%s' "$1" | jq -r --arg name "$2" '.Labels[$name] // empty'; }
 
@@ -37,10 +97,50 @@ label() { label_of "$(image_config "$1")" "$2"; }
 
 labels() { image_config "$1" | jq -c '.Labels // {}'; }
 
+lock_engine() {
+  mkdir -p "$ENGINE_RUN"
+  exec 8>"$ENGINE_RUN/$1.lock"
+}
+
 prepare() {
-  recipe=$(recipe_sum)
+  lock_engine "$1"
+  flock -n 8 || follow "$1"
+  [ -f "$PUBLISHED/$1.json" ] || fetch_published
+  [ -f "$PUBLISHED/$1.json" ] || { echo "no $1 engine is published for this console" >&2; return 1; }
+  published=$(published_digest "$PUBLISHED/$1.json")
+  [ "$(image_id "$1")" = "$published" ] || (set -o pipefail; download "$1" | tee "$ENGINE_RUN/$1.progress")
   image=$(image_config "$1")
-  [ "$(label_of "$image" "$RECIPE_LABEL")" = "$recipe" ] || { build "$1" "$recipe"; image=$(image_config "$1"); }
+  prepare_engine "$1" "$published"
+}
+
+remove_engine() {
+  lock_engine "$1"
+  flock 8
+  [ -z "$(image_id "$1")" ] || docker image rm "$GAME_IMAGE/$1" >/dev/null
+  rm -f "$LOADED/$1.json" "$PREPARED/$1" "$FAILED/$1"
+  lock_store
+  prune_store
+}
+
+forget_built() {
+  [ ! -e "$ENGINE_IMAGES/forgot-built" ] || return 0
+  docker image ls -q --filter "label=$RECIPE_LABEL" | sort -u | xargs -r docker image rm -f >/dev/null
+  docker builder prune -af >/dev/null
+  mkdir -p "$ENGINE_IMAGES"
+  touch "$ENGINE_IMAGES/forgot-built"
+}
+
+update() {
+  forget_built
+  fetch_published 2>/dev/null || return 0
+  mkdir -p "$FAILED"
+  for platform in $(engines); do
+    [ -f "$PUBLISHED/$platform.json" ] || continue
+    digest=$(published_digest "$PUBLISHED/$platform.json")
+    { [ "$(cat "$PREPARED/$platform" 2>/dev/null)" = "$digest" ] || [ "$(cat "$FAILED/$platform" 2>/dev/null)" = "$digest" ]; } && continue
+    [ -z "$(containers)" ] || return 0
+    "$0" prepare "$platform" >/dev/null || echo "$digest" > "$FAILED/$platform"
+  done
 }
 
 route_touchpad() { echo "touchpad ${1:-pointer}" > "$PAD_FIFO"; }
@@ -102,7 +202,7 @@ refresh() {
 
 copy() (
   set -o pipefail
-  rsync -a --no-inc-recursive --info=progress2 "$1" "$2" | awk -v RS='\r' '$2 != shown { shown = $2; print "copying", $2 + 0; fflush() }'
+  rsync -a --no-inc-recursive --info=progress2 "$1" "$2" | progress copying
 )
 
 install() {
@@ -119,6 +219,7 @@ install() {
 uninstall() {
   rm -rf "${GAMES_DIR:?}/$1/$2"
   [ -n "$(find "$GAMES_DIR/$1" -mindepth 1 -maxdepth 1 -type d)" ] || rm -rf "${GAMES_DIR:?}/$1"
+  [ -n "$(find "$GAMES_DIR" -mindepth 2 -maxdepth 2 -type d -name "$2")" ] || remove_engine "$2"
 }
 
 launch_file() {
@@ -174,20 +275,20 @@ close() { containers "$1" "$2" | xargs -r docker stop >/dev/null; }
 stop() { containers | xargs -r docker rm -f >/dev/null; }
 
 case "${1:-}" in
-  refresh|prepare|install|uninstall|run|pause|resume|close|stop|labels|recipe_sum) command=$1; shift; $command "$@" ;;
+  refresh|prepare|install|uninstall|run|pause|resume|close|stop|labels|update) command=$1; shift; $command "$@" ;;
   *) cat >&2 <<'USAGE'
 usage: games <command>
   refresh                         mount every store in /data/stores and list its games
-  prepare <platform>              build the platform recipe unless it is current, printing "building <percent>"
-  install <store> <slug> <platform>  build the platform recipe and copy the game from a store, printing "<step> [percent]"
-  uninstall <slug> <platform>     delete an installed game, keeping every profile's saves
+  prepare <platform>              download the platform's published engine unless it is current, printing "<step> [percent]"
+  install <store> <slug> <platform>  prepare the platform's engine and copy the game from a store, printing "<step> [percent]"
+  uninstall <slug> <platform>     delete an installed game, keeping every profile's saves, and the engine with the platform's last game
   run <slug> <platform> <wayland dir> <states dir> <profile>  play an installed game in its sandbox with the profile's saves
   pause <slug> <platform>         freeze a running game
   resume <slug> <platform>        unfreeze a running game and show its second screen if chosen
   close <slug> <platform>         stop a running game, killing it if it hasn't quit by docker's stop timeout
   stop                            remove every running game container
   labels <platform>               print the labels of the platform's image as JSON
-  recipe_sum                      print the checksum every current platform image is labeled with
+  update                          while no game runs, bring every downloaded engine to its published version
 USAGE
     exit 1 ;;
 esac

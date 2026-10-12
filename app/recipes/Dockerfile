@@ -5,82 +5,42 @@ ARG LIBRETRO=https://buildbot.libretro.com
 #              from source with the patches in lsi53c810/ (~14% slower disk I/O, nothing fetched from archive.org)
 ARG WIN98_SCSI=lsi
 
-FROM registry.fedoraproject.org/fedora-minimal:44 AS fedora
+FROM registry.fedoraproject.org/fedora-minimal:44@sha256:f362951032563f154aa976533e3a77c0a51314777de34971f41d99e6956bbc85 AS fedora
 RUN echo install_weak_deps=False >> /etc/dnf/dnf.conf
 
 FROM fedora AS unzip
 ARG LIBRETRO
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y 7zip
-ENV CORES=$LIBRETRO/nightly/linux/x86_64/latest SYSTEM=$LIBRETRO/assets/system STABLE=$LIBRETRO/stable/1.22.2/linux/x86_64
+ENV SYSTEM=$LIBRETRO/assets/system STABLE=$LIBRETRO/stable/1.22.2/linux/x86_64
 WORKDIR /cores
 
 FROM unzip AS retroarch-download
-ADD $STABLE/RetroArch.7z .
-ADD "https://raw.githubusercontent.com/libretro/retroarch-joypad-autoconfig/master/sdl2/PS5%20Controller.cfg" /retroarch/autoconfig/sdl2/ps5.cfg
+ADD --checksum=sha256:7d62da9a21397d6e1b9490785cedbeafd262781b50115076736fbe8a77ef30e9 $STABLE/RetroArch.7z .
+ADD --checksum=sha256:e1013acb1e92a9f63fdb368e0d326a269b0ca4eb22b7e0e8263cbb4eae21f655 "https://raw.githubusercontent.com/libretro/retroarch-joypad-autoconfig/f3b62b847ed21939b668b897b18bbc1defbaae05/sdl2/PS5%20Controller.cfg" /retroarch/autoconfig/sdl2/ps5.cfg
 RUN 7z e RetroArch.7z RetroArch-Linux-x86_64/RetroArch-Linux-x86_64.AppImage >/dev/null \
  && chmod +x RetroArch-Linux-x86_64.AppImage \
  && ./RetroArch-Linux-x86_64.AppImage --appimage-extract >/dev/null \
  && mv squashfs-root/usr/bin/retroarch squashfs-root/usr/lib /retroarch/
 
-FROM unzip AS fceumm
-ADD $CORES/fceumm_libretro.so.zip .
-RUN 7z e fceumm_libretro.so.zip >/dev/null
-
-FROM unzip AS dosbox_pure
-ADD $CORES/dosbox_pure_libretro.so.zip .
-RUN 7z e dosbox_pure_libretro.so.zip >/dev/null
-
-FROM unzip AS snes9x
-ADD $CORES/snes9x_libretro.so.zip .
-RUN 7z e snes9x_libretro.so.zip >/dev/null
-
-FROM unzip AS parallel_n64
-ADD $CORES/parallel_n64_libretro.so.zip .
-RUN 7z e parallel_n64_libretro.so.zip >/dev/null
-
-FROM unzip AS genesis_plus_gx
-ADD $CORES/genesis_plus_gx_libretro.so.zip .
-RUN 7z e genesis_plus_gx_libretro.so.zip >/dev/null
-
-FROM unzip AS mgba
-ADD $CORES/mgba_libretro.so.zip .
-RUN 7z e mgba_libretro.so.zip >/dev/null
-
-FROM unzip AS gambatte
-ADD $CORES/gambatte_libretro.so.zip .
-RUN 7z e gambatte_libretro.so.zip >/dev/null
-
-FROM unzip AS mednafen_wswan
-ADD $CORES/mednafen_wswan_libretro.so.zip .
-RUN 7z e mednafen_wswan_libretro.so.zip >/dev/null
+FROM unzip AS cores
+ADD --checksum=sha256:4b7ed8dc97d4bf035fce182c64b5658c7662e2e9e5d42129538afbd4b6096307 $STABLE/RetroArch_cores.7z .
+RUN 7z e RetroArch_cores.7z 'RetroArch-Linux-x86_64/RetroArch-Linux-x86_64.AppImage.home/.config/retroarch/cores/*' >/dev/null
 
 FROM unzip AS bluemsx
-ADD $CORES/bluemsx_libretro.so.zip $SYSTEM/blueMSX.zip .
-RUN 7z e bluemsx_libretro.so.zip >/dev/null && 7z x -o/system blueMSX.zip >/dev/null
-
-FROM unzip AS freeintv
-ADD $CORES/freeintv_libretro.so.zip .
-RUN 7z e freeintv_libretro.so.zip >/dev/null
-
-FROM unzip AS stella2014
-ADD $CORES/stella2014_libretro.so.zip .
-RUN 7z e stella2014_libretro.so.zip >/dev/null
-
-FROM unzip AS swanstation
-ADD $CORES/swanstation_libretro.so.zip .
-RUN 7z e swanstation_libretro.so.zip >/dev/null
+ADD --checksum=sha256:6db124b8cd102dd68d36c45659e3390fd620732fe2e0179249be404e8f84042f $SYSTEM/blueMSX.zip .
+RUN 7z x -o/system blueMSX.zip >/dev/null
 
 FROM unzip AS dolphin
-ADD $CORES/dolphin_libretro.so.zip $SYSTEM/Dolphin.zip .
-RUN 7z e dolphin_libretro.so.zip >/dev/null && 7z x -o/system Dolphin.zip >/dev/null
+ADD --checksum=sha256:782f390a0818fd9d70e13ad82ee11d9ea16e3979e1de2c4d2b9dfffc155d8c17 $SYSTEM/Dolphin.zip .
+RUN 7z x -o/system Dolphin.zip >/dev/null
 
 FROM unzip AS ppsspp
-ADD $CORES/ppsspp_libretro.so.zip $SYSTEM/PPSSPP.zip .
-RUN 7z e ppsspp_libretro.so.zip >/dev/null && 7z x -o/system PPSSPP.zip >/dev/null
+ADD --checksum=sha256:e93a625c61062ce0032dce034129c14230f5982b492b9f146099340c3b81f4f8 $SYSTEM/PPSSPP.zip .
+RUN 7z x -o/system PPSSPP.zip >/dev/null
 
 FROM unzip AS azahar
-ADD $CORES/azahar_libretro.so.zip .
-RUN 7z e azahar_libretro.so.zip >/dev/null
+ADD --checksum=sha256:2223444b74de2c922bae1efcfed60002f696b3c2aaf4fc73fc03e66a395dc26e https://github.com/azahar-emu/azahar/releases/download/2126.2/azahar-libretro-linux-x86_64-2126.2.zip .
+RUN 7z e azahar-libretro-linux-x86_64-2126.2.zip >/dev/null
 
 FROM fedora AS gpu
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y mesa-dri-drivers mesa-libGL mesa-libEGL libglvnd-gles vulkan-loader mesa-vulkan-drivers pulseaudio-libs
@@ -100,75 +60,75 @@ ENTRYPOINT ["/retroarch/launch"]
 # nes Nintendo Entertainment System
 FROM retroarch AS nes
 LABEL anyconsole.launch="nes fds unf unif" anyconsole.emulate="{\"pad\":\"digital\"}"
-COPY --from=fceumm /cores/fceumm_libretro.so /retroarch/core.so
+COPY --from=cores /cores/fceumm_libretro.so /retroarch/core.so
 
 # msdos MS-DOS
 FROM retroarch AS msdos
 LABEL anyconsole.launch="dosz zip exe com bat conf iso cue"
-COPY --from=dosbox_pure /cores/dosbox_pure_libretro.so /retroarch/core.so
+COPY --from=cores /cores/dosbox_pure_libretro.so /retroarch/core.so
 COPY msdos.opt /retroarch/core.opt
 
 # snes Super Nintendo
 FROM retroarch AS snes
 LABEL anyconsole.launch="sfc smc fig swc bs" anyconsole.emulate="{\"pad\":\"digital\"}"
-COPY --from=snes9x /cores/snes9x_libretro.so /retroarch/core.so
+COPY --from=cores /cores/snes9x_libretro.so /retroarch/core.so
 
 # n64 Nintendo 64
 FROM retroarch AS n64
 LABEL anyconsole.launch="z64 n64 v64"
-COPY --from=parallel_n64 /cores/parallel_n64_libretro.so /retroarch/core.so
+COPY --from=cores /cores/parallel_n64_libretro.so /retroarch/core.so
 
 # genesis Sega Genesis
 FROM retroarch AS genesis
 LABEL anyconsole.launch="md gen smd bin mdx" anyconsole.emulate="{\"pad\":\"digital\"}"
-COPY --from=genesis_plus_gx /cores/genesis_plus_gx_libretro.so /retroarch/core.so
+COPY --from=cores /cores/genesis_plus_gx_libretro.so /retroarch/core.so
 
 # gba Game Boy Advance
 FROM retroarch AS gba
 LABEL anyconsole.launch="gba" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.bios="/system"
-COPY --from=mgba /cores/mgba_libretro.so /retroarch/core.so
+COPY --from=cores /cores/mgba_libretro.so /retroarch/core.so
 
 # gb Game Boy
 FROM retroarch AS gb
 LABEL anyconsole.launch="gb gbc dmg" anyconsole.emulate="{\"pad\":\"digital\"}"
-COPY --from=gambatte /cores/gambatte_libretro.so /retroarch/core.so
+COPY --from=cores /cores/gambatte_libretro.so /retroarch/core.so
 
 # wsc WonderSwan Color
 FROM retroarch AS wsc
 LABEL anyconsole.launch="wsc ws pc2" anyconsole.emulate="{\"pad\":\"digital\"}"
-COPY --from=mednafen_wswan /cores/mednafen_wswan_libretro.so /retroarch/core.so
+COPY --from=cores /cores/mednafen_wswan_libretro.so /retroarch/core.so
 
 # msx2 MSX2
 FROM retroarch AS msx2
 LABEL anyconsole.launch="m3u dsk mx2 rom cas" anyconsole.emulate="{\"pad\":\"digital\"}"
-COPY --from=bluemsx /cores/bluemsx_libretro.so /retroarch/core.so
+COPY --from=cores /cores/bluemsx_libretro.so /retroarch/core.so
 COPY --from=bluemsx /system /system
 
 # intellivision Intellivision
 FROM retroarch AS intellivision
 LABEL anyconsole.launch="int bin rom" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.bios="/system"
-COPY --from=freeintv /cores/freeintv_libretro.so /retroarch/core.so
+COPY --from=cores /cores/freeintv_libretro.so /retroarch/core.so
 
 # atari2600 Atari 2600
 FROM retroarch AS atari2600
 LABEL anyconsole.launch="a26 bin" anyconsole.emulate="{\"pad\":\"digital\"}"
-COPY --from=stella2014 /cores/stella2014_libretro.so /retroarch/core.so
+COPY --from=cores /cores/stella2014_libretro.so /retroarch/core.so
 
 # ps1 PlayStation
 FROM retroarch AS ps1
 LABEL anyconsole.launch="m3u chd cue pbp" anyconsole.bios="/system"
-COPY --from=swanstation /cores/swanstation_libretro.so /retroarch/core.so
+COPY --from=cores /cores/swanstation_libretro.so /retroarch/core.so
 
 # gamecube Nintendo GameCube
 FROM retroarch AS gamecube
 LABEL anyconsole.launch="m3u rvz gcm iso ciso gcz wia tgc dol elf"
-COPY --from=dolphin /cores/dolphin_libretro.so /retroarch/core.so
+COPY --from=cores /cores/dolphin_libretro.so /retroarch/core.so
 COPY --from=dolphin /system /system
 
 # psp PlayStation Portable
 FROM retroarch AS psp
 LABEL anyconsole.launch="iso cso pbp"
-COPY --from=ppsspp /cores/ppsspp_libretro.so /retroarch/core.so
+COPY --from=cores /cores/ppsspp_libretro.so /retroarch/core.so
 COPY --from=ppsspp /system /system
 
 # n3ds Nintendo 3DS
@@ -187,16 +147,12 @@ RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y i
 COPY rewind /usr/local/bin/
 
 FROM fedora AS fetch
-RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y tar gzip libxml2 7zip
-COPY appimage github-release /usr/local/bin/
-
-FROM fetch AS redream-release
-ADD https://redream.io/download /redream.html
-RUN echo "https://redream.io$(xmllint --html --xpath 'string((//a[starts-with(@href, "/download/redream.x86_64-linux-v") and contains(@href, "-g")])[1]/@href)' /redream.html 2>/dev/null)" > /url
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y tar gzip 7zip
+COPY appimage /usr/local/bin/
 
 FROM fetch AS redream-download
-COPY --from=redream-release /url /url
-RUN mkdir /redream && curl -fsSL "$(cat /url)" | tar xz -C /redream
+ADD --checksum=sha256:685370fd84766d3a59d74ab4bd1b1ce0dd3b3094a9548dcb28f22b1e0e5210cf https://redream.io/download/redream.x86_64-linux-v1.5.0-1240-gc41f7f2.tar.gz /redream.tar.gz
+RUN mkdir /redream && tar xzf /redream.tar.gz -C /redream
 
 FROM fedora AS redream-commands
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gcc python3-capstone python3-pyelftools
@@ -214,12 +170,8 @@ COPY redream/ /opt/redream/
 ENV REDREAM_COMMANDS=/tmp/redream-commands
 ENTRYPOINT ["/opt/redream/launch"]
 
-FROM fetch AS cemu-release
-ADD https://github.com/cemu-project/Cemu/releases.atom /releases.atom
-RUN github-release cemu-project/Cemu x86_64.AppImage > /url
-
 FROM fetch AS cemu-download
-COPY --from=cemu-release /url /url
+ADD --checksum=sha256:0c20c4aeb800bb13d9bab9474ef45a6f8fcde6402cad9b32ac2a1bbd03186313 https://github.com/cemu-project/Cemu/releases/download/v2.6/Cemu-2.6-x86_64.AppImage /app.AppImage
 RUN appimage /cemu
 
 # wiiu Nintendo Wii U
@@ -231,12 +183,8 @@ COPY cemu/ /opt/cemu/
 ENV XDG_CONFIG_HOME=/engine XDG_DATA_HOME=/engine XDG_CACHE_HOME=/engine GDK_BACKEND=x11
 ENTRYPOINT ["/opt/cemu/launch"]
 
-FROM fetch AS rpcs3-release
-ADD https://github.com/RPCS3/rpcs3-binaries-linux/releases.atom /releases.atom
-RUN github-release RPCS3/rpcs3-binaries-linux _linux64.AppImage > /url
-
 FROM fetch AS rpcs3-download
-COPY --from=rpcs3-release /url /url
+ADD --checksum=sha256:21aa550a312b449ad1f1a2868ccd2100c3ae52f5a03e6fcb46774df0632195cb https://github.com/RPCS3/rpcs3-binaries-linux/releases/download/build-2ba2f75bcea7ef6bdd687046c7fcfb790faf9853/rpcs3-v0.0.43-20284-2ba2f75b_linux64.AppImage /app.AppImage
 RUN appimage /rpcs3
 
 # ps3 PlayStation 3
@@ -248,12 +196,8 @@ COPY rpcs3/ /opt/rpcs3/
 ENV XDG_CONFIG_HOME=/engine/config XDG_CACHE_HOME=/engine/cache QT_QPA_PLATFORM=xcb
 ENTRYPOINT ["/opt/rpcs3/launch"]
 
-FROM fetch AS pcsx2-release
-ADD https://github.com/PCSX2/pcsx2/releases.atom /releases.atom
-RUN github-release PCSX2/pcsx2 -linux-appimage-x64-Qt.AppImage > /url
-
 FROM fetch AS pcsx2-download
-COPY --from=pcsx2-release /url /url
+ADD --checksum=sha256:0c46bb6a88aa2782b10853a7b07cf3387ba99cbef2b966372cd2315b8571abea https://github.com/PCSX2/pcsx2/releases/download/v2.8.2/pcsx2-v2.8.2-linux-appimage-x64-Qt.AppImage /app.AppImage
 RUN appimage /pcsx2
 
 # ps2 PlayStation 2
@@ -265,20 +209,11 @@ COPY pcsx2/ /opt/pcsx2/
 ENV XDG_CONFIG_HOME=/engine QT_QPA_PLATFORM=xcb
 ENTRYPOINT ["/opt/pcsx2/launch"]
 
-FROM fetch AS softgpu-release
-ADD https://github.com/JHRobotics/softgpu/releases.atom /releases.atom
-RUN github-release JHRobotics/softgpu .zip > /url
-
-FROM fetch AS patcher9x-release
-ADD https://github.com/JHRobotics/patcher9x/releases.atom /releases.atom
-RUN github-release JHRobotics/patcher9x -linux-amd64.tar.gz > /url
-
 FROM fetch AS win98-download
-COPY --from=softgpu-release /url /softgpu.url
-COPY --from=patcher9x-release /url /patcher9x.url
-ADD https://files.emulace.cz/ac97_362.zip /ac97.zip
-RUN curl -fsSL -o /softgpu.zip "$(cat /softgpu.url)" \
- && curl -fsSL "$(cat /patcher9x.url)" | tar xz -C /usr/local/bin \
+ADD --checksum=sha256:287449f16ad234da1d546deac66b3f91ab3101f5d3a202472117b83de42ccc68 https://github.com/JHRobotics/softgpu/releases/download/v0.8.2025.53/softgpu-0.8.2025.53.zip /softgpu.zip
+ADD --checksum=sha256:ca787d7c6421959c9f37afdd998feb9393fe07c1c63c43c4e22db5b170a79908 https://github.com/JHRobotics/patcher9x/releases/download/v0.9.91/patcher9x-0.9.91-linux-amd64.tar.gz /patcher9x.tar.gz
+ADD --checksum=sha256:6060cfcc0eee1800d29ccbc45a1a28b94ca2604cfda5ca301dc89cf4d22e6ee5 https://files.emulace.cz/ac97_362.zip /ac97.zip
+RUN tar xzf /patcher9x.tar.gz -C /usr/local/bin \
  && 7z e -o/base/drivers /softgpu.zip 'driver/sse3-w98/*' -x!'driver/sse3-w98/mesa25' >/dev/null \
  && 7z e -o/base/build/DX9 /softgpu.zip 'redist/dx9_2004/*' >/dev/null \
  && 7z e -o/base/drivers /ac97.zip 'WDM/*' >/dev/null
@@ -320,7 +255,7 @@ RUN mkdir /anycon \
 # win98 Windows 98
 FROM gpu AS win98
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y libatomic qemu-system-x86-core qemu-ui-sdl qemu-ui-opengl qemu-audio-pa qemu-img mtools dosfstools util-linux syslinux 7zip jq python3-evdev
-LABEL anyconsole.launch="img iso" anyconsole.bios="/bios" anyconsole.install="/opt/win98/install" anyconsole.devices="/dev/kvm" anyconsole.touchpad="raw" anyconsole.shared="/shared"
+LABEL anyconsole.launch="img iso" anyconsole.bios="/bios" anyconsole.prepare="/opt/win98/windows" anyconsole.install="/opt/win98/install" anyconsole.devices="/dev/kvm" anyconsole.touchpad="raw" anyconsole.shared="/shared"
 COPY --from=win98-download /usr/local/bin/patcher9x /usr/local/bin/
 COPY --from=win98-download /base /opt/win98/base
 COPY --from=win98-programs /anycon /opt/win98/base/anycon

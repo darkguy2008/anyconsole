@@ -16,7 +16,6 @@ BASE_IMAGE_PREFIX=anyconsole-rootfs-base
 TEST_IMAGE_PREFIX=anyconsole-test
 
 TEST_STORE=build/out/store
-TEST_STORE_URL=smb://10.0.2.4/qemu
 OVMF_DIR=build/out
 OVMF_CODE=$OVMF_DIR/OVMF_CODE.fd
 OVMF_VARS=$OVMF_DIR/OVMF_VARS.fd
@@ -36,8 +35,27 @@ run_qemu() {
   qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 4 -m $VM_MEMORY_MIB \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" -drive if=pflash,format=raw,file="$vars" \
     -device ich9-ahci,id=ahci -drive file="$disk",format=raw,if=none,id=d0 -device ide-hd,drive=d0,bus=ahci.0 \
-    -netdev user,id=net0,$forwards,smb=$PWD/$TEST_STORE -device e1000e,netdev=net0,id=$NIC \
+    -netdev "user,id=net0,$forwards,smb=$PWD/$TEST_STORE" -device e1000e,netdev=net0,id=$NIC \
     -audiodev none,id=sound -device ich9-intel-hda -device hda-micro,audiodev=sound -vga none -device virtio-vga-gl -display egl-headless "$@"
+}
+engine_contract() { sha256sum "$1/guest/games" | cut -d' ' -f1; }
+RELEASE_LOCK_SECONDS=1800
+UNDATED=0
+lock_releases() {
+  exec 9>>"$RELEASES_DIR/.lock"
+  flock -w $RELEASE_LOCK_SECONDS 9 || { echo "another publish held $RELEASES_DIR for ${RELEASE_LOCK_SECONDS}s" >&2; exit 1; }
+}
+export_engine_image() {
+  name=$1 destination=$2
+  shift 2
+  SOURCE_DATE_EPOCH=$UNDATED docker buildx build -q --network host --provenance=false --sbom=false --output "type=oci,name=$name,tar=false,dest=$destination" "$@" >/dev/null
+}
+releases_rsyncd_conf() {
+  path=$1
+  shift
+  printf 'use chroot = no\nuid = root\ngid = root\n'
+  printf '%s\n' "$@"
+  printf '[rel]\npath = %s\nread only = yes\n[%s]\npath = %s/%s\nread only = yes\n' "$path" "$ENGINES_MODULE" "$path" "$ENGINES_MODULE"
 }
 with_password() { SSH_ASKPASS="$PWD/build/askpass" SSH_ASKPASS_REQUIRE=force "$@"; }
 workspace_name() { slug=$(printf %s "${1##*/}" | tr -c 'a-z0-9._-' _) && checksum=$(printf %s "$1" | cksum) && printf '%s-%s\n' "$slug" "${checksum%% *}"; }
