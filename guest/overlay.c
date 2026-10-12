@@ -51,7 +51,7 @@
 #define REPEAT_DELAY_MS 400
 #define REPEAT_INTERVAL_MS 80
 #define NS_PER_MS 1000000
-#define NS_PER_SECOND ((double)MS_PER_SECOND * NS_PER_MS)
+#define NS_PER_SECOND ((double)MSEC_PER_SEC * NS_PER_MS)
 #define PERCENT 100
 #define RGB_MASK 0x00ffffffu
 #define VOLUME_STEP "5%"

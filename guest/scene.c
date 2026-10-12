@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <wayland-egl.h>
 #include <yoga/Yoga.h>
+#include "anyconsole.h"
 #include "shader.h"
 #include "skin.h"
 
@@ -535,7 +536,7 @@ void scene_transition(struct node *node, const char *name, double milliseconds, 
     if (prop < 0) return;
     int curve = easing ? parse_words(easings, easing) : EASE_OUT;
     node->motions[prop] = stiffness > 0     ? (struct motion){.kind = SPRING, .stiffness = stiffness}
-                          : milliseconds > 0 ? (struct motion){.kind = EASE, .seconds = milliseconds / MS_PER_SECOND, .easing = curve < 0 ? EASE_OUT : curve}
+                          : milliseconds > 0 ? (struct motion){.kind = EASE, .seconds = milliseconds / MSEC_PER_SEC, .easing = curve < 0 ? EASE_OUT : curve}
                                              : (struct motion){.kind = JUMP};
 }
 
