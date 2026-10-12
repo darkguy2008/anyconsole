@@ -55,7 +55,7 @@ dlopened() {
   found=$(jq -r .ICD.library_path $EGL_VENDORS/*.json $(vulkan_drivers) | installed)
   until
     previous=$found
-    found=$({ echo "$previous"; python3 /src/build/dlopen-requests $(lddtree -l $BINARIES $GBM_BACKEND $AUDIO $DOCKER $previous); } | installed)
+    found=$({ echo "$previous"; /src/build/dlopen-requests $(lddtree -l $BINARIES $GBM_BACKEND $AUDIO $DOCKER $previous); } | installed)
     [ "$found" = "$previous" ]
   do :; done
   echo "$found"
