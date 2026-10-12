@@ -1,6 +1,6 @@
 #!/bin/sh
 . /etc/profile
 . /etc/anyconsole.conf
-export LIBSEAT_BACKEND=builtin
+export LIBSEAT_BACKEND=seatd
 exec >>"$LOG_DIR/kiosk.log" 2>&1
 exec unshare -m --propagation private sh -c "mount --bind $INPUT_NODES /dev/input && exec compositor /opt/anyconsole/session"

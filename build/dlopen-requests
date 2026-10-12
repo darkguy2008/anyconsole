@@ -1,0 +1,12 @@
+#!/usr/bin/python3
+import json
+import sys
+from elftools.elf.elffile import ELFFile
+
+for path in sys.argv[1:]:
+    with open(path, "rb") as file:
+        section = ELFFile(file).get_section_by_name(".note.dlopen")
+        for note in section.iter_notes() if section else ():
+            for request in json.loads(note["n_desc"].rstrip(b"\0")):
+                if request["priority"] != "suggested":
+                    print(*request["soname"], sep="\n")
