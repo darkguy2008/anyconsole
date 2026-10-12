@@ -40,16 +40,20 @@ run_qemu() {
     -audiodev none,id=sound -device ich9-intel-hda -device hda-micro,audiodev=sound -vga none -device virtio-vga-gl -display egl-headless "$@"
 }
 with_password() { SSH_ASKPASS="$PWD/build/askpass" SSH_ASKPASS_REQUIRE=force "$@"; }
-workspace_name() { printf '%s-%s\n' "$(printf %s "${1##*/}" | tr -c 'a-z0-9._-' _)" "$(printf %s "$1" | cksum | cut -d' ' -f1)"; }
+workspace_name() { slug=$(printf %s "${1##*/}" | tr -c 'a-z0-9._-' _) && checksum=$(printf %s "$1" | cksum) && printf '%s-%s\n' "$slug" "${checksum%% *}"; }
 live_workspaces() {
-  git worktree list --porcelain | while read -r key worktree; do
-    if [ "$key" = worktree ]; then workspace_name "$worktree"; fi
-  done
+  worktrees=$(git worktree list --porcelain) || return
+  while read -r key worktree; do
+    if [ "$key" = worktree ]; then workspace=$(workspace_name "$worktree") || return; printf '%s ' "$workspace"; fi
+  done <<EOF
+$worktrees
+EOF
 }
 DEPLOY_PATH=$WORKSPACES/$(workspace_name "$(pwd -P)")
 sync_host() {
+  live=$(live_workspaces) || return
   rsync -a --mkpath --delete --exclude .git --exclude-from=.gitignore ./ "$DEPLOY_HOST:$DEPLOY_PATH/"
-  ssh "$DEPLOY_HOST" sh "$DEPLOY_PATH/build/prune" "${DEPLOY_PATH##*/}" "$(live_workspaces | tr '\n' ' ')"
+  ssh "$DEPLOY_HOST" sh "$DEPLOY_PATH/build/prune" "${DEPLOY_PATH##*/}" "$live"
 }
 on_host() { ssh "$DEPLOY_HOST" flock -s -o "$DEPLOY_PATH.lock" "$@"; }
 published_version() {
