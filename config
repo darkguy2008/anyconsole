@@ -42,8 +42,8 @@ run_qemu() {
 with_password() { SSH_ASKPASS="$PWD/build/askpass" SSH_ASKPASS_REQUIRE=force "$@"; }
 workspace_name() { printf '%s-%s\n' "$(printf %s "${1##*/}" | tr -c 'a-z0-9._-' _)" "$(printf %s "$1" | cksum | cut -d' ' -f1)"; }
 live_workspaces() {
-  git worktree list --porcelain | while read -r key path; do
-    if [ "$key" = worktree ]; then workspace_name "$path"; fi
+  git worktree list --porcelain | while read -r key worktree; do
+    if [ "$key" = worktree ]; then workspace_name "$worktree"; fi
   done
 }
 DEPLOY_PATH=$WORKSPACES/$(workspace_name "$(pwd -P)")
