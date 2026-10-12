@@ -11,7 +11,6 @@ SOFTWARE_VULKAN_DRIVER=lvp_icd
 AUDIO="/usr/bin/pipewire /usr/bin/pipewire-pulse /usr/bin/wireplumber /usr/bin/wpctl /usr/bin/pw-dump /usr/bin/pw-cli"
 AUDIO_PLUGINS="$LIBDIR/pipewire-0.3 $LIBDIR/spa-0.2 $LIBDIR/wireplumber-0.5"
 DOCKER="/usr/bin/dockerd /usr/bin/docker /usr/bin/containerd /usr/bin/containerd-shim-runc-v2 /usr/bin/runc /usr/libexec/docker/docker-init"
-DOCKER_PLUGINS=/usr/libexec/docker/cli-plugins
 BUS_CONFIG=/usr/share/dbus-1/system.conf
 DATA="/usr/lib/udev/hwdb.bin /usr/share/pipewire /usr/share/spa-0.2 /usr/share/wireplumber /usr/share/alsa /usr/share/alsa-card-profile /usr/lib/udev/rules.d $(pkg-config --variable=xkb_root xkbcommon) /etc/ssl/certs/ca-certificates.crt $BUS_CONFIG /usr/share/dbus-1/system.d/bluetooth.conf"
 WLR_PROTOCOLS_URL=https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/raw/master/unstable
@@ -112,7 +111,7 @@ copy_binaries() {
   lddtree --copy-to-tree $ROOTFS --bindir /bin --libdir /lib $BINARIES $GBM_BACKEND $dlopened $AUDIO $DOCKER
   lddtree --copy-to-tree $ROOTFS --libdir /lib $(find $AUDIO_PLUGINS -name '*.so')
   ln -s udevadm $ROOTFS/bin/systemd-udevd
-  cp -aL --parents $DATA $DOCKER_PLUGINS $ROOTFS/
+  cp -aL --parents $DATA $ROOTFS/
   mkdir -p $ROOTFS$EGL_VENDORS $ROOTFS$VULKAN_DRIVERS $ROOTFS$LIBDIR/gbm
   for library in $dlopened; do mv "$ROOTFS/bin/${library##*/}" $ROOTFS/lib/; done
   mv $ROOTFS/bin/dri_gbm.so $ROOTFS$LIBDIR/gbm/
@@ -158,6 +157,7 @@ install_system() {
   cp /src/guest/config $ROOTFS/etc/anyconsole.conf
   cp /src/guest/otad /src/guest/installer /src/guest/mkdisk /src/guest/games /src/guest/settings $ROOTFS/bin/
   cp /src/guest/daemon.json $ROOTFS/etc/docker/
+  cp /src/guest/oci $ROOTFS/usr/share/anyconsole/
   cp /src/guest/bluez-input.conf $ROOTFS/etc/bluetooth/input.conf
   cp /src/guest/gamecontrollerdb.txt "$ROOTFS$CONTROLLER_MAPPINGS"
   sed "s/@KERNEL_ARGS@/$KERNEL_ARGS/" /src/guest/grub.cfg > "$ROOTFS$GRUB_CONFIG"
@@ -169,7 +169,7 @@ install_system() {
   cp /src/guest/find-real-default-source.lua $ROOTFS/usr/local/share/wireplumber/scripts/default-nodes/
   printf 'blacklist snd_pcsp\n' > $ROOTFS/etc/modprobe.d/anyconsole.conf
   cp /src/guest/api $ROOTFS/www/cgi-bin/
-  printf 'VERSION=%s\n' "$VERSION" > $ROOTFS/etc/anyconsole-release
+  printf 'VERSION=%s\nENGINE_CONTRACT=%s\n' "$VERSION" "$(engine_contract /src)" > $ROOTFS/etc/anyconsole-release
 }
 
 hide_input_from_compositor() {
@@ -178,7 +178,7 @@ hide_input_from_compositor() {
     "$KEYBOARD_NAME" > "$ROOTFS$INPUT_RULES"
 }
 
-install_app() { cp -a /src/app $ROOTFS/opt/anyconsole; }
+install_app() { rsync -a --exclude /recipes /src/app/ $ROOTFS/opt/anyconsole/; }
 
 install_skin_assets() {
   for list in /src/app/skins/*/assets; do

@@ -2,14 +2,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 . ./config
-LOCK_SECONDS=1800
 version=$1 release=${2:-}
 index=$RELEASES_DIR/index
 staged=$RELEASES_DIR/.$version.new
 
 mkdir -p "$RELEASES_DIR"
-exec 9>>"$RELEASES_DIR/.lock"
-flock -w $LOCK_SECONDS 9 || { echo "another publish held $RELEASES_DIR for ${LOCK_SECONDS}s" >&2; exit 1; }
+lock_releases
 trap 'rm -rf "$staged" "$index.new"' EXIT
 cat > "$index.new"
 if [ -n "$release" ]; then

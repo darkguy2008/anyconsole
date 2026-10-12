@@ -65,7 +65,9 @@ case "${1:-}" in
     arm_boot "$SLOT" "$SLOT"
     install_boot_menu
     [ "$STAGED_VERSION" = "$VERSION" ] && remember installed "$VERSION" ;;
-  watch) while :; do (poll); sleep "$OTA_INTERVAL"; done ;;
+  watch)
+    while :; do games update; sleep "$OTA_INTERVAL"; done &
+    while :; do (poll); sleep "$OTA_INTERVAL"; done ;;
   update)
     lock || exit 1
     fetch || exit 1

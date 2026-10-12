@@ -12,5 +12,4 @@ pack_rom() {
   mv "$ROM_DISK.new" "$ROM_DISK"
 }
 
-/opt/win98/windows
 pack_rom

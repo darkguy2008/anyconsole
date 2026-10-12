@@ -1,9 +1,0 @@
-#!/bin/sh
-set -eu
-repo=$1
-suffix=$2
-latest=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest")
-tag=${latest##*/}
-href=$(curl -fsSL "https://github.com/$repo/releases/expanded_assets/$tag" | xmllint --html --xpath 'string((//a[contains(@href, "/releases/download/") and substring(@href, string-length(@href) - string-length("'"$suffix"'") + 1) = "'"$suffix"'"])[1]/@href)' - 2>/dev/null)
-[ -n "$href" ] || { echo "no asset ending in $suffix in $repo $tag" >&2; exit 1; }
-echo "https://github.com$href"
