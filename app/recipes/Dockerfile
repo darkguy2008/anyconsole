@@ -5,9 +5,12 @@ ARG LIBRETRO=https://buildbot.libretro.com
 #              from source with the patches in lsi53c810/ (~14% slower disk I/O, nothing fetched from archive.org)
 ARG WIN98_SCSI=lsi
 
-FROM debian:trixie-slim AS unzip
+FROM registry.fedoraproject.org/fedora-minimal:44 AS fedora
+RUN echo install_weak_deps=False >> /etc/dnf/dnf.conf
+
+FROM fedora AS unzip
 ARG LIBRETRO
-RUN apt-get update && apt-get install -y --no-install-recommends 7zip && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y 7zip
 ENV CORES=$LIBRETRO/nightly/linux/x86_64/latest SYSTEM=$LIBRETRO/assets/system STABLE=$LIBRETRO/stable/1.22.2/linux/x86_64
 WORKDIR /cores
 
@@ -79,14 +82,14 @@ FROM unzip AS azahar
 ADD $CORES/azahar_libretro.so.zip .
 RUN 7z e azahar_libretro.so.zip >/dev/null
 
-FROM debian:trixie-slim AS gpu
-RUN . /etc/os-release && printf 'Types: deb\nURIs: http://deb.debian.org/debian\nSuites: %s-backports\nComponents: main\n' "$VERSION_CODENAME" > /etc/apt/sources.list.d/backports.sources && apt-get update && apt-get install -y --no-install-recommends -t "$VERSION_CODENAME-backports" libgl1 libgl1-mesa-dri mesa-libgallium libglx-mesa0 libegl1 libegl-mesa0 libgles2 libvulkan1 mesa-vulkan-drivers libpulse0 && rm -rf /var/lib/apt/lists/*
+FROM fedora AS gpu
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y mesa-dri-drivers mesa-libGL mesa-libEGL libglvnd-gles vulkan-loader mesa-vulkan-drivers pulseaudio-libs
 ENV HOME=/tmp SDL_JOYSTICK_HIDAPI=0 SDL_JOYSTICK_DISABLE_UDEV=1 SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1
 
 FROM gpu AS retroarch
-RUN apt-get update && apt-get install -y --no-install-recommends libasound2t64 libjack-jackd2-0 libfontconfig1 libdbus-1-3 libxi6 libxrandr2 libxinerama1 libxxf86vm1 libxss1 libxext6 libxrender1 libxcursor1 libxfixes3 libv4l-0 libudev1 libxkbcommon0 libwayland-egl1 libwayland-cursor0 libsdl2-2.0-0 libusb-1.0-0 jq && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y alsa-lib pipewire-jack-audio-connection-kit-libs fontconfig dbus-libs libXi libXrandr libXinerama libXxf86vm libXScrnSaver libXext libXrender libXcursor libXfixes libv4l systemd-libs libxkbcommon libwayland-egl libwayland-cursor sdl2-compat libusb1 jq
 COPY --from=retroarch-download /retroarch /retroarch
-RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib/x86_64-linux-gnu/${bundled##*/}" ] || rm "$bundled"; done
+RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib64/${bundled##*/}" ] || rm "$bundled"; done
 COPY retroarch.cfg vulkan.cfg /retroarch/
 COPY retroarch-launch /retroarch/launch
 RUN touch /retroarch/core.opt
@@ -174,17 +177,17 @@ LABEL anyconsole.launch="3ds cci cxi 3dsx zcci" anyconsole.bios="/saves/Azahar/s
 COPY --from=azahar /cores/azahar_libretro.so /retroarch/core.so
 
 FROM gpu AS x11
-RUN apt-get update && apt-get install -y --no-install-recommends xwayland xwayland-run xauth libopengl0 libasound2-plugins python3-sdl2 && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y xorg-x11-server-Xwayland xwayland-run xorg-x11-xauth libglvnd-opengl alsa-plugins-pulseaudio python3-pysdl2 libgpg-error
 COPY asound.conf /etc/asound.conf
 COPY joystick-guid /usr/local/bin/
 VOLUME /engine
 
 FROM x11 AS x11-rewind
-RUN apt-get update && apt-get install -y --no-install-recommends inotify-tools && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y inotify-tools
 COPY rewind /usr/local/bin/
 
-FROM debian:trixie-slim AS fetch
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates libxml2-utils 7zip && rm -rf /var/lib/apt/lists/*
+FROM fedora AS fetch
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y tar gzip libxml2 7zip
 COPY appimage github-release /usr/local/bin/
 
 FROM fetch AS redream-release
@@ -195,8 +198,8 @@ FROM fetch AS redream-download
 COPY --from=redream-release /url /url
 RUN mkdir /redream && curl -fsSL "$(cat /url)" | tar xz -C /redream
 
-FROM debian:trixie-slim AS redream-commands
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev python3-capstone python3-pyelftools && rm -rf /var/lib/apt/lists/*
+FROM fedora AS redream-commands
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gcc python3-capstone python3-pyelftools
 COPY --from=redream-download /redream/redream /redream
 COPY redream/addresses redream/commands.c /
 RUN /addresses /redream > /addresses.flags \
@@ -221,7 +224,7 @@ RUN appimage /cemu
 
 # wiiu Nintendo Wii U
 FROM x11 AS wiiu
-RUN apt-get update && apt-get install -y --no-install-recommends xdotool && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y xdotool
 LABEL anyconsole.launch="wux wud iso rpx wua" anyconsole.bios="/bios" anyconsole.screen="/opt/cemu/screen"
 COPY --from=cemu-download /cemu /opt/cemu
 COPY cemu/ /opt/cemu/
@@ -255,7 +258,7 @@ RUN appimage /pcsx2
 
 # ps2 PlayStation 2
 FROM x11-rewind AS ps2
-RUN apt-get update && apt-get install -y --no-install-recommends libfontconfig1 libfreetype6 libharfbuzz0b libcom-err2 libgpg-error0 libsm6 libice6 matchbox-window-manager && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y fontconfig freetype harfbuzz libcom_err libSM libICE matchbox-window-manager
 LABEL anyconsole.launch="chd iso cso" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true"
 COPY --from=pcsx2-download /pcsx2 /opt/pcsx2
 COPY pcsx2/ /opt/pcsx2/
@@ -285,12 +288,12 @@ ADD --checksum=sha256:76e3ed7029a6f5ec8c8bdc160a072b77135d4c7a1128589f4f94508c47
 RUN 7z e -o/out/opt/win98/base/drivers /lsi.zip 'sym_hi.*' >/dev/null \
  && echo 'SCSI="-device lsi"' > /out/opt/win98/scsi
 
-FROM debian:trixie-slim AS win98-scsi-lsi53c810
-RUN apt-get update && apt-get install -y --no-install-recommends gcc make patch python-is-python3 python3-venv ninja-build pkgconf flex bison bzip2 xz-utils libglib2.0-dev libpixman-1-dev zlib1g-dev libsdl2-dev libepoxy-dev libgbm-dev libpulse-dev libfdt-dev && rm -rf /var/lib/apt/lists/*
+FROM fedora AS win98-scsi-lsi53c810
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gcc make patch diffutils tar gzip python3 python-unversioned-command ninja-build pkgconf flex bison bzip2 xz glib2-devel glib2-static pcre2-static pixman-devel zlib-ng-compat-devel sdl2-compat-devel libepoxy-devel mesa-libgbm-devel pulseaudio-libs-devel libfdt-devel
 ARG SEABIOS_VERSION=1.17.0
 ADD --checksum=sha256:5159a35fac5c1579dd5d702001033c826ce45d30d3bd657ec1b2695455997712 https://www.seabios.org/downloads/seabios-$SEABIOS_VERSION.tar.gz /seabios.tar.gz
-ARG QEMU_VERSION=10.0.13
-ADD --checksum=sha256:4a59b74dac7ead8b162a7c4595dcbbeebe989b90c89cfe6bb4dec5447342f6fa https://download.qemu.org/qemu-$QEMU_VERSION.tar.xz /qemu.tar.xz
+ARG QEMU_VERSION=10.2.2
+ADD --checksum=sha256:784b296ff29c1417aa72323abcb2d2ea9ab9771724f577dcd785c3b04f21e176 https://download.qemu.org/qemu-$QEMU_VERSION.tar.xz /qemu.tar.xz
 COPY lsi53c810/qemu-lsi-io-reentrancy.patch /
 RUN tar xJf /qemu.tar.xz && cd /qemu-$QEMU_VERSION \
  && patch -p1 < /qemu-lsi-io-reentrancy.patch \
@@ -306,8 +309,8 @@ RUN tar xzf /seabios.tar.gz && cd /seabios-$SEABIOS_VERSION \
 
 FROM win98-scsi-$WIN98_SCSI AS win98-scsi
 
-FROM debian:trixie-slim AS win98-programs
-RUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-i686 && rm -rf /var/lib/apt/lists/*
+FROM fedora AS win98-programs
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y mingw32-gcc
 COPY win98/launcher.c win98/autologon.c /
 ARG WIN32_FLAGS="-Os -s -Wall -Wextra -Werror -nostdlib -mwindows -Wl,-e,_start -Wl,--subsystem,windows:4.0 -Wl,--no-insert-timestamp"
 RUN mkdir /anycon \
@@ -316,7 +319,7 @@ RUN mkdir /anycon \
 
 # win98 Windows 98
 FROM gpu AS win98
-RUN apt-get update && apt-get install -y --no-install-recommends qemu-system-x86 qemu-system-gui qemu-utils mtools dosfstools fdisk syslinux-common 7zip jq python3-evdev && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y libatomic qemu-system-x86-core qemu-ui-sdl qemu-ui-opengl qemu-audio-pa qemu-img mtools dosfstools util-linux syslinux 7zip jq python3-evdev
 LABEL anyconsole.launch="img iso" anyconsole.bios="/bios" anyconsole.install="/opt/win98/install" anyconsole.devices="/dev/kvm" anyconsole.touchpad="raw" anyconsole.shared="/shared"
 COPY --from=win98-download /usr/local/bin/patcher9x /usr/local/bin/
 COPY --from=win98-download /base /opt/win98/base

@@ -15,7 +15,7 @@ mount -t vfat "$(findfs LABEL=ESP)" /boot/efi
 for status in /sys/class/drm/card*-*/status; do
   [ "$(cat "$status")" = connected ] || continue
   gfxmode="$(head -1 "${status%/status}/modes"),auto"
-  grub-editenv "$GRUBENV" list | grep -qxF "gfxmode=$gfxmode" || grub-editenv "$GRUBENV" set gfxmode="$gfxmode"
+  grub2-editenv "$GRUBENV" list | grep -qxF "gfxmode=$gfxmode" || grub2-editenv "$GRUBENV" set gfxmode="$gfxmode"
   break
 done
 mkdir -p /data/root /data/ota /data/dhcpcd /data/dropbear /data/bluetooth "$PROFILES_DIR" "$STORE_MOUNTS" /run/dbus "$GAMES_DIR" "$LOG_DIR" \
@@ -29,3 +29,4 @@ echo "$boot_count" > /data/boots
 . /etc/anyconsole-release
 echo "anyconsole $VERSION slot=$(otad slot) boots=$boot_count"
 setsid otad watch >> /data/otad.log 2>&1 &
+(setsid seatd -n 3 3>&1 >> "$LOG_DIR/seatd.log" 2>&1 &) | read -r _

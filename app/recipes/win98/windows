@@ -36,7 +36,7 @@ extract_cd() {
 
 stage_windows() {
   make_disk "$BASE.new"
-  dd if=/usr/lib/syslinux/mbr/mbr.bin of="$BASE.new" conv=notrunc status=none
+  dd if=/usr/share/syslinux/mbr.bin of="$BASE.new" conv=notrunc status=none
   mcopy -s -i "$BASE.new$PARTITION" "$source" "$INPUTS/anycon" ::/
   mcopy -i "$BASE.new$PARTITION" "$INPUTS"/drivers/* "::/${source##*/}/"
   mcopy -t -i "$BASE.new$PARTITION" "$INPUTS/msbatch.inf" "::/${source##*/}/MSBATCH.INF"

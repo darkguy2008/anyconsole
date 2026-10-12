@@ -3,7 +3,6 @@ set -eu
 cd "$(dirname "$0")/.."
 . ./config
 . guest/config
-. build/apt-cache
 
 VERSION=$(cat VERSION)
 KERNEL_VERSION=$(basename /lib/modules/*-lts)
@@ -38,8 +37,7 @@ stage_modules() {
 }
 
 build_base() {
-  ensure_apt_cache
-  docker build --network host --build-arg APT_PROXY="$APT_PROXY" -t "$BASE_IMAGE" -f build/base.Dockerfile build/bluez
+  docker build --network host -t "$BASE_IMAGE" -f build/base.Dockerfile build/bluez
 }
 
 build_userspace() {

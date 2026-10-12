@@ -1,0 +1,35 @@
+From 2d6c23e2a53824152fec61020c275859fb1693da Mon Sep 17 00:00:00 2001
+From: Alemar <6304136+darkguy2008@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 23:18:16 -0600
+Subject: [PATCH] kconfig: keep strrchr()'s result const in conf_write()
+
+glibc 2.43 makes strrchr() return a const pointer when it is passed a
+const string (C23 qualifier-preserving search functions), so gcc warns
+when building the host kconfig tools:
+
+  scripts/kconfig/confdata.c:758:35: warning: assignment discards 'const'
+  qualifier from pointer target type [-Wdiscarded-qualifiers]
+
+conf_write() only reads through slash, so declare it const.
+
+Signed-off-by: Alemar <6304136+darkguy2008@users.noreply.github.com>
+---
+ scripts/kconfig/confdata.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/scripts/kconfig/confdata.c b/scripts/kconfig/confdata.c
+index 08e75599..281fe2a0 100644
+--- a/scripts/kconfig/confdata.c
++++ b/scripts/kconfig/confdata.c
+@@ -749,7 +749,7 @@ int conf_write(const char *name)
+ 	dirname[0] = 0;
+ 	if (name && name[0]) {
+ 		struct stat st;
+-		char *slash;
++		const char *slash;
+ 
+ 		if (!stat(name, &st) && S_ISDIR(st.st_mode)) {
+ 			strcpy(dirname, name);
+-- 
+2.54.0 (Apple Git-157)
+

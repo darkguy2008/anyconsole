@@ -27,10 +27,10 @@ Signed-off-by: Alemar <6304136+darkguy2008@users.noreply.github.com>
  2 files changed, 39 insertions(+), 2 deletions(-)
 
 diff --git a/hw/scsi/lsi53c895a.c b/hw/scsi/lsi53c895a.c
-index 1b7f02fc..8a2c0897 100644
+index 9ea4aa0..69b9955 100644
 --- a/hw/scsi/lsi53c895a.c
 +++ b/hw/scsi/lsi53c895a.c
-@@ -2373,11 +2373,13 @@ static void lsi_scsi_realize(PCIDevice *dev, Error **errp)
+@@ -2350,11 +2350,13 @@ static void lsi_scsi_realize(PCIDevice *dev, Error **errp)
      s->scripts_timer = timer_new_us(QEMU_CLOCK_VIRTUAL, scripts_timer_cb, s);
  
      /*
@@ -47,7 +47,7 @@ index 1b7f02fc..8a2c0897 100644
      address_space_init(&s->pci_io_as, pci_address_space_io(dev), "lsi-pci-io");
      qdev_init_gpio_out(d, &s->ext_irq, 1);
 diff --git a/tests/qtest/fuzz-lsi53c895a-test.c b/tests/qtest/fuzz-lsi53c895a-test.c
-index 1b55928b..23fdc285 100644
+index 1b55928..23fdc28 100644
 --- a/tests/qtest/fuzz-lsi53c895a-test.c
 +++ b/tests/qtest/fuzz-lsi53c895a-test.c
 @@ -140,6 +140,38 @@ static void test_lsi_do_dma_empty_queue(void)
