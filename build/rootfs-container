@@ -13,9 +13,13 @@ AUDIO="/usr/bin/pipewire /usr/bin/pipewire-pulse /usr/bin/wireplumber /usr/bin/w
 AUDIO_PLUGINS="$LIBDIR/pipewire-0.3 $LIBDIR/spa-0.2 $LIBDIR/wireplumber-0.5"
 DOCKER="/usr/bin/dockerd /usr/bin/docker /usr/bin/containerd /usr/bin/containerd-shim-runc-v2 /usr/bin/runc /usr/libexec/docker/docker-init"
 DOCKER_PLUGINS=/usr/libexec/docker/cli-plugins
-DATA="/usr/lib/udev/hwdb.bin /usr/share/pipewire /usr/share/spa-0.2 /usr/share/wireplumber /usr/share/alsa /usr/share/alsa-card-profile /usr/lib/udev/rules.d /etc/fonts /usr/share/fonts/opentype/inter/Inter-Regular.otf /etc/ssl/certs/ca-certificates.crt /usr/share/dbus-1/system.conf /usr/share/dbus-1/system.d/bluetooth.conf"
+DATA="/usr/lib/udev/hwdb.bin /usr/share/pipewire /usr/share/spa-0.2 /usr/share/wireplumber /usr/share/alsa /usr/share/alsa-card-profile /usr/lib/udev/rules.d /etc/ssl/certs/ca-certificates.crt /usr/share/dbus-1/system.conf /usr/share/dbus-1/system.d/bluetooth.conf"
 WLR_PROTOCOLS_URL=https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/raw/master/unstable
 WLR_PROTOCOLS="wlr-layer-shell-unstable-v1 wlr-foreign-toplevel-management-unstable-v1"
+BACKGROUND_EFFECT_URL=https://gitlab.freedesktop.org/wayland/wayland-protocols/-/raw/1.45/staging/ext-background-effect/ext-background-effect-v1.xml
+BACKGROUND_EFFECT_SHA256=9aa5011f38752c0146014f8569f3d3981db7dbb8c04e578a80beef6c98fa9653
+BACKGROUND_EFFECT=$DOWNLOAD_CACHE/ext-background-effect-v1.xml
+QUICKJS=$LIBDIR/quickjs/libquickjs.a
 PROTOCOLS=$(pkg-config --variable=pkgdatadir wayland-protocols)
 CFLAGS="-O2 -Wall -Wextra -Werror -I/tmp"
 . /src/config
@@ -56,8 +60,14 @@ generate_protocol() {
   wayland-scanner private-code "$1" "/tmp/$(basename "$1" .xml).c"
 }
 
-fetch_wlr_protocols() {
+fetch_checked() {
+  fetch "$DOWNLOAD_CACHE" "$3" "$1"
+  echo "$2  $DOWNLOAD_CACHE/$3" | sha256sum -c --quiet
+}
+
+fetch_protocols() {
   for name in $WLR_PROTOCOLS; do fetch "$DOWNLOAD_CACHE" "$name.xml" "$WLR_PROTOCOLS_URL/$name.xml"; done
+  fetch_checked "$BACKGROUND_EFFECT_URL" "$BACKGROUND_EFFECT_SHA256" "${BACKGROUND_EFFECT##*/}"
 }
 
 build_splash() {
@@ -75,18 +85,22 @@ build_overlay() {
   generate_protocol "$PROTOCOLS/staging/ext-image-capture-source/ext-image-capture-source-v1.xml"
   generate_protocol "$PROTOCOLS/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml"
   generate_protocol "$PROTOCOLS/stable/linux-dmabuf/linux-dmabuf-v1.xml"
-  gcc $CFLAGS -o /bin/overlay /src/guest/overlay.c /tmp/wlr-layer-shell-unstable-v1.c /tmp/wlr-foreign-toplevel-management-unstable-v1.c \
-    /tmp/security-context-v1.c /tmp/ext-foreign-toplevel-list-v1.c /tmp/ext-image-capture-source-v1.c /tmp/ext-image-copy-capture-v1.c \
-    /tmp/linux-dmabuf-v1.c /tmp/xdg-shell.c $(pkg-config --cflags --libs cairo pixman-1 json-c wayland-client gbm libdrm) -lm
+  generate_protocol "$BACKGROUND_EFFECT"
+  gcc $CFLAGS -o /bin/overlay /src/guest/overlay.c /src/guest/scene.c /src/guest/script.c /src/guest/sound.c /src/guest/shader.c \
+    /tmp/wlr-layer-shell-unstable-v1.c /tmp/wlr-foreign-toplevel-management-unstable-v1.c /tmp/security-context-v1.c /tmp/ext-foreign-toplevel-list-v1.c \
+    /tmp/ext-image-capture-source-v1.c /tmp/ext-image-copy-capture-v1.c /tmp/linux-dmabuf-v1.c /tmp/xdg-shell.c /tmp/ext-background-effect-v1.c $QUICKJS \
+    $(pkg-config --cflags --libs cairo pixman-1 json-c wayland-client wayland-egl egl glesv2 gbm libdrm freetype2 harfbuzz opusfile libpipewire-0.3) \
+    -lyogacore -lstdc++ -lm
 }
 
 build_compositor() {
   for protocol in "$PROTOCOLS/stable/xdg-shell/xdg-shell.xml" "$PROTOCOLS/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml" \
     "$DOWNLOAD_CACHE/wlr-layer-shell-unstable-v1.xml" "$DOWNLOAD_CACHE/wlr-foreign-toplevel-management-unstable-v1.xml" \
-    "$PROTOCOLS/staging/ext-image-capture-source/ext-image-capture-source-v1.xml" "$PROTOCOLS/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml"; do
+    "$PROTOCOLS/staging/ext-image-capture-source/ext-image-capture-source-v1.xml" "$PROTOCOLS/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml" \
+    "$BACKGROUND_EFFECT"; do
     wayland-scanner server-header "$protocol" "/tmp/$(basename "$protocol" .xml)-protocol.h"
   done
-  gcc $CFLAGS -DWLR_USE_UNSTABLE -o /bin/compositor /src/guest/compositor.c /tmp/ext-image-capture-source-v1.c /tmp/ext-foreign-toplevel-list-v1.c \
+  gcc $CFLAGS -DWLR_USE_UNSTABLE -o /bin/compositor /src/guest/compositor.c /src/guest/shader.c /tmp/ext-image-capture-source-v1.c /tmp/ext-foreign-toplevel-list-v1.c /tmp/ext-background-effect-v1.c \
     $(pkg-config --cflags --libs wlroots-0.19 pixman-1 wayland-server xkbcommon libdrm json-c vulkan egl glesv2) -lm
 }
 
@@ -163,6 +177,16 @@ hide_input_from_compositor() {
 
 install_app() { cp -a /src/app $ROOTFS/opt/anyconsole; }
 
+install_skin_assets() {
+  for list in /src/app/skins/*/assets; do
+    folder=$ROOTFS$SKINS_DIR/$(basename "$(dirname "$list")")
+    while read -r file source checksum; do
+      fetch_checked "$source" "$checksum" "$checksum"
+      install -D -m 644 "$DOWNLOAD_CACHE/$checksum" "$folder/$file"
+    done < "$list"
+  done
+}
+
 finalize() {
   chmod +x $ROOTFS/etc/rc $ROOTFS/bin/otad $ROOTFS/bin/installer $ROOTFS/bin/mkdisk $ROOTFS/bin/games $ROOTFS/bin/settings $ROOTFS/www/cgi-bin/api
   cp -a /src/build/out/stage/. $ROOTFS/
@@ -172,7 +196,7 @@ finalize() {
 
 make_skeleton
 write_shared_header
-fetch_wlr_protocols
+fetch_protocols
 build_padd
 build_splash
 build_overlay
@@ -185,4 +209,5 @@ configure_locale
 install_system
 hide_input_from_compositor
 install_app
+install_skin_assets
 finalize

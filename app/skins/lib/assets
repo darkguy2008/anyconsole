@@ -1,0 +1,3 @@
+preact.js https://cdn.jsdelivr.net/npm/preact@11.0.1/dist/preact.mjs 3a3201e9ccef7d30ef1273427f1b17ef8323e464b2c8d73b4fd5636af730433e
+preact/hooks.js https://cdn.jsdelivr.net/npm/preact@11.0.1/hooks/dist/hooks.mjs 6cb79fe9959ad185b8b86134aff47c12fd20216b24837597b19be59a133d9947
+htm.js https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.mjs ab33dd3f38059b9be4d5f5350128eefb2356639c4e0bbe9d9e8b3ba75847e9e4
