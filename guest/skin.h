@@ -5,7 +5,6 @@
 struct node;
 struct box { float x, y, width, height; };
 #define DEFAULT_STIFFNESS 150.0f
-#define MS_PER_SECOND 1000
 #define SKIN_ENTRY "skin.js"
 
 void scene_init(struct wl_display *display);

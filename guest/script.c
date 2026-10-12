@@ -196,7 +196,7 @@ static JSValue native_timer(JSContext *ctx, JSValueConst self, int count, JSValu
     double milliseconds = 0;
     JS_ToFloat64(ctx, &milliseconds, arguments[1]);
     if (timer_count == TIMERS_MAX) return JS_ThrowRangeError(ctx, "too many timers");
-    timers[timer_count] = (struct timer){++next_timer_id, skin_now() + milliseconds / MS_PER_SECOND, JS_DupValue(ctx, arguments[0])};
+    timers[timer_count] = (struct timer){++next_timer_id, skin_now() + milliseconds / MSEC_PER_SEC, JS_DupValue(ctx, arguments[0])};
     return JS_NewInt32(ctx, timers[timer_count++].id);
 }
 

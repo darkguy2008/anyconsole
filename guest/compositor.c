@@ -144,6 +144,7 @@ struct pointer { struct wl_listener motion, button, axis, frame, destroy; };
 struct program { GLuint id; GLint position, coordinate, size, extent; };
 
 static struct wl_display *display;
+static struct wl_event_source *flip_retry;
 static struct wlr_session *session;
 static struct wlr_backend *backend;
 static struct wlr_renderer *renderer;
@@ -744,12 +745,20 @@ static void on_frame(struct wl_listener *listener, void *data) {
     dirty = 0;
     wlr_output_state_init(&state);
     if (!scan_out(&state)) paint(&state);
-    if (!wlr_output_commit_state(entry->output, &state)) redraw();
+    // i915 can reject a flip with EBUSY right after the previous flip's event (drm/i915 kernel issue 13410);
+    // retrying at the next refresh only works around it until that kernel race is fixed.
+    if (!wlr_output_commit_state(entry->output, &state)) wl_event_source_timer_update(flip_retry, MSEC_PER_SEC * MHZ_PER_HZ / entry->output->refresh);
     wlr_output_state_finish(&state);
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     if (shown) wlr_surface_send_frame_done(shown->toplevel->base->surface, &now);
     if (overlay) wlr_surface_send_frame_done(overlay->surface, &now);
+}
+
+static int on_flip_retry(void *data) {
+    (void)data;
+    redraw();
+    return 0;
 }
 
 static void on_needs_frame(struct wl_listener *listener, void *data) {
@@ -1176,6 +1185,7 @@ int main(int argc, char *argv[]) {
     inotify_add_watch(watcher, settings_directory, IN_MOVED_TO);
     wl_event_loop_add_fd(loop, watcher, WL_EVENT_READABLE, on_watched_change, NULL);
     wl_event_loop_add_signal(loop, SIGCHLD, on_child, NULL);
+    flip_retry = wl_event_loop_add_timer(loop, on_flip_retry, NULL);
     load_settings();
     if (!wlr_backend_start(backend)) { fprintf(stderr, "compositor: could not start the backend\n"); return 1; }
     started = 1;
