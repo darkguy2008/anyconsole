@@ -13,7 +13,7 @@ AUDIO_PLUGINS="$LIBDIR/pipewire-0.3 $LIBDIR/spa-0.2 $LIBDIR/wireplumber-0.5"
 DOCKER="/usr/bin/dockerd /usr/bin/docker /usr/bin/containerd /usr/bin/containerd-shim-runc-v2 /usr/bin/runc /usr/libexec/docker/docker-init"
 DOCKER_PLUGINS=/usr/libexec/docker/cli-plugins
 BUS_CONFIG=/usr/share/dbus-1/system.conf
-DATA="/usr/lib/udev/hwdb.bin /usr/share/pipewire /usr/share/spa-0.2 /usr/share/wireplumber /usr/share/alsa /usr/share/alsa-card-profile /usr/lib/udev/rules.d /usr/share/X11/xkb /etc/ssl/certs/ca-certificates.crt $BUS_CONFIG /usr/share/dbus-1/system.d/bluetooth.conf"
+DATA="/usr/lib/udev/hwdb.bin /usr/share/pipewire /usr/share/spa-0.2 /usr/share/wireplumber /usr/share/alsa /usr/share/alsa-card-profile /usr/lib/udev/rules.d $(pkg-config --variable=xkb_root xkbcommon) /etc/ssl/certs/ca-certificates.crt $BUS_CONFIG /usr/share/dbus-1/system.d/bluetooth.conf"
 WLR_PROTOCOLS_URL=https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/raw/master/unstable
 WLR_PROTOCOLS="wlr-layer-shell-unstable-v1 wlr-foreign-toplevel-management-unstable-v1"
 PROTOCOLS=$(pkg-config --variable=pkgdatadir wayland-protocols)

@@ -639,6 +639,8 @@ test_symlinks() {
 }
 
 test_display() {
+  guest "! grep -q '^xkbcommon: ERROR' $LOG_DIR/kiosk.log" || { log FAIL "the compositor could not load its keyboard layout" >&2; exit 1; }
+  log ok "the compositor loads its keyboard layout"
   change_resolution_in_settings
   stage_display_mode_until_saved
 }
