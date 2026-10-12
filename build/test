@@ -632,6 +632,12 @@ test_capture() {
   log ok "grim captures the idle screen"
 }
 
+test_symlinks() {
+  dangling=$(guest 'find / -xdev -type l | while read -r link; do [ -e "$link" ] || echo "$link -> $(readlink "$link")"; done')
+  [ -z "$dangling" ] || { log FAIL "symlinks with no target: $dangling" >&2; exit 1; }
+  log ok "every symlink on the root filesystem resolves"
+}
+
 test_display() {
   change_resolution_in_settings
   stage_display_mode_until_saved
@@ -847,7 +853,7 @@ test_reboot() {
   expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
 }
 
-TESTS="capture display audio controllers nes actions dreamcast msdos stores gpu logout reboot skins"
+TESTS="capture symlinks display audio controllers nes actions dreamcast msdos stores gpu logout reboot skins"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in
