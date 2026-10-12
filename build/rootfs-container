@@ -2,34 +2,32 @@
 set -eux
 
 ROOTFS=/rootfs
-LIBDIR=/usr/lib/x86_64-linux-gnu
-BINARIES="/usr/bin/wayland-info /usr/bin/grim /usr/bin/socat /bin/busybox /usr/bin/mountpoint /usr/sbin/modprobe /bin/padd /bin/splash /bin/overlay /bin/compositor /sbin/sfdisk /sbin/mke2fs /sbin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub-editenv /usr/bin/flock /usr/sbin/dropbear /usr/sbin/dhcpcd /usr/bin/udevadm /usr/sbin/mount.cifs /usr/bin/jq /usr/libexec/bluetooth/bluetoothd /usr/bin/dbus-daemon"
+LIBDIR=/usr/lib64
+BINARIES="/usr/bin/wayland-info /usr/bin/grim /usr/bin/socat /usr/bin/busybox /usr/bin/mountpoint /usr/bin/modprobe /bin/padd /bin/splash /bin/overlay /bin/compositor /usr/bin/sfdisk /usr/bin/mke2fs /usr/bin/mkfs.fat /usr/bin/btop /usr/bin/rsync /usr/bin/grub2-editenv /usr/bin/flock /usr/bin/nsenter /usr/bin/dropbear /usr/bin/dhcpcd /usr/bin/udevadm /usr/bin/mount.cifs /usr/bin/jq /usr/libexec/bluetooth/bluetoothd /usr/bin/dbus-daemon /usr/bin/seatd"
 GBM_BACKEND=$LIBDIR/gbm/dri_gbm.so
 EGL_VENDORS=/usr/share/glvnd/egl_vendor.d
 VULKAN_DRIVERS=/usr/share/vulkan/icd.d
-SOFTWARE_VULKAN_DRIVER=lvp_icd.json
-UDEV="/usr/bin/udevadm $LIBDIR/systemd/libsystemd-shared-*.so"
+SOFTWARE_VULKAN_DRIVER=lvp_icd
 AUDIO="/usr/bin/pipewire /usr/bin/pipewire-pulse /usr/bin/wireplumber /usr/bin/wpctl /usr/bin/pw-dump /usr/bin/pw-cli"
 AUDIO_PLUGINS="$LIBDIR/pipewire-0.3 $LIBDIR/spa-0.2 $LIBDIR/wireplumber-0.5"
 DOCKER="/usr/bin/dockerd /usr/bin/docker /usr/bin/containerd /usr/bin/containerd-shim-runc-v2 /usr/bin/runc /usr/libexec/docker/docker-init"
 DOCKER_PLUGINS=/usr/libexec/docker/cli-plugins
-DATA="/usr/lib/udev/hwdb.bin /usr/share/pipewire /usr/share/spa-0.2 /usr/share/wireplumber /usr/share/alsa /usr/share/alsa-card-profile /usr/lib/udev/rules.d /etc/ssl/certs/ca-certificates.crt /usr/share/dbus-1/system.conf /usr/share/dbus-1/system.d/bluetooth.conf"
+BUS_CONFIG=/usr/share/dbus-1/system.conf
+DATA="/usr/lib/udev/hwdb.bin /usr/share/pipewire /usr/share/spa-0.2 /usr/share/wireplumber /usr/share/alsa /usr/share/alsa-card-profile /usr/lib/udev/rules.d /etc/ssl/certs/ca-certificates.crt $BUS_CONFIG /usr/share/dbus-1/system.d/bluetooth.conf"
 WLR_PROTOCOLS_URL=https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/raw/master/unstable
 WLR_PROTOCOLS="wlr-layer-shell-unstable-v1 wlr-foreign-toplevel-management-unstable-v1"
-BACKGROUND_EFFECT_URL=https://gitlab.freedesktop.org/wayland/wayland-protocols/-/raw/1.45/staging/ext-background-effect/ext-background-effect-v1.xml
-BACKGROUND_EFFECT_SHA256=9aa5011f38752c0146014f8569f3d3981db7dbb8c04e578a80beef6c98fa9653
-BACKGROUND_EFFECT=$DOWNLOAD_CACHE/ext-background-effect-v1.xml
-QUICKJS=$LIBDIR/quickjs/libquickjs.a
 PROTOCOLS=$(pkg-config --variable=pkgdatadir wayland-protocols)
+BACKGROUND_EFFECT=$PROTOCOLS/staging/ext-background-effect/ext-background-effect-v1.xml
 CFLAGS="-O2 -Wall -Wextra -Werror -I/tmp"
 . /src/config
 . /src/guest/config
 
 make_skeleton() {
   mkdir -p $ROOTFS/etc $ROOTFS/proc $ROOTFS/sys $ROOTFS/dev $ROOTFS/run $ROOTFS/tmp \
-    $ROOTFS/mnt $ROOTFS/data $ROOTFS/boot/efi $ROOTFS/usr/share/terminfo/l $ROOTFS/usr/lib $ROOTFS/var/lib \
+    $ROOTFS/mnt $ROOTFS/data $ROOTFS/boot/efi $ROOTFS/usr/share/terminfo/l $ROOTFS/usr/lib $ROOTFS/lib $ROOTFS/var/lib \
     $ROOTFS/www/cgi-bin $ROOTFS/opt $ROOTFS/usr/share/anyconsole $ROOTFS/etc/docker $ROOTFS/etc/bluetooth $ROOTFS/etc/pipewire/pipewire.conf.d $ROOTFS/etc/wireplumber/wireplumber.conf.d $ROOTFS/usr/local/share/wireplumber/scripts/device $ROOTFS/usr/local/share/wireplumber/scripts/default-nodes $ROOTFS/etc/modprobe.d
   ln -s /run $ROOTFS/var/run
+  ln -s ../lib $ROOTFS$LIBDIR
 }
 
 write_shared_header() {
@@ -45,12 +43,23 @@ write_shared_header() {
   } > /tmp/anyconsole.h
 }
 
-vulkan_drivers() { find $VULKAN_DRIVERS -name '*.json' ! -name $SOFTWARE_VULKAN_DRIVER; }
+vulkan_drivers() { find $VULKAN_DRIVERS -name '*.json' ! -name "$SOFTWARE_VULKAN_DRIVER.*"; }
+
+installed() {
+  while read -r library; do
+    case $library in /*) ;; *) library=$LIBDIR/$library ;; esac
+    [ ! -e "$library" ] || echo "$library"
+  done | sort -u
+}
 
 dlopened() {
-  { jq -r .ICD.library_path $EGL_VENDORS/*.json $(vulkan_drivers)
-    readelf -n --wide $UDEV | sed -n 's/^.*Dlopen Metadata: //p' | jq -r '.[].soname[]'
-  } | sort -u | while read -r library; do [ ! -e "$LIBDIR/$library" ] || echo "$LIBDIR/$library"; done
+  found=$(jq -r .ICD.library_path $EGL_VENDORS/*.json $(vulkan_drivers) | installed)
+  until
+    previous=$found
+    found=$({ echo "$previous"; /src/build/dlopen-requests $(lddtree -l $BINARIES $GBM_BACKEND $AUDIO $DOCKER $previous); } | installed)
+    [ "$found" = "$previous" ]
+  do :; done
+  echo "$found"
 }
 
 build_padd() { gcc $CFLAGS -o /bin/padd /src/guest/padd.c $(sdl2-config --cflags --libs) $(pkg-config --cflags --libs libevdev libsystemd libudev json-c opus zlib) -lm; }
@@ -60,14 +69,8 @@ generate_protocol() {
   wayland-scanner private-code "$1" "/tmp/$(basename "$1" .xml).c"
 }
 
-fetch_checked() {
-  fetch "$DOWNLOAD_CACHE" "$3" "$1"
-  echo "$2  $DOWNLOAD_CACHE/$3" | sha256sum -c --quiet
-}
-
-fetch_protocols() {
+fetch_wlr_protocols() {
   for name in $WLR_PROTOCOLS; do fetch "$DOWNLOAD_CACHE" "$name.xml" "$WLR_PROTOCOLS_URL/$name.xml"; done
-  fetch_checked "$BACKGROUND_EFFECT_URL" "$BACKGROUND_EFFECT_SHA256" "${BACKGROUND_EFFECT##*/}"
 }
 
 build_splash() {
@@ -88,9 +91,9 @@ build_overlay() {
   generate_protocol "$BACKGROUND_EFFECT"
   gcc $CFLAGS -o /bin/overlay /src/guest/overlay.c /src/guest/scene.c /src/guest/script.c /src/guest/sound.c /src/guest/shader.c \
     /tmp/wlr-layer-shell-unstable-v1.c /tmp/wlr-foreign-toplevel-management-unstable-v1.c /tmp/security-context-v1.c /tmp/ext-foreign-toplevel-list-v1.c \
-    /tmp/ext-image-capture-source-v1.c /tmp/ext-image-copy-capture-v1.c /tmp/linux-dmabuf-v1.c /tmp/xdg-shell.c /tmp/ext-background-effect-v1.c $QUICKJS \
+    /tmp/ext-image-capture-source-v1.c /tmp/ext-image-copy-capture-v1.c /tmp/linux-dmabuf-v1.c /tmp/xdg-shell.c /tmp/ext-background-effect-v1.c /usr/local/lib/libquickjs.a /usr/local/lib/libyogacore.a \
     $(pkg-config --cflags --libs cairo pixman-1 json-c wayland-client wayland-egl egl glesv2 gbm libdrm freetype2 harfbuzz opusfile libpipewire-0.3) \
-    -lyogacore -lstdc++ -lm
+    -lstdc++ -lm
 }
 
 build_compositor() {
@@ -122,7 +125,7 @@ copy_binaries() {
 }
 
 install_busybox() {
-  busybox --install -s $ROOTFS/bin
+  /usr/bin/busybox --install -s $ROOTFS/bin
   ln -s bin $ROOTFS/sbin
   ln -s ../bin $ROOTFS/usr/bin
   ln -s ../bin $ROOTFS/usr/sbin
@@ -133,16 +136,17 @@ install_busybox() {
 configure_network() {
   ln -s /data/dhcpcd $ROOTFS/var/lib/dhcpcd
   ln -s /data/bluetooth $ROOTFS/var/lib/bluetooth
-  cp -a /usr/lib/dhcpcd $ROOTFS/usr/lib/
+  cp -a --parents /usr/libexec/dhcpcd-run-hooks /usr/libexec/dhcpcd-hooks $ROOTFS/
   cp /etc/dhcpcd.conf /src/guest/dhcpcd.exit-hook $ROOTFS/etc/
 }
 
 configure_users() {
+  bus_user=$(xmllint --xpath 'string(/busconfig/user)' $BUS_CONFIG)
   ln -s /data/dropbear $ROOTFS/etc/dropbear
-  printf 'root:x:0:0:root:/root:/bin/sh\ndhcpcd:x:100:65534::/:/bin/false\nmessagebus:x:101:101::/:/bin/false\n' > $ROOTFS/etc/passwd
+  printf 'root:x:0:0:root:/root:/bin/sh\ndhcpcd:x:100:65534::/:/bin/false\n%s:x:101:101::/:/bin/false\n' "$bus_user" > $ROOTFS/etc/passwd
   printf 'root:%s:::::::\n' "$(busybox mkpasswd -m sha512 "$CONSOLE_PASSWORD")" > $ROOTFS/etc/shadow
   chmod 600 $ROOTFS/etc/shadow
-  printf 'root:x:0:\nmessagebus:x:101:\nnogroup:x:65534:\n' > $ROOTFS/etc/group
+  printf 'root:x:0:\n%s:x:101:\nnogroup:x:65534:\n' "$bus_user" > $ROOTFS/etc/group
 }
 
 configure_locale() {
@@ -158,8 +162,8 @@ install_system() {
   cp /src/guest/bluez-input.conf $ROOTFS/etc/bluetooth/input.conf
   cp /src/guest/gamecontrollerdb.txt "$ROOTFS$CONTROLLER_MAPPINGS"
   sed "s/@KERNEL_ARGS@/$KERNEL_ARGS/" /src/guest/grub.cfg > "$ROOTFS$GRUB_CONFIG"
-  grub-editenv $ROOTFS/boot/kernel.env create
-  grub-editenv $ROOTFS/boot/kernel.env set extra="$KERNEL_ARGS"
+  grub2-editenv $ROOTFS/boot/kernel.env create
+  grub2-editenv $ROOTFS/boot/kernel.env set extra="$KERNEL_ARGS"
   sed -e "s/@MICROPHONE_NODE@/$MICROPHONE_NODE/g" -e "s/@BLOW_NODE@/$BLOW_NODE/g" /src/guest/pipewire.conf > $ROOTFS/etc/pipewire/pipewire.conf.d/anyconsole.conf
   cp /src/guest/wireplumber.conf $ROOTFS/etc/wireplumber/wireplumber.conf.d/anyconsole.conf
   cp /src/guest/find-detected-profile.lua $ROOTFS/usr/local/share/wireplumber/scripts/device/
@@ -181,7 +185,8 @@ install_skin_assets() {
   for list in /src/app/skins/*/assets; do
     folder=$ROOTFS$SKINS_DIR/$(basename "$(dirname "$list")")
     while read -r file source checksum; do
-      fetch_checked "$source" "$checksum" "$checksum"
+      [ -f "$DOWNLOAD_CACHE/$checksum" ] || fetch "$DOWNLOAD_CACHE" "$checksum" "$source"
+      echo "$checksum  $DOWNLOAD_CACHE/$checksum" | sha256sum -c --quiet
       install -D -m 644 "$DOWNLOAD_CACHE/$checksum" "$folder/$file"
     done < "$list"
   done
@@ -196,7 +201,7 @@ finalize() {
 
 make_skeleton
 write_shared_header
-fetch_protocols
+fetch_wlr_protocols
 build_padd
 build_splash
 build_overlay

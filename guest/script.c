@@ -285,7 +285,7 @@ int script_load(const char *folder) {
     for (int i = 0; i < LISTENERS; i++) listeners[i] = JS_UNDEFINED;
     if (!node_class) JS_NewClassID(&node_class);
     JS_NewClass(runtime, node_class, &(JSClassDef){.class_name = "Node", .finalizer = finalize_node});
-    JS_SetModuleLoaderFunc(runtime, normalize, js_module_loader, NULL);
+    JS_SetModuleLoaderFunc2(runtime, normalize, js_module_loader, js_module_check_attributes, NULL);
     JS_SetInterruptHandler(runtime, interrupted, NULL);
     JSModuleDef *module = JS_NewCModule(context, NATIVE_MODULE, init_native);
     JS_AddModuleExportList(context, module, natives, sizeof natives / sizeof *natives);

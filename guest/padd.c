@@ -1,4 +1,4 @@
-#define _GNU_SOURCE
+#define _GNU_SOURCE 1
 #include <SDL2/SDL.h>
 #include <errno.h>
 #include <fcntl.h>

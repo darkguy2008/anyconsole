@@ -24,7 +24,7 @@ remember() {
   . $STATE_DIR/state
 }
 
-arm_boot() { grub-editenv "$GRUBENV" set slot="$1" prev="$2" tries=1; }
+arm_boot() { grub2-editenv "$GRUBENV" set slot="$1" prev="$2" tries=1; }
 
 install_boot_menu() { cmp -s "$GRUB_CONFIG" "$GRUB_DIR/grub.cfg" || { cp "$GRUB_CONFIG" "$GRUB_DIR/grub.cfg.partial" && mv "$GRUB_DIR/grub.cfg.partial" "$GRUB_DIR/grub.cfg"; }; }
 
