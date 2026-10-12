@@ -37,6 +37,8 @@
 #include "ext-image-copy-capture-v1.h"
 #include "linux-dmabuf-v1.h"
 #include "security-context-v1.h"
+#include "skin.h"
+#include "ext-background-effect-v1.h"
 #include "wlr-foreign-toplevel-management-unstable-v1.h"
 #include "wlr-layer-shell-unstable-v1.h"
 
@@ -44,18 +46,11 @@
 #define STATE_PARTIAL STATE_FILE PARTIAL
 #define PIPEWIRE_SOCKET "pipewire-0"
 #define SANDBOX_ENGINE "docker"
-#define FONT "Inter"
-#define ROWS_PER_SCREEN 16
-#define FONT_PER_ROW 0.6
-#define MARGIN_PER_ROW 0.5
-#define GUIDE_WIDTH_DIVISOR 3
-#define NOTIFICATION_WIDTH_DIVISOR 3
 #define NOTIFICATION_SECONDS 4
 #define NOTIFICATIONS_MAX 4
 #define REPEAT_DELAY_MS 400
 #define REPEAT_INTERVAL_MS 80
 #define NS_PER_MS 1000000
-#define MS_PER_SECOND 1000
 #define NS_PER_SECOND ((double)MS_PER_SECOND * NS_PER_MS)
 #define PERCENT 100
 #define RGB_MASK 0x00ffffffu
@@ -77,8 +72,6 @@
 #define AUTO "Auto"
 #define BOOST_GOVERNOR "performance"
 #define REFRESH_PRECISION 100
-#define BYTES_PER_PIXEL 4
-#define BUFFERS 2
 #define REWIND_STATES 20
 #define KEPT_SESSIONS 4
 #define SAVE_SECONDS 5
@@ -87,12 +80,8 @@
 #define STATE_EXTENSION ".state"
 #define SCREEN_EXTENSION ".screen.png"
 #define REWIND_TREE_DEPTH 2
-#define CAROUSEL_ROWS 4
-#define OUTLINE_PER_ROW 0.1
 #define SECONDS_PER_MINUTE 60
 #define LINUX_DMABUF_VERSION 3
-#define BAR_WIDTH_DIVISOR 3
-#define BAR_PER_ROW 0.5
 #define LAUNCH_STEPS 2
 #define NO_DEVICE 0
 #define UNAPPLIED (-2)
@@ -101,12 +90,17 @@
 #define STRINGIFY(x) STRINGIFY_(x)
 #define PROFILE_NAME "Player %d"
 #define EMULATE_FILE "emulate.json"
-#define ATTRACT_PROMPT "Press any button"
-#define ATTRACT_PROMPT_ROW (ROWS_PER_SCREEN * 3 / 4)
-#define ATTRACT_FADE_SECONDS 1.0
+#define DEFAULT_SKIN "classic"
+#define CURRENT_SCREEN "current-screen"
+#define RELOAD_SECONDS 0.2
+#define SKIN_WATCHES_MAX 256
+#define SKIN_TREE_DEPTH 16
+#define BLUR_BOXES_MAX 16
+#define SKINS_MAX 64
 
 enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, MICROPHONES, CONTROLLERS, CONTROLLER, SETTINGS, WHOIS, LOG_OUT, ATTRACT };
 enum plane { DASHBOARD_PLANE, GUIDE_PLANE, PICKER_PLANE };
+static const char *const planes[] = {[DASHBOARD_PLANE] = "dashboard", [GUIDE_PLANE] = "guide", [PICKER_PLANE] = "picker"};
 static const struct { const char *name, *title; enum plane plane; } screens[] = {
     [HOME] = {"home", "Home"}, [STORE] = {"store", "Store"}, [GAME] = {"game", ""},
     [GUIDE] = {"guide", "Guide", GUIDE_PLANE}, [OUTPUTS] = {"outputs", "Output", GUIDE_PLANE}, [MICROPHONES] = {"microphones", "Microphone", GUIDE_PLANE},
@@ -115,7 +109,7 @@ static const struct { const char *name, *title; enum plane plane; } screens[] = 
 };
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
-              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN };
+              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN };
 static const char *const actions[] = {
     [NOTHING] = "nothing", [OPEN_STORE] = "open-store", [OPEN_SETTINGS] = "open-settings", [OPEN_GAME] = "open-game", [PLAY] = "play", [RESUME] = "resume",
     [CLOSE] = "close", [UNINSTALL] = "uninstall", [INSTALL] = "install", [SHOW_DASHBOARD] = "dashboard", [VOLUME] = "volume", [OPEN_OUTPUTS] = "open-outputs",
@@ -123,14 +117,13 @@ static const char *const actions[] = {
     [OPEN_CONTROLLER] = "open-controller", [FORGET] = "forget", [RELOAD] = "reload", [RESTART] = "restart", [POWER_OFF] = "power-off",
     [CHOOSE_DISPLAY] = "display", [CHOOSE_DISPLAY_MODE] = "display-mode", [APPLY_RESOLUTIONS] = "apply-resolutions", [CHOOSE_RESOLUTION] = "resolution",
     [CHOOSE_SLEEP] = "sleep", [REWIND] = "rewind", [LOGIN] = "login", [EMULATE] = "emulate", [LOG_OUT_PLAYER] = "log-out",
-    [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen"};
+    [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen", [CHOOSE_SKIN] = "skin"};
 static const char *const criteria[] = {"action", "label", "value", "arg"};
 enum command { NONE, UP, DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
 static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [LEFT] = "left", [RIGHT] = "right",
                                        [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide"};
 static const struct { const char *name, *label; } mode_labels[] = {
     {"analog", "Analog pad"}, {"digital", "Digital pad"}, {"keyboard", "Keyboard"}, {"mouse", "Mouse"}, {"keyboard-mouse", "Keyboard & mouse"}};
-enum surface_mode { HIDDEN, NOTIFICATIONS_ONLY, FULL };
 enum task { INSTALLING, UNINSTALLING, LAUNCHING };
 static const char *const tasks[] = {[INSTALLING] = "installing", [UNINSTALLING] = "uninstalling", [LAUNCHING] = "launching"};
 
@@ -150,7 +143,6 @@ struct device { int id; char name[TEXT_MAX], node[TEXT_MAX]; };
 struct member { int device, profile; };
 struct notification { char text[TEXT_MAX]; struct timespec expires; };
 struct window { struct zwlr_foreign_toplevel_handle_v1 *handle; struct ext_foreign_toplevel_handle_v1 *listed; char app_id[TEXT_MAX]; };
-struct buffer { struct wl_buffer *buffer; void *pixels; int busy; };
 struct request {
     int fd, waiting, game;
     size_t length;
@@ -184,15 +176,13 @@ static int players[PADS], player_count, menu_told = -1, focus = NO_DEVICE, picke
 static struct member members[INPUT_DEVICES_MAX];
 static int member_count;
 static struct view whois;
-static struct timespec attract_since;
-static cairo_surface_t *splash;
 static struct notification notifications[NOTIFICATIONS_MAX];
 static int notification_count;
 static enum command repeating;
 static int repeat_timer, notification_timer, save_timer, watcher, log_file, changed = 1;
 static json_object *emulate_choices[PROFILES + 1];
 static char rewinds[REWIND_STATES][NAME_MAX + 1];
-static cairo_surface_t *thumbnails[REWIND_STATES], *pending_screen, *current_screen, *newest_screen;
+static cairo_surface_t *pending_screen, *newest_screen;
 static char newest_name[NAME_MAX + 1];
 static int pending_after;
 static struct capture capture;
@@ -209,7 +199,6 @@ static json_object *settings, *display_state, *controllers_state, *audio_nodes, 
 
 static struct wl_display *display;
 static struct wl_compositor *compositor;
-static struct wl_shm *shm;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static struct wp_security_context_manager_v1 *security;
 static struct zwlr_foreign_toplevel_manager_v1 *toplevels;
@@ -220,9 +209,13 @@ static struct zwp_linux_dmabuf_v1 *dmabuf;
 static struct wl_seat *seat;
 static struct wl_surface *surface;
 static struct zwlr_layer_surface_v1 *layer;
-static enum surface_mode mode;
-static struct buffer buffers[BUFFERS];
-static int width, height, output_width, output_height, draw_pending;
+static struct ext_background_effect_manager_v1 *effects;
+static struct ext_background_effect_surface_v1 *effect;
+static int width, frame_pending, paint_needed, skin_moving, skin_timer, skin_watches[SKIN_WATCHES_MAX], skin_watch_count, has_current_screen;
+static struct box blurred[BLUR_BOXES_MAX];
+static int blurred_count;
+static double reload_due = -1;
+static char wanted_skin[NAME_MAX + 1], loaded_skin[NAME_MAX + 1];
 
 static pid_t spawn(char *const argv[], int input, int output, int errors) {
     posix_spawn_file_actions_t actions;
@@ -400,32 +393,19 @@ static void refresh_rewinds(void) {
     char path[PATH_MAX];
     struct dirent **entries = NULL;
     int count = active < 0 ? 0 : scandir(rewind_path(path, active, "/" STATES), &entries, is_state, by_slot);
-    char previous[REWIND_STATES][NAME_MAX + 1];
-    cairo_surface_t *cached[REWIND_STATES];
-    int previous_count = rewind_count;
-    memcpy(previous, rewinds, sizeof rewinds);
-    memcpy(cached, thumbnails, sizeof thumbnails);
     rewind_count = 0;
     for (int i = 0; i < count; i++) {
         if (i < count - REWIND_STATES) remove_state(entries[i]->d_name);
         else snprintf(rewinds[rewind_count++], sizeof rewinds[0], "%s", entries[i]->d_name);
         free(entries[i]);
     }
-    for (int i = 0; i < rewind_count; i++) {
-        thumbnails[i] = NULL;
-        for (int j = 0; j < previous_count; j++)
-            if (cached[j] && !strcmp(previous[j], rewinds[i])) {
-                thumbnails[i] = cached[j];
-                cached[j] = NULL;
-            }
-    }
-    for (int j = 0; j < previous_count; j++) cairo_surface_destroy(cached[j]);
     free(entries);
     if (rewind_back > rewind_count) rewind_back = rewind_count;
     if (pending_screen && rewind_count && slot(rewinds[rewind_count - 1]) > pending_after) {
         cairo_surface_write_to_png(pending_screen, rewind_path(path, active, "/" STATES "/%s" SCREEN_EXTENSION, rewinds[rewind_count - 1]));
         remember_newest(pending_screen);
         pending_screen = NULL;
+        paint_needed = 1;
     }
     changed = 1;
 }
@@ -781,9 +761,68 @@ static void cycle_sleep(int step) {
     start((char *[]){"settings", "sleep", value, NULL});
 }
 
+static const char *skin_name(void) {
+    const char *name = string_at(settings, "skin", NULL);
+    return *name ? name : DEFAULT_SKIN;
+}
+
+static int by_name(const void *left, const void *right) { return strcmp(left, right); }
+
+static const char *const skin_roots[] = {USER_SKINS_DIR, SKINS_DIR};
+
+static int skin_names(char names[SKINS_MAX][NAME_MAX + 1]) {
+    char entry[PATH_MAX];
+    int count = 0;
+    for (unsigned root = 0; root < sizeof skin_roots / sizeof *skin_roots; root++) {
+        struct dirent **folders = NULL;
+        int found = scandir(skin_roots[root], &folders, is_visible, NULL);
+        for (int i = 0; i < found; i++) {
+            int known = 0;
+            for (int j = 0; j < count; j++) known |= !strcmp(names[j], folders[i]->d_name);
+            snprintf(entry, sizeof entry, "%s/%s/" SKIN_ENTRY, skin_roots[root], folders[i]->d_name);
+            if (count < SKINS_MAX && !known && !access(entry, R_OK)) snprintf(names[count++], NAME_MAX + 1, "%s", folders[i]->d_name);
+            free(folders[i]);
+        }
+        free(folders);
+    }
+    qsort(names, count, sizeof *names, by_name);
+    return count;
+}
+
+static void cycle_skin(int step) {
+    char names[SKINS_MAX][NAME_MAX + 1];
+    int count = skin_names(names), current = 0;
+    for (int i = 0; i < count; i++)
+        if (!strcmp(names[i], skin_name())) current = i;
+    if (count) start((char *[]){"settings", "skin", names[(current + step + count) % count], NULL});
+}
+
+static char *skin_folder(const char *name, char folder[PATH_MAX]) {
+    char entry[PATH_MAX];
+    for (unsigned root = 0; root < sizeof skin_roots / sizeof *skin_roots; root++) {
+        snprintf(folder, PATH_MAX, "%s/%.*s", skin_roots[root], NAME_MAX, name);
+        snprintf(entry, sizeof entry, "%s/%.*s/" SKIN_ENTRY, skin_roots[root], NAME_MAX, name);
+        if (!access(entry, R_OK)) break;
+    }
+    return folder;
+}
+
+static void load_skin(void) {
+    char folder[PATH_MAX];
+    const char *const choices[] = {skin_name(), DEFAULT_SKIN};
+    snprintf(wanted_skin, sizeof wanted_skin, "%s", skin_name());
+    scene_crossfade(skin_now());
+    *loaded_skin = '\0';
+    for (unsigned i = 0; i < sizeof choices / sizeof *choices && !*loaded_skin; i++)
+        if (script_load(skin_folder(choices[i], folder))) snprintf(loaded_skin, sizeof loaded_skin, "%s", choices[i]);
+    if (written_state) script_state(written_state);
+    paint_needed = changed = 1;
+}
+
 static void read_settings(void) {
     json_object_put(settings);
     settings = json_object_from_file(SETTINGS_FILE);
+    if (strcmp(skin_name(), wanted_skin)) load_skin();
     changed = 1;
 }
 
@@ -1107,6 +1146,7 @@ static int build(struct view *view) {
         count = add_row(count, CHOOSE_DISPLAY, 0, "Display", "%s", display_value());
         count = add_resolution_rows(count);
         count = add_row(count, CHOOSE_SLEEP, 0, "Controller sleep", "%s", sleep_value());
+        count = add_row(count, CHOOSE_SKIN, 0, "Skin", "%s", skin_name());
         break;
     }
     for (int i = 0; i < count; i++)
@@ -1275,9 +1315,9 @@ static void end_capture(int captured) {
         pending_after = rewind_count ? slot(rewinds[rewind_count - 1]) : -1;
         send_command(active, "SAVE_STATE");
     }
+    if (capture.current && screen) scene_image(CURRENT_SCREEN, screen);
     if (capture.current) {
-        cairo_surface_destroy(current_screen);
-        current_screen = cairo_surface_reference(screen);
+        has_current_screen = screen != NULL;
         guide_shown = 1;
     }
     cairo_surface_destroy(screen);
@@ -1288,15 +1328,6 @@ static void end_capture(int captured) {
     wl_array_release(&capture.modifiers);
     capture = (struct capture){0};
     changed = 1;
-}
-
-static struct wl_shm_pool *create_pool(size_t size, void **pixels) {
-    int fd = memfd_create("overlay", MFD_CLOEXEC);
-    ftruncate(fd, size);
-    struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, size);
-    *pixels = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    close(fd);
-    return pool;
 }
 
 static void on_frame_transform(void *data, struct ext_image_copy_capture_frame_v1 *frame, uint32_t transform) { (void)data, (void)frame, (void)transform; }
@@ -1657,7 +1688,7 @@ static void act(struct row *row, int profile) {
     struct view *view = top();
     struct game *game = view->game >= 0 ? &games[view->game] : NULL;
     switch (row->action) {
-    case NOTHING: case VOLUME: case MICROPHONE_VOLUME: case SECOND_SCREEN: case CHOOSE_DISPLAY: case CHOOSE_DISPLAY_MODE: case CHOOSE_RESOLUTION: case CHOOSE_SLEEP: case EMULATE: break;
+    case NOTHING: case VOLUME: case MICROPHONE_VOLUME: case SECOND_SCREEN: case CHOOSE_DISPLAY: case CHOOSE_DISPLAY_MODE: case CHOOSE_RESOLUTION: case CHOOSE_SLEEP: case CHOOSE_SKIN: case EMULATE: break;
     case REWIND: load_rewind(); break;
     case LOGIN: login(row->arg, picker); break;
     case LOG_OUT_PLAYER:
@@ -1726,6 +1757,7 @@ static void adjust(enum action action, int step) {
     if (action == CHOOSE_DISPLAY_MODE) cycle_display_mode(step);
     if (action == CHOOSE_RESOLUTION) cycle_resolution(step);
     if (action == CHOOSE_SLEEP) cycle_sleep(step);
+    if (action == CHOOSE_SKIN) cycle_skin(step);
     if (action == REWIND && rewind_back - step >= 0 && rewind_back - step <= rewind_count) rewind_back -= step;
     if (action == EMULATE) cycle_mode(step);
     if (action == SECOND_SCREEN) toggle_second_screen();
@@ -1760,6 +1792,11 @@ static void toggle_guide(int device) {
 }
 
 static void navigate(int device, enum command command) {
+    paint_needed = 1;
+    if (script_command(commands[command]) && command >= UP && command <= RIGHT) {
+        changed = 1;
+        return;
+    }
     struct view *view = top();
     int count = build(view), selected = view->selected;
     struct row *row = count ? &rows[view->selected] : NULL;
@@ -1812,303 +1849,189 @@ static enum command command_named(const char *name) {
     return NONE;
 }
 
+double skin_now(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec + now.tv_nsec / NS_PER_SECOND;
+}
+
+static int surface_wanted(void) { return attract() || interactive() || launching() || notification_count; }
+
 static void hide(void) {
     if (!layer) return;
+    scene_detach();
+    if (effect) ext_background_effect_surface_v1_destroy(effect);
     zwlr_layer_surface_v1_destroy(layer);
     wl_surface_destroy(surface);
+    effect = NULL;
     layer = NULL;
-    width = 0;
-    mode = HIDDEN;
-}
-
-static void on_buffer_release(void *data, struct wl_buffer *wl_buffer) {
-    (void)wl_buffer;
-    ((struct buffer *)data)->busy = 0;
-    changed |= draw_pending;
-}
-
-static const struct wl_buffer_listener buffer_listener = {.release = on_buffer_release};
-
-static void free_buffers(void) {
-    if (!buffers[0].buffer) return;
-    munmap(buffers[0].pixels, (size_t)width * height * BYTES_PER_PIXEL * BUFFERS);
-    for (int i = 0; i < BUFFERS; i++) {
-        wl_buffer_destroy(buffers[i].buffer);
-        buffers[i] = (struct buffer){0};
-    }
-}
-
-static void allocate_buffers(void) {
-    int stride = width * BYTES_PER_PIXEL;
-    size_t size = (size_t)stride * height;
-    char *pixels;
-    struct wl_shm_pool *pool = create_pool(size * BUFFERS, (void **)&pixels);
-    for (int i = 0; i < BUFFERS; i++) {
-        buffers[i].pixels = pixels + size * i;
-        buffers[i].buffer = wl_shm_pool_create_buffer(pool, size * i, width, height, stride, WL_SHM_FORMAT_ARGB8888);
-        wl_buffer_add_listener(buffers[i].buffer, &buffer_listener, &buffers[i]);
-    }
-    wl_shm_pool_destroy(pool);
+    width = frame_pending = blurred_count = 0;
 }
 
 static void on_layer_configure(void *data, struct zwlr_layer_surface_v1 *configured, uint32_t serial, uint32_t configured_width, uint32_t configured_height) {
     (void)data;
     zwlr_layer_surface_v1_ack_configure(configured, serial);
-    if ((int)configured_width == width && (int)configured_height == height) return;
-    free_buffers();
     width = configured_width;
-    height = configured_height;
-    if (mode == FULL) {
-        output_width = width;
-        output_height = height;
-    }
-    allocate_buffers();
-    changed = draw_pending = 1;
+    scene_attach(surface, configured_width, configured_height);
+    paint_needed = 1;
 }
 
 static void on_layer_closed(void *data, struct zwlr_layer_surface_v1 *closed) {
     (void)data, (void)closed;
-    free_buffers();
     hide();
 }
 
 static const struct zwlr_layer_surface_v1_listener layer_listener = {.configure = on_layer_configure, .closed = on_layer_closed};
 
-static double row_height(void) { return (double)output_height / ROWS_PER_SCREEN; }
-
-static void show(enum surface_mode wanted) {
-    free_buffers();
-    hide();
-    mode = wanted;
+static void show(void) {
     surface = wl_compositor_create_surface(compositor);
     struct wl_region *nowhere = wl_compositor_create_region(compositor);
     wl_surface_set_input_region(surface, nowhere);
     wl_region_destroy(nowhere);
     layer = zwlr_layer_shell_v1_get_layer_surface(layer_shell, surface, NULL, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "anyconsole");
-    if (wanted == FULL) {
-        zwlr_layer_surface_v1_set_anchor(layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
-                                                    ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-        zwlr_layer_surface_v1_set_exclusive_zone(layer, -1);
-    } else {
-        zwlr_layer_surface_v1_set_anchor(layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-        zwlr_layer_surface_v1_set_size(layer, output_width / NOTIFICATION_WIDTH_DIVISOR, row_height() * NOTIFICATIONS_MAX);
-    }
+    zwlr_layer_surface_v1_set_anchor(layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+                                                ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+    zwlr_layer_surface_v1_set_exclusive_zone(layer, -1);
     zwlr_layer_surface_v1_add_listener(layer, &layer_listener, NULL);
+    if (effects) effect = ext_background_effect_manager_v1_get_background_effect(effects, surface);
     wl_surface_commit(surface);
-}
-
-static double text(cairo_t *cr, double x, double y, const char *string) {
-    cairo_text_extents_t extents;
-    cairo_font_extents_t font;
-    cairo_font_extents(cr, &font);
-    cairo_text_extents(cr, string, &extents);
-    cairo_move_to(cr, x, y + (row_height() + font.ascent - font.descent) / 2);
-    cairo_show_text(cr, string);
-    return extents.x_advance;
-}
-
-static void value(cairo_t *cr, double from, double to, double y, const char *string) {
-    cairo_text_extents_t extents;
-    cairo_text_extents(cr, string, &extents);
-    cairo_save(cr);
-    cairo_rectangle(cr, from, y, to - from, row_height());
-    cairo_clip(cr);
-    text(cr, extents.x_advance < to - from ? to - extents.x_advance : from, y, string);
-    cairo_restore(cr);
-}
-
-static void draw_view(cairo_t *cr, struct view *view, int count, double panel_width) {
-    double margin = row_height() * MARGIN_PER_ROW;
-    int visible = ROWS_PER_SCREEN - 1, first = view->selected >= visible ? view->selected - visible + 1 : 0;
-    cairo_set_source_rgb(cr, 0, 0, 0);
-    cairo_rectangle(cr, 0, 0, panel_width, height);
-    cairo_fill(cr);
-    cairo_set_source_rgb(cr, 1, 1, 1);
-    text(cr, margin, 0, title(view));
-    for (int i = first; i < count && i < first + visible; i++) {
-        double y = (i - first + 1) * row_height();
-        if (i == view->selected) {
-            cairo_rectangle(cr, 0, y, panel_width, row_height());
-            cairo_fill(cr);
-            cairo_set_source_rgb(cr, 0, 0, 0);
-        }
-        double label_end = margin + text(cr, margin, y, rows[i].label);
-        value(cr, label_end + margin, panel_width - margin, y, rows[i].value);
-        cairo_set_source_rgb(cr, 1, 1, 1);
-    }
-}
-
-static void draw_image(cairo_t *cr, cairo_surface_t *image, double box_width, double box_height) {
-    double image_width = cairo_image_surface_get_width(image), image_height = cairo_image_surface_get_height(image);
-    if (cairo_surface_status(image)) return;
-    double scale = box_width / image_width < box_height / image_height ? box_width / image_width : box_height / image_height;
-    cairo_save(cr);
-    cairo_translate(cr, floor((box_width - image_width * scale) / 2), floor((box_height - image_height * scale) / 2));
-    cairo_scale(cr, scale, scale);
-    cairo_set_source_surface(cr, image, 0, 0);
-    cairo_paint(cr);
-    cairo_restore(cr);
-}
-
-static cairo_surface_t *thumbnail(int index, double cell_width, double cell_height) {
-    if (thumbnails[index]) return thumbnails[index];
-    cairo_surface_t *image = state_image(index, SCREEN_EXTENSION);
-    if (cairo_surface_status(image)) {
-        cairo_surface_destroy(image);
-        return NULL;
-    }
-    thumbnails[index] = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, cell_width, cell_height);
-    cairo_t *cr = cairo_create(thumbnails[index]);
-    draw_image(cr, image, cell_width, cell_height);
-    cairo_destroy(cr);
-    cairo_surface_destroy(image);
-    return thumbnails[index];
-}
-
-static void draw_preview(cairo_t *cr) {
-    cairo_surface_t *image = state_image(rewind_count - rewind_back, SCREEN_EXTENSION);
-    cairo_set_source_rgb(cr, 0, 0, 0);
-    cairo_paint(cr);
-    draw_image(cr, image, width, height);
-    cairo_surface_destroy(image);
-}
-
-static void draw_carousel(cairo_t *cr) {
-    double margin = row_height() * MARGIN_PER_ROW, strip = row_height() * CAROUSEL_ROWS, cell_height = strip - 2 * margin;
-    double cell_width = cell_height * width / height, top_edge = height - strip + margin;
-    int visible = (width - margin) / (cell_width + margin), shift = rewind_back < visible ? 0 : rewind_back - visible + 1;
-    cairo_set_source_rgb(cr, 0, 0, 0);
-    cairo_rectangle(cr, 0, height - strip, width, strip);
-    cairo_fill(cr);
-    for (int back = shift; back <= rewind_count && back < shift + visible; back++) {
-        double left_edge = width - (back - shift + 1) * (cell_width + margin);
-        cairo_surface_t *cell = back ? thumbnail(rewind_count - back, cell_width, cell_height) : NULL;
-        if (cell) {
-            cairo_set_source_surface(cr, cell, left_edge, top_edge);
-            cairo_paint(cr);
-        } else if (!back && current_screen) {
-            cairo_save(cr);
-            cairo_translate(cr, left_edge, top_edge);
-            draw_image(cr, current_screen, cell_width, cell_height);
-            cairo_restore(cr);
-            cairo_set_source_rgb(cr, 0, 0, 0);
-            cairo_rectangle(cr, left_edge, top_edge + cell_height - row_height(), cell_width, row_height());
-            cairo_fill(cr);
-            cairo_set_source_rgb(cr, 1, 1, 1);
-            text(cr, left_edge + margin, top_edge + cell_height - row_height(), "Save");
-        }
-        if (back != rewind_back) continue;
-        cairo_set_source_rgb(cr, 1, 1, 1);
-        cairo_set_line_width(cr, row_height() * OUTLINE_PER_ROW);
-        cairo_rectangle(cr, left_edge, top_edge, cell_width, cell_height);
-        cairo_stroke(cr);
-    }
-}
-
-static void centered(cairo_t *cr, double y, const char *string) {
-    cairo_text_extents_t extents;
-    cairo_text_extents(cr, string, &extents);
-    text(cr, (width - extents.x_advance) / 2, y, string);
-}
-
-static void draw_launch(cairo_t *cr) {
-    struct game *game = &games[active];
-    double line = row_height() * OUTLINE_PER_ROW, margin = row_height() * MARGIN_PER_ROW;
-    double bar_width = (double)width / BAR_WIDTH_DIVISOR, bar_height = row_height() * BAR_PER_ROW;
-    double left = (width - bar_width) / 2, top_edge = (height - bar_height) / 2;
-    double done = game->job ? fmax(game->percent, 0) / PERCENT : LAUNCH_STEPS - 1;
-    cairo_set_source_rgb(cr, 0, 0, 0);
-    cairo_paint(cr);
-    cairo_set_source_rgb(cr, 1, 1, 1);
-    cairo_set_line_width(cr, line);
-    cairo_rectangle(cr, left - line, top_edge - line, bar_width + 2 * line, bar_height + 2 * line);
-    cairo_stroke(cr);
-    cairo_rectangle(cr, left, top_edge, bar_width * done / LAUNCH_STEPS, bar_height);
-    cairo_fill(cr);
-    centered(cr, top_edge - 2 * line - margin - row_height(), game->title);
-    centered(cr, top_edge + bar_height + 2 * line + margin, status(active));
 }
 
 static void on_frame(void *data, struct wl_callback *callback, uint32_t time) {
     (void)data, (void)time;
     wl_callback_destroy(callback);
-    draw_pending = changed = 1;
+    frame_pending = 0;
+    paint_needed |= skin_moving;
 }
 
 static const struct wl_callback_listener frame_listener = {.done = on_frame};
 
-static int draw_attract(cairo_t *cr) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    double shown = fmin(1, (now.tv_sec - attract_since.tv_sec + (now.tv_nsec - attract_since.tv_nsec) / NS_PER_SECOND) / ATTRACT_FADE_SECONDS);
-    cairo_set_source_rgb(cr, 0, 0, 0);
-    cairo_paint(cr);
-    draw_image(cr, splash, width, height);
-    cairo_set_source_rgba(cr, 1, 1, 1, shown);
-    centered(cr, ATTRACT_PROMPT_ROW * row_height(), ATTRACT_PROMPT);
-    return shown < 1;
+static void set_blur(void) {
+    struct box boxes[BLUR_BOXES_MAX];
+    int count = scene_blur(boxes, BLUR_BOXES_MAX);
+    if (!effect || (count == blurred_count && !memcmp(boxes, blurred, count * sizeof *boxes))) return;
+    struct wl_region *region = wl_compositor_create_region(compositor);
+    for (int i = 0; i < count; i++) wl_region_add(region, boxes[i].x, boxes[i].y, boxes[i].width, boxes[i].height);
+    ext_background_effect_surface_v1_set_blur_region(effect, region);
+    wl_region_destroy(region);
+    memcpy(blurred, boxes, count * sizeof *boxes);
+    blurred_count = count;
 }
 
-static int layer_rows(struct view *view, int top_count, int *intact) {
-    if (view == top() && *intact) return top_count;
-    *intact = 0;
-    return build(view);
-}
-
-static void draw(int top_count) {
-    struct buffer *buffer = !buffers[0].busy ? &buffers[0] : !buffers[1].busy ? &buffers[1] : NULL;
-    if (!buffer) { draw_pending = 1; return; }
-    draw_pending = 0;
-    cairo_surface_t *canvas = cairo_image_surface_create_for_data(buffer->pixels, CAIRO_FORMAT_ARGB32, width, height, width * BYTES_PER_PIXEL);
-    cairo_t *cr = cairo_create(canvas);
-    double notification_width = (double)output_width / NOTIFICATION_WIDTH_DIVISOR, margin = row_height() * MARGIN_PER_ROW;
-    int animating = 0, intact = 1;
-    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
-    cairo_paint(cr);
-    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-    cairo_select_font_face(cr, FONT, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-    cairo_set_font_size(cr, row_height() * FONT_PER_ROW);
-    if (attract()) {
-        animating = draw_attract(cr);
-    } else {
-        if (launching()) draw_launch(cr);
-        if (dashboard_open) draw_view(cr, &dashboard[dashboard_depth - 1], layer_rows(&dashboard[dashboard_depth - 1], top_count, &intact), width);
+static void paint(void) {
+    paint_needed = 0;
+    skin_moving = scene_paint(skin_now());
+    if (!surface_wanted() && !skin_moving) {
+        hide();
+        return;
     }
+    set_blur();
+    wl_callback_add_listener(wl_surface_frame(surface), &frame_listener, NULL);
+    frame_pending = 1;
+    scene_present();
+}
+
+void skin_select(int index) {
+    struct view *view = top();
+    if (index < 0 || index == view->selected || index >= build(view)) return;
+    select_row(view, index);
+    changed = 1;
+}
+
+static int watch_skin_folder(const char *path, const struct stat *status, int type, struct FTW *walk) {
+    (void)status, (void)walk;
+    if (type != FTW_D || skin_watch_count == SKIN_WATCHES_MAX) return 0;
+    int watch = inotify_add_watch(watcher, path, IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_CREATE | IN_DELETE);
+    for (int i = 0; i < skin_watch_count; i++)
+        if (skin_watches[i] == watch) return 0;
+    skin_watches[skin_watch_count++] = watch;
+    return 0;
+}
+
+static void watch_skins(void) { nftw(USER_SKINS_DIR, watch_skin_folder, SKIN_TREE_DEPTH, FTW_PHYS); }
+
+static int skin_changed(const struct inotify_event *event) {
+    for (int i = 0; i < skin_watch_count; i++)
+        if (skin_watches[i] == event->wd) {
+            if (event->mask & IN_ISDIR) watch_skins();
+            reload_due = skin_now() + RELOAD_SECONDS;
+            return 1;
+        }
+    return 0;
+}
+
+static void arm_skin_timer(void) {
+    static double armed = -1;
+    double due = script_next_timer();
+    if (reload_due >= 0 && (due < 0 || reload_due < due)) due = reload_due;
+    if (due == armed) return;
+    armed = due;
+    struct itimerspec timer = {0};
+    if (due >= 0) timer.it_value = (struct timespec){(time_t)due, (due - (time_t)due) * NS_PER_SECOND + 1};
+    timerfd_settime(skin_timer, TFD_TIMER_ABSTIME, &timer, NULL);
+}
+
+static void run_skin_timers(void) {
+    double now = skin_now();
+    if (reload_due >= 0 && reload_due <= now) {
+        reload_due = -1;
+        load_skin();
+    }
+    script_run_timers(now);
+    paint_needed = 1;
+}
+
+static json_object *row_object(struct row *row) {
+    json_object *object = json_object_new_object();
+    json_object_object_add(object, "label", json_object_new_string(row->label));
+    json_object_object_add(object, "value", json_object_new_string(row->value));
+    json_object_object_add(object, "action", json_object_new_string(actions[row->action]));
+    json_object_object_add(object, "arg", json_object_new_int(row->arg));
+    return object;
+}
+
+static json_object *view_object(enum plane plane, struct view *view, int *count) {
+    json_object *object = json_object_new_object(), *list = json_object_new_array();
+    *count = build(view);
+    for (int i = 0; i < *count; i++) json_object_array_add(list, row_object(&rows[i]));
+    json_object_object_add(object, "plane", json_object_new_string(planes[plane]));
+    json_object_object_add(object, "screen", json_object_new_string(screens[view->screen].name));
+    json_object_object_add(object, "title", json_object_new_string(title(view)));
+    json_object_object_add(object, "game", view->game >= 0 ? json_object_new_string(key(view->game)) : NULL);
+    json_object_object_add(object, "rows", list);
+    json_object_object_add(object, "selected", json_object_new_int(view->selected));
+    return object;
+}
+
+static json_object *launch_object(void) {
+    json_object *object = json_object_new_object();
+    int done = games[active].job ? (games[active].percent > 0 ? games[active].percent : 0) : (LAUNCH_STEPS - 1) * PERCENT;
+    json_object_object_add(object, "game", json_object_new_string(key(active)));
+    json_object_object_add(object, "percent", json_object_new_int(done / LAUNCH_STEPS));
+    return object;
+}
+
+static json_object *views_object(int *choosing) {
+    json_object *list = json_object_new_array();
+    int count;
+    *choosing = 0;
+    if (dashboard_open) json_object_array_add(list, view_object(DASHBOARD_PLANE, &dashboard[dashboard_depth - 1], &count));
     if (guide_shown) {
-        int guide_count = layer_rows(guide_view(), top_count, &intact);
-        int rewinding = guide_count && rows[guide_view()->selected].action == REWIND;
-        if (rewinding && rewind_back) draw_preview(cr);
-        draw_view(cr, guide_view(), guide_count, (double)width / GUIDE_WIDTH_DIVISOR);
-        if (rewinding) draw_carousel(cr);
+        json_object_array_add(list, view_object(GUIDE_PLANE, guide_view(), &count));
+        *choosing = guide_view()->selected < count && rows[guide_view()->selected].action == REWIND;
     }
-    if (picker != NO_DEVICE) draw_view(cr, &whois, layer_rows(&whois, top_count, &intact), width);
-    for (int i = 0; i < notification_count; i++) {
-        cairo_set_source_rgb(cr, 1, 1, 1);
-        cairo_rectangle(cr, width - notification_width, i * row_height(), notification_width, row_height());
-        cairo_fill(cr);
-        cairo_set_source_rgb(cr, 0, 0, 0);
-        value(cr, width - notification_width + margin, width - margin, i * row_height(), notifications[i].text);
-    }
-    cairo_destroy(cr);
-    cairo_surface_destroy(canvas);
-    buffer->busy = 1;
-    if (animating) wl_callback_add_listener(wl_surface_frame(surface), &frame_listener, NULL);
-    wl_surface_attach(surface, buffer->buffer, 0, 0);
-    wl_surface_damage_buffer(surface, 0, 0, width, height);
-    wl_surface_commit(surface);
+    if (picker != NO_DEVICE) json_object_array_add(list, view_object(PICKER_PLANE, &whois, &count));
+    return list;
 }
 
 static json_object *state_object(int count) {
-    json_object *state = json_object_new_object(), *list = json_object_new_array(), *audio = json_object_new_object();
-    json_object *history = json_object_new_object();
+    json_object *state = json_object_new_object(), *audio = json_object_new_object(), *history = json_object_new_object(), *screens_list = json_object_new_array();
+    json_object *list = json_object_new_array();
     struct view *view = top();
-    for (int i = 0; i < count; i++) {
-        json_object *row = json_object_new_object();
-        json_object_object_add(row, "label", json_object_new_string(rows[i].label));
-        json_object_object_add(row, "value", json_object_new_string(rows[i].value));
-        json_object_object_add(row, "action", json_object_new_string(actions[rows[i].action]));
-        json_object_array_add(list, row);
-    }
+    char path[PATH_MAX];
+    int choosing;
+    for (int i = 0; i < count; i++) json_object_array_add(list, row_object(&rows[i]));
+    json_object *views = views_object(&choosing);
     json_object *session = json_object_new_object(), *entries = json_object_new_array();
     json_object_object_add(state, "screen", json_object_new_string(screens[attract() ? ATTRACT : view->screen].name));
     for (int i = 0; i < player_count; i++) {
@@ -2131,6 +2054,16 @@ static json_object *state_object(int count) {
     json_object_object_add(state, "guide", json_object_new_boolean(guide_shown));
     json_object_object_add(history, "states", json_object_new_int(rewind_count));
     json_object_object_add(history, "back", json_object_new_int(rewind_back));
+    for (int back = 1; back <= rewind_count; back++)
+        json_object_array_add(screens_list, json_object_new_string(rewind_path(path, active, "/" STATES "/%s" SCREEN_EXTENSION, rewinds[rewind_count - back])));
+    json_object_object_add(history, "choosing", json_object_new_boolean(choosing));
+    json_object_object_add(history, "preview", choosing && rewind_back ? json_object_get(json_object_array_get_idx(screens_list, rewind_back - 1)) : NULL);
+    json_object_object_add(history, "screens", screens_list);
+    json_object_object_add(history, "current", has_current_screen ? json_object_new_string(CURRENT_SCREEN) : NULL);
+    json_object_object_add(state, "views", views);
+    json_object_object_add(state, "launching", launching() ? launch_object() : NULL);
+    json_object_object_add(state, "splash", json_object_new_string(SPLASH_IMAGE));
+    json_object_object_add(state, "skin", json_object_new_string(loaded_skin));
     json_object_object_add(state, "rewind", history);
     json_object_object_add(state, "active", active < 0 ? NULL : json_object_new_string(key(active)));
     list = json_object_new_array();
@@ -2144,6 +2077,7 @@ static json_object *state_object(int count) {
         json_object_object_add(game, "key", json_object_new_string(key(i)));
         json_object_object_add(game, "title", json_object_new_string(games[i].title));
         json_object_object_add(game, "status", json_object_new_string(status(i)));
+        json_object_object_add(game, "platform", json_object_new_string(games[i].platform));
         json_object_object_add(game, "owner", games[i].owner ? json_object_new_int(games[i].owner) : NULL);
         json_object_object_add(game, "stores", offers);
         json_object_array_add(list, game);
@@ -2257,15 +2191,7 @@ static void settle(void) {
         tell_padd("menu %d", menu_told);
         if (!menu_told) hold(repeating_device, repeating, 0);
     }
-    if (!attract()) attract_since = (struct timespec){0};
-    else if (!attract_since.tv_sec && !attract_since.tv_nsec) clock_gettime(CLOCK_MONOTONIC, &attract_since);
-    enum surface_mode wanted = HIDDEN;
-    if (attract() || interactive() || launching() || (notification_count && !output_width)) wanted = FULL;
-    else if (notification_count) wanted = NOTIFICATIONS_ONLY;
-    if (wanted != mode && wanted == HIDDEN) {
-        free_buffers();
-        hide();
-    } else if (wanted != mode) show(wanted);
+    if (surface_wanted() && !layer) show();
     int count = build(top());
     int profile = picker != NO_DEVICE && count ? rows[whois.selected].arg : 0;
     int seat = profile ? seat_for(profile) + 1 : 0;
@@ -2277,7 +2203,10 @@ static void settle(void) {
     }
     json_object *state = state_object(count);
     char *serialized = strdup(json_object_to_json_string_ext(state, JSON_C_TO_STRING_PLAIN));
-    if (width && (draw_pending || !written_state || strcmp(serialized, written_state))) draw(count);
+    if (!written_state || strcmp(serialized, written_state)) {
+        script_state(serialized);
+        paint_needed = 1;
+    }
     if (written_state && !strcmp(serialized, written_state)) free(serialized);
     else write_state(serialized);
     send_replies(state);
@@ -2328,7 +2257,7 @@ static void read_changes(int runtime_watch, int display_watch, int controllers_w
     for (char *at = buffer; count > 0 && at < buffer + count;) {
         struct inotify_event *event = (struct inotify_event *)at;
         at += sizeof *event + event->len;
-        if (!event->len || read_game_change(event)) continue;
+        if (!event->len || read_game_change(event) || skin_changed(event)) continue;
         if (event->wd == runtime_watch && !strcmp(event->name, PIPEWIRE_SOCKET)) start_monitor();
         else if (event->wd == display_watch && !strcmp(event->name, basename(DISPLAY_FILE))) {
             read_display();
@@ -2416,8 +2345,6 @@ static void on_global(void *data, struct wl_registry *registry, uint32_t id, con
     (void)data, (void)version;
     if (!strcmp(interface, wl_compositor_interface.name))
         compositor = wl_registry_bind(registry, id, &wl_compositor_interface, WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION);
-    else if (!strcmp(interface, wl_shm_interface.name))
-        shm = wl_registry_bind(registry, id, &wl_shm_interface, 1);
     else if (!strcmp(interface, zwlr_layer_shell_v1_interface.name))
         layer_shell = wl_registry_bind(registry, id, &zwlr_layer_shell_v1_interface, 1);
     else if (!strcmp(interface, wp_security_context_manager_v1_interface.name))
@@ -2434,6 +2361,8 @@ static void on_global(void *data, struct wl_registry *registry, uint32_t id, con
         toplevel_capture = wl_registry_bind(registry, id, &ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1);
     else if (!strcmp(interface, ext_image_copy_capture_manager_v1_interface.name))
         image_copy = wl_registry_bind(registry, id, &ext_image_copy_capture_manager_v1_interface, 1);
+    else if (!strcmp(interface, ext_background_effect_manager_v1_interface.name))
+        effects = wl_registry_bind(registry, id, &ext_background_effect_manager_v1_interface, 1);
     else if (!strcmp(interface, zwp_linux_dmabuf_v1_interface.name))
         dmabuf = wl_registry_bind(registry, id, &zwp_linux_dmabuf_v1_interface, LINUX_DMABUF_VERSION);
 }
@@ -2594,7 +2523,7 @@ static int numbers(const char *list, int *parsed, int max) {
 }
 
 int main(void) {
-    enum { WAYLAND, CHANGES, SIGNALS, REPEAT, NOTIFICATIONS, MESSAGES, SAVE, MONITOR, LISTENER, FIXED };
+    enum { WAYLAND, CHANGES, SIGNALS, REPEAT, NOTIFICATIONS, MESSAGES, SAVE, SKIN, MONITOR, LISTENER, FIXED };
     struct pollfd watched[FIXED + JOB_FDS * GAMES_MAX + REQUESTS_MAX];
     int jobs[GAMES_MAX], served[REQUESTS_MAX];
     char stores_directory[PATH_MAX], display_directory[PATH_MAX], settings_directory[PATH_MAX], controllers_directory[PATH_MAX];
@@ -2610,7 +2539,7 @@ int main(void) {
     if (!display || log_file < 0) { fprintf(stderr, "overlay: no wayland display or log\n"); return 1; }
     wl_registry_add_listener(wl_display_get_registry(display), &registry_listener, NULL);
     wl_display_roundtrip(display);
-    if (!compositor || !shm || !layer_shell || !security || !seat || !toplevels || !listing || !toplevel_capture || !image_copy || !dmabuf) { fprintf(stderr, "overlay: compositor lacks a required protocol\n"); return 1; }
+    if (!compositor || !layer_shell || !security || !seat || !toplevels || !listing || !toplevel_capture || !image_copy || !dmabuf) { fprintf(stderr, "overlay: compositor lacks a required protocol\n"); return 1; }
     directory_of(STORES_FILE, stores_directory);
     directory_of(DISPLAY_FILE, display_directory);
     directory_of(SETTINGS_FILE, settings_directory);
@@ -2627,6 +2556,11 @@ int main(void) {
     repeat_timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
     notification_timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
     save_timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+    skin_timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+    mkdir(USER_SKINS_DIR, S_IRWXU);
+    watch_skins();
+    scene_init(display);
+    sound_init();
     timerfd_settime(save_timer, 0, &(struct itimerspec){.it_value = {.tv_sec = SAVE_SECONDS}, .it_interval = {.tv_sec = SAVE_SECONDS}}, NULL);
     watched[WAYLAND] = (struct pollfd){.fd = wl_display_get_fd(display), .events = POLLIN};
     watched[CHANGES] = (struct pollfd){.fd = watcher, .events = POLLIN};
@@ -2635,8 +2569,8 @@ int main(void) {
     watched[NOTIFICATIONS] = (struct pollfd){.fd = notification_timer, .events = POLLIN};
     watched[MESSAGES] = (struct pollfd){.fd = open(OVERLAY_FIFO, O_RDWR | O_NONBLOCK | O_CLOEXEC), .events = POLLIN};
     watched[SAVE] = (struct pollfd){.fd = save_timer, .events = POLLIN};
+    watched[SKIN] = (struct pollfd){.fd = skin_timer, .events = POLLIN};
     watched[LISTENER] = (struct pollfd){.fd = bind_socket(OVERLAY_SOCKET, SOCK_NONBLOCK), .events = POLLIN};
-    splash = cairo_image_surface_create_from_png(SPLASH_IMAGE);
     keep_interrupted_rewinds();
     read_stores();
     read_settings();
@@ -2679,6 +2613,7 @@ int main(void) {
         if (watched[NOTIFICATIONS].revents && read(notification_timer, &expirations, sizeof expirations) > 0) expire_notifications();
         if (watched[MESSAGES].revents) read_messages(watched[MESSAGES].fd);
         if (watched[SAVE].revents && read(save_timer, &expirations, sizeof expirations) > 0) sample_screen();
+        if (watched[SKIN].revents && read(skin_timer, &expirations, sizeof expirations) > 0) run_skin_timers();
         if (watched[MONITOR].revents) read_monitor();
         for (int i = 0; i < job_count; i++) {
             if (watched[FIXED + JOB_FDS * i].revents) read_job(jobs[i]);
@@ -2700,5 +2635,7 @@ int main(void) {
             changed = 1;
         }
         settle();
+        if (layer && width && paint_needed && !frame_pending) paint();
+        arm_skin_timer();
     }
 }

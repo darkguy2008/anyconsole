@@ -51,7 +51,9 @@
 #include <xf86drmMode.h>
 #include <xkbcommon/xkbcommon.h>
 #include "anyconsole.h"
+#include "ext-background-effect-v1-protocol.h"
 #include "ext-image-capture-source-v1-protocol.h"
+#include "shader.h"
 
 #define ASPECT_WIDTH 16
 #define ASPECT_HEIGHT 9
@@ -68,6 +70,7 @@
 #define IMAGE_COPY_CAPTURE_VERSION 1
 #define USEC_PER_MSEC 1000
 #define CORNERS 4
+#define BACKGROUND_EFFECT_VERSION 1
 #define GAME_REFRESH_MHZ (60 * MHZ_PER_HZ)
 
 enum filter { NEAREST, LINEAR, PIXEL };
@@ -118,6 +121,13 @@ struct display {
     struct wl_listener frame, needs_frame, destroy;
 };
 
+struct blur {
+    struct wlr_surface_synced synced;
+    pixman_region32_t pending, current;
+    struct wl_resource *resource;
+    struct wl_listener surface_destroy;
+    struct wl_list link;
+};
 struct window {
     struct wlr_xdg_toplevel *toplevel;
     struct wlr_foreign_toplevel_handle_v1 *handle;
@@ -151,7 +161,7 @@ static struct wlr_relative_pointer_manager_v1 *relative;
 static struct xkb_keymap *keymap;
 static struct gpu gpus[GPUS_MAX], *render_gpu;
 static int gpu_count;
-static struct wl_list displays, windows;
+static struct wl_list displays, windows, blurs;
 static struct display *active, *pending;
 static struct window *shown;
 static struct wlr_layer_surface_v1 *overlay;
@@ -505,6 +515,114 @@ static void draw_scene(struct wlr_render_pass *pass, struct wlr_box target, stru
         wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = interface, .dst_box = scaled(overlay_box(), box), .filter_mode = mode});
 }
 
+static void init_region(void *state) { pixman_region32_init(state); }
+
+static void finish_region(void *state) { pixman_region32_fini(state); }
+
+static void move_region(void *destination, void *source) { pixman_region32_copy(destination, source); }
+
+static const struct wlr_surface_synced_impl blur_state = {
+    .state_size = sizeof(pixman_region32_t), .init_state = init_region, .finish_state = finish_region, .move_state = move_region};
+
+static void forget_blur(struct blur *blur) {
+    wl_resource_set_user_data(blur->resource, NULL);
+    wl_list_remove(&blur->surface_destroy.link);
+    wl_list_remove(&blur->link);
+    wlr_surface_synced_finish(&blur->synced);
+    pixman_region32_fini(&blur->pending);
+    pixman_region32_fini(&blur->current);
+    free(blur);
+}
+
+static void on_blurred_surface_destroy(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct blur *blur = wl_container_of(listener, blur, surface_destroy);
+    forget_blur(blur);
+}
+
+static void destroy_resource(struct wl_client *client, struct wl_resource *resource) {
+    (void)client;
+    wl_resource_destroy(resource);
+}
+
+static void set_blur_region(struct wl_client *client, struct wl_resource *resource, struct wl_resource *region) {
+    (void)client;
+    struct blur *blur = wl_resource_get_user_data(resource);
+    if (!blur) {
+        wl_resource_post_error(resource, EXT_BACKGROUND_EFFECT_SURFACE_V1_ERROR_SURFACE_DESTROYED, "the surface was destroyed");
+        return;
+    }
+    if (region) pixman_region32_copy(&blur->pending, wlr_region_from_resource(region));
+    else pixman_region32_clear(&blur->pending);
+}
+
+static const struct ext_background_effect_surface_v1_interface blur_interface = {.destroy = destroy_resource, .set_blur_region = set_blur_region};
+
+static void on_blur_resource_destroy(struct wl_resource *resource) {
+    struct blur *blur = wl_resource_get_user_data(resource);
+    if (blur) forget_blur(blur);
+}
+
+static void get_background_effect(struct wl_client *client, struct wl_resource *manager, uint32_t id, struct wl_resource *surface_resource) {
+    struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
+    struct blur *blur;
+    wl_list_for_each(blur, &blurs, link) {
+        if (blur->synced.surface != surface) continue;
+        wl_resource_post_error(manager, EXT_BACKGROUND_EFFECT_MANAGER_V1_ERROR_BACKGROUND_EFFECT_EXISTS, "the surface already has a background effect");
+        return;
+    }
+    blur = calloc(1, sizeof *blur);
+    blur->resource = wl_resource_create(client, &ext_background_effect_surface_v1_interface, wl_resource_get_version(manager), id);
+    wl_resource_set_implementation(blur->resource, &blur_interface, blur, on_blur_resource_destroy);
+    wlr_surface_synced_init(&blur->synced, surface, &blur_state, &blur->pending, &blur->current);
+    listen(&blur->surface_destroy, &surface->events.destroy, on_blurred_surface_destroy);
+    wl_list_insert(&blurs, &blur->link);
+}
+
+static const struct ext_background_effect_manager_v1_interface effects_interface = {.destroy = destroy_resource, .get_background_effect = get_background_effect};
+
+static void bind_effects(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    (void)data;
+    struct wl_resource *resource = wl_resource_create(client, &ext_background_effect_manager_v1_interface, version, id);
+    wl_resource_set_implementation(resource, &effects_interface, NULL, NULL);
+    ext_background_effect_manager_v1_send_capabilities(resource, EXT_BACKGROUND_EFFECT_MANAGER_V1_CAPABILITY_BLUR);
+}
+
+static const pixman_region32_t *overlay_blur(void) {
+    struct blur *blur;
+    if (!overlay_visible()) return NULL;
+    wl_list_for_each(blur, &blurs, link) {
+        if (blur->synced.surface == overlay->surface && pixman_region32_not_empty(&blur->current)) return &blur->current;
+    }
+    return NULL;
+}
+
+static struct wlr_texture *scaled_copy(struct wlr_swapchain **chain, struct wlr_texture *source, int width, int height, struct wlr_buffer **held) {
+    if (!*chain || (*chain)->width != width || (*chain)->height != height) {
+        wlr_swapchain_destroy(*chain);
+        *chain = wlr_swapchain_create(allocator, width, height, &active->output->swapchain->format);
+    }
+    *held = *chain ? wlr_swapchain_acquire(*chain) : NULL;
+    if (!*held) return NULL;
+    struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, *held, NULL);
+    wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){
+                                          .texture = source, .dst_box = {0, 0, width, height}, .filter_mode = WLR_SCALE_FILTER_BILINEAR, .blend_mode = WLR_RENDER_BLEND_MODE_NONE});
+    wlr_render_pass_submit(pass);
+    return wlr_texture_from_buffer(renderer, *held);
+}
+
+static struct wlr_texture *blurred(struct wlr_texture *scene, struct wlr_buffer *held[2 * BLUR_LEVELS]) {
+    static struct wlr_swapchain *chains[2 * BLUR_LEVELS];
+    struct wlr_texture *step = scene, *steps[2 * BLUR_LEVELS] = {0};
+    for (int i = 0; i < 2 * BLUR_LEVELS - 1 && step; i++) {
+        int level = i < BLUR_LEVELS ? i + 1 : 2 * BLUR_LEVELS - 1 - i;
+        step = steps[i] = scaled_copy(&chains[i], step, canvas_width >> level, canvas_height >> level, &held[i]);
+    }
+    for (int i = 0; i < 2 * BLUR_LEVELS - 2; i++)
+        if (steps[i]) wlr_texture_destroy(steps[i]);
+    return step;
+}
+
 static struct wlr_texture *compose(struct wlr_buffer **composed) {
     struct wlr_texture *game = shown ? wlr_surface_get_texture(shown->toplevel->base->surface) : NULL;
     if (!overlay_visible()) return game;
@@ -515,33 +633,36 @@ static struct wlr_texture *compose(struct wlr_buffer **composed) {
     *composed = canvas_chain ? wlr_swapchain_acquire(canvas_chain) : NULL;
     if (!*composed) return game;
     struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, *composed, NULL);
-    struct wlr_box canvas = {0, 0, canvas_width, canvas_height};
-    draw_scene(pass, canvas, canvas, game, wlr_surface_get_texture(overlay->surface), WLR_SCALE_FILTER_BILINEAR);
+    struct wlr_box canvas = {0, 0, canvas_width, canvas_height}, box = overlay_box();
+    struct wlr_texture *interface = wlr_surface_get_texture(overlay->surface);
+    const pixman_region32_t *blur = overlay_blur();
+    draw_scene(pass, canvas, canvas, game, blur ? NULL : interface, WLR_SCALE_FILTER_BILINEAR);
     wlr_render_pass_submit(pass);
+    if (!blur) return wlr_texture_from_buffer(renderer, *composed);
+    struct wlr_buffer *held[2 * BLUR_LEVELS] = {0};
+    struct wlr_texture *scene = wlr_texture_from_buffer(renderer, *composed), *soft = blurred(scene, held);
+    pixman_region32_t clip;
+    pixman_region32_init(&clip);
+    pixman_region32_copy(&clip, blur);
+    pixman_region32_translate(&clip, box.x, box.y);
+    pass = wlr_renderer_begin_buffer_pass(renderer, *composed, NULL);
+    if (soft) wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = soft, .dst_box = canvas, .clip = &clip, .filter_mode = WLR_SCALE_FILTER_BILINEAR});
+    wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = interface, .dst_box = box, .filter_mode = WLR_SCALE_FILTER_BILINEAR});
+    wlr_render_pass_submit(pass);
+    pixman_region32_fini(&clip);
+    if (soft) wlr_texture_destroy(soft);
+    wlr_texture_destroy(scene);
+    for (int i = 0; i < 2 * BLUR_LEVELS; i++)
+        if (held[i]) wlr_buffer_unlock(held[i]);
     return wlr_texture_from_buffer(renderer, *composed);
-}
-
-static GLuint compile(GLenum type, const char *prefix, const char *source) {
-    GLuint shader = glCreateShader(type);
-    const char *sources[] = {prefix, source};
-    GLint compiled;
-    glShaderSource(shader, 2, sources, NULL);
-    glCompileShader(shader);
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
-    if (!compiled) {
-        char log[TEXT_MAX];
-        glGetShaderInfoLog(shader, sizeof log, NULL, log);
-        fprintf(stderr, "compositor: shader: %s\n", log);
-    }
-    return shader;
 }
 
 static struct program *pixel_program(GLenum target) {
     struct program *program = &programs[target == GL_TEXTURE_EXTERNAL_OES];
     if (program->id) return program;
     program->id = glCreateProgram();
-    glAttachShader(program->id, compile(GL_VERTEX_SHADER, "", vertex_source));
-    glAttachShader(program->id, compile(GL_FRAGMENT_SHADER, sampler_prefixes[target == GL_TEXTURE_EXTERNAL_OES], pixel_source));
+    glAttachShader(program->id, compile_shader(GL_VERTEX_SHADER, (const char *[]){vertex_source}, 1));
+    glAttachShader(program->id, compile_shader(GL_FRAGMENT_SHADER, (const char *[]){sampler_prefixes[target == GL_TEXTURE_EXTERNAL_OES], pixel_source}, 2));
     glLinkProgram(program->id);
     program->position = glGetAttribLocation(program->id, "position");
     program->coordinate = glGetAttribLocation(program->id, "coordinate");
@@ -608,7 +729,7 @@ static void paint(struct wlr_output_state *state) {
     struct wlr_texture *interface = overlay_visible() ? wlr_surface_get_texture(overlay->surface) : NULL;
     enum filter filter = game && !interface ? choose_filter(fit(box, game->width, game->height), game->width, game->height)
                                             : choose_filter(box, canvas_width, canvas_height);
-    if (filter == PIXEL && (game || interface) && draw_pixel(state, box)) return;
+    if ((filter == PIXEL || overlay_blur()) && (game || interface) && draw_pixel(state, box)) return;
     enum wlr_scale_filter_mode mode = filter == NEAREST ? WLR_SCALE_FILTER_NEAREST : WLR_SCALE_FILTER_BILINEAR;
     struct wlr_render_pass *pass = wlr_output_begin_render_pass(output, state, NULL);
     draw_scene(pass, (struct wlr_box){0, 0, output->width, output->height}, box, game, interface, mode);
@@ -938,11 +1059,6 @@ static void create_toplevel_source(struct wl_client *client, struct wl_resource 
     wlr_ext_image_capture_source_v1_create_resource(handle ? &((struct window *)handle->data)->source : NULL, client, id);
 }
 
-static void destroy_resource(struct wl_client *client, struct wl_resource *resource) {
-    (void)client;
-    wl_resource_destroy(resource);
-}
-
 static const struct ext_foreign_toplevel_image_capture_source_manager_v1_interface toplevel_capture_requests = {
     .create_source = create_toplevel_source, .destroy = destroy_resource};
 
@@ -1015,6 +1131,7 @@ int main(int argc, char *argv[]) {
     wlr_log_init(WLR_INFO, NULL);
     wl_list_init(&displays);
     wl_list_init(&windows);
+    wl_list_init(&blurs);
     display = wl_display_create();
     struct wl_event_loop *loop = wl_display_get_event_loop(display);
     session = wlr_session_create(loop);
@@ -1035,6 +1152,7 @@ int main(int argc, char *argv[]) {
     image_copy = wlr_ext_image_copy_capture_manager_v1_create(display, IMAGE_COPY_CAPTURE_VERSION);
     toplevel_capture = wl_global_create(display, &ext_foreign_toplevel_image_capture_source_manager_v1_interface, ext_foreign_toplevel_image_capture_source_manager_v1_interface.version, NULL,
                                         bind_toplevel_capture);
+    wl_global_create(display, &ext_background_effect_manager_v1_interface, BACKGROUND_EFFECT_VERSION, NULL, bind_effects);
     layout = wlr_output_layout_create(display);
     wlr_xdg_output_manager_v1_create(display, layout);
     wlr_viewporter_create(display);

@@ -94,6 +94,7 @@ device_mode() { echo "($(device_named "$1") | .mode)"; }
 players() { echo "[.session.players[].profile]"; }
 key() { send "EV_KEY $1 1" "EV_KEY $1 0"; }
 highlight() {
+  wait_for $STEP_SECONDS holds "[.rows[].label] | index(\"$1\") != null"
   while current=$(state); [ "$(echo "$current" | jq -r '.rows[.selected].label')" != "$1" ]; do
     target=$(echo "$current" | jq "[.rows[].label] | index(\"$1\")")
     selected=$(echo "$current" | jq .selected)
@@ -636,6 +637,40 @@ test_display() {
   stage_display_mode_until_saved
 }
 
+probe_skin() { guest "mkdir -p $USER_SKINS_DIR/probe && echo \"$1\" > $USER_SKINS_DIR/probe/skin.js"; }
+
+test_skins() {
+  highlight Store
+  snapshot skin-classic
+  tap dpright
+  expect '.rows[.selected].label == "Store"'
+  log ok "classic leaves left and right to the rows"
+  api POST settings "skin switch-black" >/dev/null
+  expect '.settings.skin == "switch-black" and .skin == "switch-black"'
+  wait_for $STEP_SECONDS capture skin-switch-black
+  ! cmp -s "$OUT/skin-classic.png" "$OUT/skin-switch-black.png" || { log FAIL "switch-black drew the same screen as classic" >&2; diagnose; exit 1; }
+  tap dpright
+  expect '.rows[.selected].label == "Settings"'
+  tap dpleft
+  expect '.rows[.selected].label == "Store"'
+  log ok "switch-black moves along its button row with left and right"
+  guest ". /etc/profile; WAYLAND_DISPLAY=$WAYLAND_SOCKET wayland-info | grep -q ext_background_effect_manager_v1"
+  log ok "the compositor offers background blur"
+  ! api POST settings "skin ../classic" 2>/dev/null || { log FAIL "accepted a skin outside the skin folders" >&2; exit 1; }
+  probe_skin "import { mount, select, useConsole } from 'anyconsole'; mount(() => select(useConsole().rows.length - 1));"
+  api POST settings "skin probe" >/dev/null
+  expect '.skin == "probe" and .selected == (.rows | length) - 1'
+  probe_skin "import { select } from 'anyconsole'; select(0);"
+  expect '.selected == 0'
+  log ok "a skin in $USER_SKINS_DIR loads and reloads when it changes"
+  probe_skin "throw new Error('broken');"
+  expect '.settings.skin == "probe" and .skin == "classic"'
+  log ok "a broken skin falls back to classic"
+  api POST settings "skin classic" >/dev/null
+  guest "rm -r $USER_SKINS_DIR/probe"
+  expect '.settings.skin == "classic" and .skin == "classic"'
+}
+
 test_audio() {
   wait_for $STEP_SECONDS guest "! grep -q '^snd_pcsp ' /proc/modules && ! grep -q 'BlueZ SPA plugin is missing' $LOG_DIR/pipewire.log"
   log ok "the PC speaker is no audio output and PipeWire loaded its Bluetooth plugin"
@@ -812,7 +847,7 @@ test_reboot() {
   expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
 }
 
-TESTS="capture display audio controllers nes actions dreamcast msdos stores gpu logout reboot"
+TESTS="capture display audio controllers nes actions dreamcast msdos stores gpu logout reboot skins"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in

@@ -59,6 +59,10 @@ case "${1:-status}" in
     if [ "$(echo "$reply" | jq -r .state.screen)" = logout ]; then action action=confirm-log-out profile="$2"; else echo "$reply"; fi ;;
   volume) api POST volume "$2" ;;
   set) api POST settings "$2 ${3:-}" ;;
+  skin)
+    [ "${2:-}" = push ] && [ -f "${3:-}/skin.js" ] || exec "$0" help
+    route=$(ssh_route)
+    with_password rsync -a --delete --mkpath -e "ssh $route" "${3%/}/" "$SSH_HOST:$USER_SKINS_DIR/$(basename "${3%/}")/" ;;
   update|reboot|poweroff) api POST "$1" ;;
   push)
     ./deploy
@@ -110,6 +114,8 @@ usage: console [box address] <command>
   set mode [mode]  drive the display at this mode from state's .display.modes, e.g. 3840x2160@60000 (none = Auto)
   set resolution <height>  render games and menus at this 16:9 height (0 = Auto)
   set sleep <minutes>  disconnect idle Bluetooth controllers after this long (0 = never)
+  set skin <name>  draw the menus with this skin folder from /data/skins or the built-in skins
+  skin push <folder>  copy a skin folder (with skin.js) to /data/skins/<folder name>; the console reloads it on every push
   update     make it sync and stage the published release
   reboot     reboot it
   poweroff   power it off
