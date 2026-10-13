@@ -38,6 +38,7 @@ class Element extends Node {
     this.nodeType = 1;
     this.localName = type;
     this.attributes = [];
+    this.plane = null;
     this.style = new Proxy({}, {
       set: (style, name, value) => {
         style[name] = value;
@@ -81,6 +82,26 @@ let waiting = null;
 let screen = null;
 const watchers = new Set();
 const handlers = new Set();
+const pageDirections = { 'page-up': -1, 'page-down': 1 };
+
+function listOf(node, plane) {
+  if (node.plane === plane) return node;
+  for (const child of node.childNodes) {
+    const found = listOf(child, plane);
+    if (found) return found;
+  }
+  return null;
+}
+
+function page(name) {
+  const view = current.views[current.views.length - 1];
+  const list = name in pageDirections && view && screen && listOf(screen, view.plane);
+  const target = list ? native.page(list.handle, view.selected, pageDirections[name]) : -1;
+  if (target < 0) return false;
+  native.select(target);
+  return true;
+}
+
 native.listen(
   json => {
     current = JSON.parse(json);
@@ -88,7 +109,7 @@ native.listen(
     waiting = null;
     for (const watcher of watchers) watcher(current);
   },
-  name => [...handlers].some(handler => handler(name, current) === true),
+  name => [...handlers].some(handler => handler(name, current) === true) || page(name),
 );
 
 export const html = htm.bind(h);

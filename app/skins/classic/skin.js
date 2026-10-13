@@ -37,7 +37,7 @@ function Row({ row, selected }) {
 
 function List({ view }) {
   return html`
-    <view style=${{ flexGrow: 1, flexShrink: 1, overflow: 'hidden', paddingHorizontal: 24, paddingBottom: 24 }} follow=${view.selected}>
+    <view style=${{ flexGrow: 1, flexShrink: 1, overflow: 'hidden', paddingHorizontal: 24, paddingBottom: 24 }} follow=${view.selected} plane=${view.plane}>
       <view style=${{ position: 'absolute', backgroundColor: white, borderRadius: 16 }} track=${view.selected} />
       ${view.rows.map((row, index) => html`<${Row} key=${`${row.action} ${row.arg} ${row.label}`} row=${row} selected=${index === view.selected} />`)}
     </view>`;

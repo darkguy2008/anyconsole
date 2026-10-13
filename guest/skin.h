@@ -26,6 +26,7 @@ void scene_string(struct node *node, const char *name, const char *value);
 void scene_unset(struct node *node, const char *name);
 void scene_transition(struct node *node, const char *name, double milliseconds, const char *easing, double stiffness);
 void scene_from(struct node *node, const char *name, const char *text, double value);
+int scene_page(struct node *list, int selected, int direction);
 void scene_folder(const char *folder);
 const char *scene_resolve(const char *name, char path[PATH_MAX]);
 

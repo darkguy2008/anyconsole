@@ -781,6 +781,12 @@ test_skins() {
   tap dpright
   expect '.rows[.selected].label == "Store"'
   log ok "classic leaves left and right to the rows"
+  tap rightshoulder
+  expect '.selected == (.rows | length) - 1'
+  tap leftshoulder
+  expect '.selected == 0'
+  log ok "classic pages to the ends of a list that fits on screen with R1 and L1"
+  highlight Store
   api POST settings "skin switch-black" >/dev/null
   expect '.settings.skin == "switch-black" and .skin == "switch-black"'
   wait_for $STEP_SECONDS capture_differs skin-classic skin-switch-black
@@ -789,6 +795,18 @@ test_skins() {
   tap dpleft
   expect '.rows[.selected].label == "Store"'
   log ok "switch-black moves along its button row with left and right"
+  tap a
+  expect '.screen == "store" and (.rows | length) > 10 and .selected == 0'
+  tap rightshoulder
+  expect '.selected == 5'
+  join_keyboard
+  key KEY_PAGEDOWN
+  expect '.selected == 10'
+  tap leftshoulder
+  expect '.selected == 5'
+  log ok "switch-black pages its store grid a screen at a time with R1, L1 and Page Down, keeping the column"
+  tap b
+  expect '.screen == "home"'
   guest ". /etc/profile; WAYLAND_DISPLAY=$WAYLAND_SOCKET wayland-info | grep -q ext_background_effect_manager_v1"
   log ok "the compositor offers background blur"
   ! api POST settings "skin ../classic" 2>/dev/null || { log FAIL "accepted a skin outside the skin folders" >&2; exit 1; }
