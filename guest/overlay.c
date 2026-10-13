@@ -185,7 +185,7 @@ static struct row rows[ROWS_MAX];
 static struct device outputs[DEVICES_MAX], microphones[DEVICES_MAX];
 static char default_output[TEXT_MAX], default_microphone[TEXT_MAX], microphone_pad[TEXT_MAX], chosen_controller[TEXT_MAX], staged_mode[TEXT_MAX];
 static int output_count, microphone_count, volume = -1, microphone_volume = -1, microphone_muted, mode_staged, staged_resolution, resolution_staged;
-static int players[PADS], player_count, menu_told = -1, focus = NO_DEVICE, picker = NO_DEVICE, previewed = NO_DEVICE, previewed_seat, repeating_device, guide_profile, applied_game = UNAPPLIED;
+static int players[PADS], player_count, menu_told = -1, focus = NO_DEVICE, picker = NO_DEVICE, input_device = NO_DEVICE, previewed = NO_DEVICE, previewed_seat, repeating_device, guide_profile, applied_game = UNAPPLIED;
 static struct member members[INPUT_DEVICES_MAX];
 static int member_count;
 static struct view whois;
@@ -417,6 +417,12 @@ static int saved_state(int profile, int slot, char *state, time_t *saved) {
     snprintf(path + strlen(path), PATH_MAX - strlen(path), "/%s", state);
     *saved = stat(path, &status) ? 0 : status.st_mtime;
     return 1;
+}
+
+static int slot_filled(int profile, int slot) {
+    char state[NAME_MAX + 1];
+    time_t saved;
+    return saved_state(profile, slot, state, &saved);
 }
 
 static const char *saved_time(time_t saved) {
@@ -1585,9 +1591,7 @@ static void load_saved(void) {
 }
 
 static void press_save_states(enum command command) {
-    char state[NAME_MAX + 1];
-    time_t saved;
-    int filled = saved_state(guide_profile, save_slot, state, &saved);
+    int filled = slot_filled(guide_profile, save_slot);
     if (command == X_BUTTON && filled) push(OVERWRITE_DIALOG, -1);
     else if (command == X_BUTTON) save_to_slot();
     else if (command == Y_BUTTON && filled) push(DELETE_DIALOG, -1);
@@ -1792,7 +1796,7 @@ static void seat_devices(void) {
 }
 
 static void open_picker(int device) {
-    picker = device;
+    picker = input_device = device;
     whois = (struct view){.screen = WHOIS, .game = -1};
     changed = 1;
 }
@@ -1835,13 +1839,17 @@ static void logout(int profile, int device) {
     if (!player_count && device != NO_DEVICE) open_picker(device);
 }
 
+static int inert(enum action action) {
+    return action == NOTHING || action == VOLUME || action == MICROPHONE_VOLUME || action == SECOND_SCREEN || action == CHOOSE_DISPLAY ||
+           action == CHOOSE_DISPLAY_MODE || action == CHOOSE_RESOLUTION || action == CHOOSE_SLEEP || action == CHOOSE_SKIN || action == EMULATE;
+}
+
 static void act(struct row *row, int profile) {
     char id[TEXT_MAX], store[TEXT_MAX], directory[PATH_MAX];
     struct view *view = top();
     struct game *game = view->game >= 0 ? &games[view->game] : NULL;
     if (screens[view->screen].plane == DIALOG_PLANE) guide_depths[guide_profile]--;
     switch (row->action) {
-    case NOTHING: case VOLUME: case MICROPHONE_VOLUME: case SECOND_SCREEN: case CHOOSE_DISPLAY: case CHOOSE_DISPLAY_MODE: case CHOOSE_RESOLUTION: case CHOOSE_SLEEP: case CHOOSE_SKIN: case EMULATE: break;
     case REWIND: load_rewind(); break;
     case SAVE_STATES: load_saved(); break;
     case DELETE_STATE: remove_tree(slot_directory(directory, guide_profile, save_slot)); break;
@@ -1898,6 +1906,7 @@ static void act(struct row *row, int profile) {
     case RELOAD: exit(0);
     case RESTART: start((char *[]){"reboot", NULL}); break;
     case POWER_OFF: start((char *[]){"poweroff", NULL}); break;
+    default: break;
     }
 }
 
@@ -1944,7 +1953,7 @@ static void enter_guide(int profile, int device, int reset) {
         guides[profile][0] = (struct view){.screen = GUIDE, .game = -1, .action = REWIND};
         guide_depths[profile] = 1;
     }
-    focus = device;
+    focus = input_device = device;
     if (!guide_shown) open_guide();
 }
 
@@ -1958,6 +1967,7 @@ static void toggle_guide(int device) {
 
 static void navigate(int device, enum command command) {
     paint_needed = 1;
+    input_device = device;
     if (script_command(commands[command]) && command >= UP && command <= RIGHT) {
         changed = 1;
         return;
@@ -2222,6 +2232,33 @@ static json_object *saves_object(int choosing) {
     return saves;
 }
 
+static void hint(json_object *hints, enum command command, const char *label) {
+    if (label) json_object_object_add(hints, commands[command], json_object_new_string(label));
+}
+
+static const char *back_hint(struct view *view) {
+    if (picker != NO_DEVICE) return "Back";
+    if (screens[view->screen].plane == DIALOG_PLANE) return "Cancel";
+    if (guide_shown) return guide_depths[guide_profile] > 1 ? "Back" : "Close";
+    return dashboard_depth > 1 ? "Back" : NULL;
+}
+
+static json_object *hints_object(struct view *view, int count) {
+    json_object *hints = json_object_new_object();
+    if (launching() && games[active].job) hint(hints, BACK, "Cancel");
+    if (launching() || attract() || !interactive()) return hints;
+    struct row *row = view->selected < count ? &rows[view->selected] : NULL;
+    int saves = row && row->action == SAVE_STATES, filled = saves && slot_filled(guide_profile, save_slot);
+    const char *confirm = row && !inert(row->action) ? "OK" : NULL;
+    if (row && screens[view->screen].plane == DIALOG_PLANE) confirm = row->label;
+    else if (saves || (row && row->action == REWIND)) confirm = (saves ? filled : rewind_back) ? "Load" : NULL;
+    hint(hints, CONFIRM, confirm);
+    hint(hints, X_BUTTON, saves ? "Save" : NULL);
+    hint(hints, Y_BUTTON, filled ? "Delete" : NULL);
+    hint(hints, BACK, back_hint(view));
+    return hints;
+}
+
 static json_object *state_object(int count) {
     json_object *state = json_object_new_object(), *audio = json_object_new_object(), *history = json_object_new_object(), *screens_list = json_object_new_array();
     json_object *list = json_object_new_array();
@@ -2229,7 +2266,7 @@ static json_object *state_object(int count) {
     char path[PATH_MAX];
     enum action choosing;
     for (int i = 0; i < count; i++) json_object_array_add(list, row_object(&rows[i]));
-    json_object *views = views_object(&choosing);
+    json_object *hints = hints_object(view, count), *views = views_object(&choosing);
     json_object *session = json_object_new_object(), *entries = json_object_new_array();
     json_object_object_add(state, "screen", json_object_new_string(screens[attract() ? ATTRACT : view->screen].name));
     for (int i = 0; i < player_count; i++) {
@@ -2245,6 +2282,7 @@ static json_object *state_object(int count) {
     json_object_object_add(session, "players", entries);
     json_object_object_add(session, "focus", focus == NO_DEVICE ? NULL : json_object_new_int(focus));
     json_object_object_add(session, "picker", picker == NO_DEVICE ? NULL : json_object_new_int(picker));
+    json_object_object_add(session, "input", input_device == NO_DEVICE ? NULL : json_object_new_int(input_device));
     json_object_object_add(state, "session", session);
     json_object_object_add(state, "rows", list);
     json_object_object_add(state, "selected", json_object_new_int(view->selected));
@@ -2259,6 +2297,7 @@ static json_object *state_object(int count) {
     json_object_object_add(history, "screens", screens_list);
     json_object_object_add(history, "current", current_screen ? json_object_new_string(CURRENT_SCREEN) : NULL);
     json_object_object_add(state, "views", views);
+    json_object_object_add(state, "hints", hints);
     json_object_object_add(state, "launching", launching() ? launch_object() : NULL);
     json_object_object_add(state, "splash", json_object_new_string(SPLASH_IMAGE));
     json_object_object_add(state, "skin", json_object_new_string(loaded_skin));
@@ -2606,7 +2645,7 @@ static void directory_of(const char *path, char *directory) { snprintf(directory
 static void reset_devices(void) {
     read_controllers();
     adopt_members();
-    picker = focus = NO_DEVICE;
+    picker = focus = input_device = NO_DEVICE;
     guide_shown = 0;
     applied_game = UNAPPLIED;
     menu_told = -1;

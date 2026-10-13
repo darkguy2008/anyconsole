@@ -29,6 +29,9 @@ SECOND_DISPLAY_HEIGHT=1080
 FAKEPAD_IMAGE=anyconsole-fakepad
 FAKEPAD_NAME="PS4 Controller"
 FAKEPAD_CROSS=2
+FAKEPAD_R1=6
+PLAYSTATION_FACES='{"confirm": "cross", "back": "circle", "x": "square", "y": "triangle"}'
+KEYBOARD_FACES='{"confirm": "Enter", "back": "Esc", "x": "Space", "y": "Tab"}'
 REMOTE_PAD="$REMOTE_PAD_NAME 1"
 SECOND_REMOTE_PAD="$REMOTE_PAD_NAME 2"
 LOW_BATTERY=10
@@ -367,7 +370,7 @@ retroarch_loaded_saved_state() { guest "grep -q 'Loading state \".*\\.state\",' 
 
 save_states() {
   saved=$(states_of "$1")/2
-  expect_reply $STEP_SECONDS 200 '.ok and .state.saves.choosing and .state.saves.slot == 1 and .state.saves.slots[1] == null and .state.rows[.state.selected].value == "Slot 2  \u00b7  Empty"' \
+  expect_reply $STEP_SECONDS 200 '.ok and .state.saves.choosing and .state.saves.slot == 1 and .state.saves.slots[1] == null and .state.rows[.state.selected].value == "Slot 2  \u00b7  Empty" and .state.hints == {"x": "Save", "back": "Close"}' \
     --arg action save-states --arg step 1
   expect_reply $STEP_SECONDS 200 ".ok and (.state | $(closed_and_running "$1"))" --arg action save-states --arg command x
   expect 'any(.notifications[]; . == "Saved state 2")'
@@ -383,10 +386,10 @@ save_states() {
   wait_for $STEP_SECONDS "$2" "$1"
   log ok "Load put $1 back to the state in slot 2"
   tap guide
-  expect '.guide and .rows[.selected].label == "Save States" and .saves.slot == 1 and .saves.slots[1] != null'
+  expect '.guide and .rows[.selected].label == "Save States" and .saves.slot == 1 and .saves.slots[1] != null and .hints == {"confirm": "Load", "x": "Save", "y": "Delete", "back": "Close"}'
   snapshot save-states
   tap y
-  expect '.views[-1].screen == "delete-state" and .views[-1].title == "Delete save state 2?"'
+  expect '.views[-1].screen == "delete-state" and .views[-1].title == "Delete save state 2?" and .hints == {"confirm": "Delete", "back": "Cancel"}'
   snapshot delete-state
   tap a
   expect '.guide and .views[-1].screen == "guide" and .saves.slots[1] == null'
@@ -572,11 +575,15 @@ plug_fakepad() {
 fakepad() { bus=$1; shift; guest "docker exec fakepad-$bus sh -c 'echo $* > /tmp/control'"; }
 has_fakepad() { echo ".controllers.controllers | any(.name == \"$FAKEPAD_NAME\" and .connection == \"$1\" and .battery != null)"; }
 
+login_wired_fakepad() {
+  wired=$(device_id "$FAKEPAD_NAME")
+  expect_reply $STEP_SECONDS 200 .ok --arg action login --arg arg 1 --arg device "$wired"
+}
+
 hotplug_wired_controller() {
   plug_fakepad usb
   expect "($(has_fakepad wired)) and (.controllers.bluetooth | not) and any(.notifications[]; . == \"Connected $FAKEPAD_NAME\")"
-  wired=$(device_id "$FAKEPAD_NAME")
-  expect_reply $STEP_SECONDS 200 .ok --arg action login --arg arg 1 --arg device "$wired"
+  login_wired_fakepad
   expect "(.session.players[0].devices | index($wired) != null) and ([$(device_named "$FAKEPAD_NAME") | .pad] == [1])"
   tap guide
   expect '.guide and .screen == "guide"'
@@ -599,7 +606,8 @@ play_wireless_controller() {
   fakepad bluetooth release $FAKEPAD_CROSS
   expect "(.screen == \"whois\" | not) and (.session.players[0].devices | index($pad) != null) and ([.controllers.devices[] | select(.id == $pad) | .pad] == [1])"
   fakepad bluetooth press
-  expect '.guide and .screen == "guide" and ([.rows[].label] | index("Microphone") != null)'
+  expect ".guide and .screen == \"guide\" and ([.rows[].label] | index(\"Microphone\") != null) and .session.input == $pad and ([.controllers.devices[] | select(.id == $pad) | .buttons] == [$PLAYSTATION_FACES])"
+  snapshot guide-playstation
   fakepad bluetooth release
   fakepad bluetooth press
   fakepad bluetooth release
@@ -844,7 +852,8 @@ test_skins() {
   expect '.selected == 5'
   join_keyboard
   key KEY_PAGEDOWN
-  expect '.selected == 10'
+  expect ".selected == 10 and .session.input == $(device_id "$REMOTE_KEYBOARD_NAME") and ($(device_named "$REMOTE_KEYBOARD_NAME") | .buttons) == $KEYBOARD_FACES"
+  snapshot store-keyboard
   tap leftshoulder
   expect '.selected == 5'
   log ok "switch-black pages its store grid a screen at a time with R1, L1 and Page Down, keeping the column"
@@ -852,6 +861,20 @@ test_skins() {
   expect '.screen == "home"'
   guest ". /etc/profile; WAYLAND_DISPLAY=$WAYLAND_SOCKET wayland-info | grep -q ext_background_effect_manager_v1"
   log ok "the compositor offers background blur"
+  plug_fakepad usb
+  login_wired_fakepad
+  fakepad usb press
+  expect ".guide and .session.input == $wired and .rows[.selected].action == \"volume\" and .hints == {\"back\": \"Close\"}"
+  fakepad usb release
+  fakepad usb press $FAKEPAD_R1
+  fakepad usb release $FAKEPAD_R1
+  expect '.selected > 0 and .hints == {"confirm": "OK", "back": "Close"}'
+  snapshot guide-switch-playstation
+  fakepad usb press
+  fakepad usb release
+  expect '.guide | not'
+  fakepad usb unplug
+  expect '(.controllers.controllers | length) == 0'
   ! api POST settings "skin ../classic" 2>/dev/null || { log FAIL "accepted a skin outside the skin folders" >&2; exit 1; }
   probe_skin "import { mount, select, useConsole } from 'anyconsole'; mount(() => select(useConsole().rows.length - 1));"
   api POST settings "skin probe" >/dev/null

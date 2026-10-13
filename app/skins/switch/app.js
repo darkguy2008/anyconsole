@@ -1,4 +1,4 @@
-import { fill, hints, html, planes, play, rewindCells, saveCells, select, time, useClock, useCommand, useConsole, useLatest } from 'anyconsole';
+import { faces, fill, hints, html, planes, play, rewindCells, saveCells, select, time, useClock, useCommand, useConsole, useLatest } from 'anyconsole';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
 const font = '../switch/Nunito.ttf';
@@ -16,6 +16,7 @@ const edge = 24;
 const barHeight = 72;
 const guideSpace = 768;
 const moves = { left: -1, right: 1 };
+const faceIcons = { cross: 'close', circle: 'circle', square: 'square', triangle: 'change_history' };
 const steps = { up: -storeColumns, down: storeColumns, left: -1, right: 1 };
 const actionIcons = {
   'open-store': 'storefront', 'open-settings': 'settings', play: 'play_arrow', resume: 'play_arrow', close: 'close', uninstall: 'delete',
@@ -40,8 +41,8 @@ function hsl(degrees, saturation, lightness) {
   return `#${[0, 8, 4].map(shift => channel(shift).toString(16).padStart(2, '0')).join('')}`;
 }
 
-function Icon({ name, size = 40, color }) {
-  return html`<text style=${{ fontFamily: icons, fontSize: size, lineHeight: 1, color, fontVariation: 'FILL=1' }}>${name}</text>`;
+function Icon({ name, size = 40, color, filled = true }) {
+  return html`<text style=${{ fontFamily: icons, fontSize: size, lineHeight: 1, color, fontVariation: `FILL=${Number(filled)}` }}>${name}</text>`;
 }
 
 function usePulse(active) {
@@ -100,23 +101,19 @@ function TopBar({ state, theme }) {
     </view>`;
 }
 
-function Button({ letter, label, theme }) {
+function Face({ face, theme }) {
   return html`
-    <view style=${{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-      <view style=${{ width: 40, height: 40, borderRadius: 20, backgroundColor: theme.text, alignItems: 'center', justifyContent: 'center' }}>
-        <text style=${{ fontSize: 26, fontWeight: 800, color: theme.background }}>${letter}</text>
-      </view>
-      <text style=${{ fontSize: 28, fontWeight: 700 }}>${label}</text>
+    <view style=${{ minWidth: 40, height: 40, borderRadius: 20, paddingHorizontal: 6, backgroundColor: theme.text, alignItems: 'center', justifyContent: 'center' }}>
+      ${faceIcons[face] ? html`<${Icon} name=${faceIcons[face]} size=${28} color=${theme.background} filled=${false} />`
+        : html`<text style=${{ fontSize: 26, fontWeight: 800, color: theme.background }}>${face}</text>`}
     </view>`;
 }
 
-function Hints({ theme, back = true }) {
+function Button({ face, label, theme }) {
   return html`
-    <view style=${{ position: 'absolute', left: 64, right: 64, bottom: 0, height: 88, borderTopWidth: 0, flexDirection: 'row', alignItems: 'center',
-      justifyContent: 'flex-end', gap: 32 }}>
-      <view style=${{ position: 'absolute', left: 0, right: 0, top: 0, height: 2, backgroundColor: theme.line }} />
-      ${back && html`<${Button} letter="B" label="Back" theme=${theme} />`}
-      <${Button} letter="A" label="OK" theme=${theme} />
+    <view style=${{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+      <${Face} face=${face} theme=${theme} />
+      <text style=${{ fontSize: 28, fontWeight: 700 }}>${label}</text>
     </view>`;
 }
 
@@ -146,7 +143,6 @@ function Home({ state, view, theme, lastTile }) {
       </view>
       <text style=${{ position: 'absolute', left: 0, right: 0, top: 900, fontSize: 30, fontWeight: 700, textAlign: 'center', color: accent,
         opacity: inTiles ? 0 : 1 }} transition=${{ opacity: 150 }}>${inTiles ? '' : buttons[view.selected - tiles.length]?.label}</text>
-      <${Hints} theme=${theme} back=${false} />
     </view>`;
 }
 
@@ -165,7 +161,6 @@ function Store({ state, view, theme }) {
         ${tiles.map(game => html`<${Tile} key=${game.key} game=${game} size=${308} theme=${theme} />`)}
         <${Frame} index=${view.selected} radius=${14} theme=${theme} active=${true} />
       </view>
-      <${Hints} theme=${theme} />
     </view>`;
 }
 
@@ -196,7 +191,6 @@ function GamePage({ state, view, theme }) {
         <view style=${{ height: 24 }} />
         <${ActionList} view=${view} theme=${theme} width=${720} />
       </view>
-      <${Hints} theme=${theme} />
     </view>`;
 }
 
@@ -227,9 +221,13 @@ function Settings({ state, view, theme }) {
             <text style=${{ flexGrow: 1, flexShrink: 1, fontSize: 40, fontWeight: 700, textAlign: 'center' }}>${chosen.value || chosen.label}</text>
             <${Icon} name="chevron_right" size=${56} color=${accent} />
           </view>
-          <text style=${{ fontSize: 28, color: theme.muted }}>${chosen.value ? 'Press left or right to change' : `Press A to ${chosen.label.toLowerCase()}`}</text>
+          ${chosen.value ? html`<text style=${{ fontSize: 28, color: theme.muted }}>Press left or right to change</text>` : html`
+            <view style=${{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <text style=${{ fontSize: 28, color: theme.muted }}>Press</text>
+              <${Face} face=${faces(state).confirm} theme=${theme} />
+              <text style=${{ fontSize: 28, color: theme.muted }}>${`to ${chosen.label.toLowerCase()}`}</text>
+            </view>`}
         </view>`}
-      <${Hints} theme=${theme} />
     </view>`;
 }
 
@@ -269,7 +267,7 @@ function Guide({ state, view, theme }) {
   const now = useClock();
   if (!kept) return null;
   return html`
-    <view style=${{ position: 'absolute', right: 24, top: 24, bottom: 24, width: 720, borderRadius: 32, backgroundColor: theme.panel, backdropBlur: 1,
+    <view style=${{ position: 'absolute', right: edge, top: edge, bottom: 2 * edge + barHeight, width: 720, borderRadius: 32, backgroundColor: theme.panel, backdropBlur: 1,
       shadowColor: '#00000066', shadowBlur: 30, opacity: view ? 1 : 0, translateX: view ? 0 : 760 }}
       from=${{ opacity: 0, translateX: 760 }} transition=${{ opacity: 180, translateX: 'spring' }}>
       <view style=${{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 44, paddingTop: 36, paddingBottom: 24, gap: 16 }}>
@@ -295,12 +293,12 @@ function Carousel({ cells, selected, reverse, theme }) {
     </view>`;
 }
 
-function GuideHints({ shown, theme }) {
+function Hints({ shown, theme }) {
   return html`
-    <view style=${{ position: 'absolute', left: edge, right: guideSpace, bottom: edge, height: barHeight, borderRadius: 24, backgroundColor: theme.panel,
+    <view style=${{ position: 'absolute', left: edge, right: edge, bottom: edge, height: barHeight, borderRadius: 24, backgroundColor: theme.panel,
       backdropBlur: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 32, paddingHorizontal: 32 }} from=${{ opacity: 0 }}
       transition=${{ opacity: 150 }}>
-      ${shown.map(hint => html`<${Button} key=${hint.button} letter=${hint.button} label=${hint.label} theme=${theme} />`)}
+      ${shown.map(hint => html`<${Button} key=${hint.button} face=${hint.button} label=${hint.label} theme=${theme} />`)}
     </view>`;
 }
 
@@ -414,7 +412,7 @@ export function app(theme) {
     const launch = state.launching;
     const launched = launch && state.games.find(game => game.key === launch.game);
     const preview = state.rewind.preview ?? state.saves.preview;
-    const shownHints = hints(state, dialog);
+    const shownHints = hints(state);
     const lastTile = useNavigation(dashboard);
     return html`
       <view style=${{ ...fill, fontFamily: font, color: theme.text }}>
@@ -429,7 +427,7 @@ export function app(theme) {
         ${state.rewind.choosing && html`<${Carousel} cells=${rewindCells(state.rewind)} selected=${state.rewind.back} reverse=${true} theme=${theme} />`}
         ${state.saves.choosing && html`<${Carousel} cells=${saveCells(state.saves)} selected=${state.saves.slot} theme=${theme} />`}
         ${dialog && html`<${Dialog} view=${dialog} theme=${theme} />`}
-        ${shownHints.length > 0 && html`<${GuideHints} shown=${shownHints} theme=${theme} />`}
+        ${shownHints.length > 0 && html`<${Hints} shown=${shownHints} theme=${theme} />`}
         ${picker && html`<${Picker} view=${picker} theme=${theme} />`}
         <${Notifications} notifications=${state.notifications} theme=${theme} />
       </view>`;

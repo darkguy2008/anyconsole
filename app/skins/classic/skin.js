@@ -9,6 +9,7 @@ const fade = { opacity: 200 };
 const guideWidth = 640;
 const barHeight = 72;
 const carouselHeight = 226;
+const faceGlyphs = { cross: '\u00d7', circle: '\u25cb', square: '\u25a1', triangle: '\u25b3' };
 
 function Players({ players }) {
   return players.map(player => html`
@@ -49,7 +50,7 @@ function Panel({ view, players, width, shown, side }) {
   const kept = useLatest(view);
   if (!kept) return null;
   return html`
-    <view style=${{ position: 'absolute', left: 0, top: 0, bottom: 0, width, backgroundColor: black, opacity: shown ? 1 : 0, translateX: shown ? 0 : side }}
+    <view style=${{ position: 'absolute', left: 0, top: 0, bottom: barHeight, width, backgroundColor: black, opacity: shown ? 1 : 0, translateX: shown ? 0 : side }}
       from=${{ opacity: 0, translateX: side }} transition=${{ opacity: 200, translateX: { duration: 260, easing: 'out' } }}>
       <${TitleBar} title=${kept.title} players=${players} />
       <${List} view=${kept} />
@@ -96,12 +97,12 @@ function Carousel({ cells, selected, reverse }) {
 
 function Hints({ shown }) {
   return html`
-    <view style=${{ position: 'absolute', left: guideWidth, right: 0, bottom: 0, height: barHeight, backgroundColor: black, borderTopWidth: 2,
+    <view style=${{ position: 'absolute', left: 0, right: 0, bottom: 0, height: barHeight, backgroundColor: black, borderTopWidth: 2,
       borderColor: grey, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 36, paddingHorizontal: margin }}>
       ${shown.map(hint => html`
         <view key=${hint.button} style=${{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <view style=${{ width: 40, height: 40, borderRadius: 20, backgroundColor: white, alignItems: 'center', justifyContent: 'center' }}>
-            <text style=${{ fontSize: 26, fontWeight: 700, color: black }}>${hint.button}</text>
+          <view style=${{ minWidth: 40, height: 40, borderRadius: 20, paddingHorizontal: 10, backgroundColor: white, alignItems: 'center', justifyContent: 'center' }}>
+            <text style=${{ fontSize: 26, fontWeight: 700, color: black }}>${faceGlyphs[hint.button] ?? hint.button}</text>
           </view>
           <text style=${{ fontSize: 28 }}>${hint.label}</text>
         </view>`)}
@@ -138,7 +139,7 @@ function App() {
   const launch = state.launching;
   const launched = launch && state.games.find(game => game.key === launch.game);
   const preview = state.rewind.preview ?? state.saves.preview;
-  const shownHints = hints(state, dialog);
+  const shownHints = hints(state);
   return html`
     <view style=${{ ...fill, fontFamily: 'Inter.ttf', color: white }}>
       ${state.screen === 'attract' ? html`<${Attract} state=${state} />` : html`
