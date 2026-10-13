@@ -33,7 +33,7 @@ fetch() {
   done < "$transfers"
   rm "$transfers"
   [ $# -gt 0 ] || return 0
-  curl --cacert "$CA_BUNDLE" --parallel "$@" | while read -r code partial; do
+  CURL_CA_BUNDLE=$CA_BUNDLE curl --parallel "$@" | while read -r code partial; do
     if [ "$code" = 200 ]; then mv "$partial" "${partial%"$PARTIAL"}"; else rm -f "$partial"; fi
   done
 }
