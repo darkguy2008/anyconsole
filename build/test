@@ -972,6 +972,7 @@ test_actions() {
   guest "rm $GAMES_DIR/lan-master"
   expect "$(status_of lan-master/nes "")"
   expect_reply $STEP_SECONDS 409 '(.ok | not) and (.error | startswith("no row on any screen matches"))' --arg action nope
+  expect_reply $STEP_SECONDS 409 '(.ok | not) and (.error | startswith("no row on any screen matches"))' --arg action delete-state
   wait_for $STEP_SECONDS screenshot_is_png
   log ok "the screenshot is a PNG"
   tap b

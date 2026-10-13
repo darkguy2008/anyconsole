@@ -1231,10 +1231,10 @@ static int build(struct view *view) {
     case ATTRACT:
         break;
     case DELETE_DIALOG:
-        count = add_row(count, DELETE_STATE, 0, "Delete", "");
+        if (rewindable()) count = add_row(count, DELETE_STATE, 0, "Delete", "");
         break;
     case OVERWRITE_DIALOG:
-        count = add_row(count, OVERWRITE_STATE, 0, "Overwrite", "");
+        if (rewindable()) count = add_row(count, OVERWRITE_STATE, 0, "Overwrite", "");
         break;
     case OUTPUTS:
     case MICROPHONES:
