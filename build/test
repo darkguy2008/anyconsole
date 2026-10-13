@@ -46,6 +46,8 @@ AREA_SIZE='(.display.area_box | "\(.width)x\(.height)")'
 KEEN_ART='(.games[] | select(.key == "commander-keen/msdos"))'
 STALE_ART=stale
 STALE_DATE=2000-01-01
+ORACLE_ART="Commander Keen 4 - Secret of the Oracle (1991)"
+ARMAGEDDON_ART="Commander Keen 5 - The Armageddon Machine (1991)"
 
 monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
 guest() {
@@ -1035,6 +1037,10 @@ test_thumbnails() {
   open_store_by_action
   expect "$KEEN_ART | .thumbnailCached"
   log ok "cleared boxart downloads again when shown"
+  oracle=$THUMBNAILS_DIR/msdos/$ORACLE_ART$THUMBNAIL_EXTENSION
+  armageddon=$THUMBNAILS_DIR/msdos/$ARMAGEDDON_ART$THUMBNAIL_EXTENSION
+  guest "thumbnails fetch '$oracle' '$armageddon' && [ -s '$oracle' ] && [ -s '$armageddon' ]"
+  log ok "one fetch downloads every boxart it asks for"
 }
 
 TESTS="capture symlinks display audio controllers nes actions dreamcast msdos stores gpu logout reboot skins engines thumbnails"
