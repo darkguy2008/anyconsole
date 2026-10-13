@@ -2,6 +2,5 @@
 set -eu
 cd "$(dirname "$0")/.."
 . ./config
-IMAGE=anyconsole-build-host
-docker build -q -t "$IMAGE" - < build/host.Dockerfile >/dev/null
-exec docker run --rm --privileged --network host -v /dev:/dev -v /var/run/docker.sock:/var/run/docker.sock -v "$LOCK_DIR:$LOCK_DIR" -v "$PWD:$PWD" -w "$PWD" "$IMAGE" "$@"
+image=$(docker build -q -f build/host.Dockerfile build/kernel)
+exec docker run --rm --privileged --network host -v /dev:/dev -v /var/run/docker.sock:/var/run/docker.sock -v "$LOCK_DIR:$LOCK_DIR" -v "$PWD:$PWD" -w "$PWD" "$image" "$@"
