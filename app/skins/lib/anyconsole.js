@@ -126,7 +126,23 @@ export function planes(state) {
 }
 
 export function rewindCells(rewind) {
-  return [{ source: rewind.current, label: 'Save' }, ...rewind.screens.map(source => ({ source }))];
+  return [{ source: rewind.current, label: 'Now' }, ...rewind.screens.map(source => ({ source }))];
+}
+
+export function saveCells(saves) {
+  return saves.slots.map((slot, index) => ({ source: slot?.screen, label: `${index + 1}  \u00b7  ${slot ? slot.time : 'Empty'}` }));
+}
+
+export function hints(state, dialog) {
+  const back = { button: 'B', label: 'Back' };
+  if (dialog) return [{ button: 'A', label: dialog.rows[dialog.selected].label }, { button: 'B', label: 'Cancel' }];
+  if (state.saves.choosing) {
+    const filled = state.saves.slots[state.saves.slot];
+    return [filled && { button: 'A', label: 'Load' }, { button: 'X', label: 'Save' }, filled && { button: 'Y', label: 'Delete' }, back].filter(Boolean);
+  }
+  if (state.rewind.choosing && state.rewind.back) return [{ button: 'A', label: 'Load' }, back];
+  if (state.rewind.choosing) return [back];
+  return [];
 }
 
 export function useConsole() {

@@ -1,4 +1,4 @@
-import { fill, html, planes, play, rewindCells, select, time, useClock, useCommand, useConsole, useLatest } from 'anyconsole';
+import { fill, hints, html, planes, play, rewindCells, saveCells, select, time, useClock, useCommand, useConsole, useLatest } from 'anyconsole';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
 const font = '../switch/Nunito.ttf';
@@ -12,6 +12,9 @@ const fillCropPerSide = 0.02;
 const backdropDim = '#000000b3';
 const coverBlur = 0.05;
 const tileRadius = 6;
+const edge = 24;
+const barHeight = 72;
+const guideSpace = 768;
 const moves = { left: -1, right: 1 };
 const steps = { up: -storeColumns, down: storeColumns, left: -1, right: 1 };
 const actionIcons = {
@@ -19,7 +22,7 @@ const actionIcons = {
   install: 'download', dashboard: 'home', volume: 'volume_up', 'open-outputs': 'speaker', 'open-microphones': 'mic', 'microphone-volume': 'mic',
   'open-controllers': 'sports_esports', reload: 'refresh', restart: 'restart_alt', 'power-off': 'power_settings_new', 'log-out': 'logout',
   rewind: 'history', emulate: 'keyboard', 'second-screen': 'picture_in_picture', 'display-mode': 'monitor', resolution: 'aspect_ratio',
-  pair: 'bluetooth_searching', forget: 'link_off', 'confirm-log-out': 'logout', login: 'person',
+  pair: 'bluetooth_searching', forget: 'link_off', 'confirm-log-out': 'logout', login: 'person', 'save-states': 'save',
 };
 
 function hue(text) {
@@ -277,19 +280,40 @@ function Guide({ state, view, theme }) {
     </view>`;
 }
 
-function Rewind({ rewind, theme }) {
-  const cells = rewindCells(rewind);
+function Carousel({ cells, selected, reverse, theme }) {
   return html`
-    <view style=${{ position: 'absolute', left: 24, right: 768, bottom: 24, height: 220, borderRadius: 32, backgroundColor: theme.panel, backdropBlur: 1,
-      flexDirection: 'row-reverse', gap: 20, padding: 28, overflow: 'hidden' }} follow=${rewind.back} from=${{ translateY: 260 }}
+    <view style=${{ position: 'absolute', left: edge, right: guideSpace, bottom: 2 * edge + barHeight, height: 220, borderRadius: 32, backgroundColor: theme.panel,
+      backdropBlur: 1, flexDirection: reverse ? 'row-reverse' : 'row', gap: 20, padding: 28, overflow: 'hidden' }} follow=${selected} from=${{ translateY: 260 }}
       transition=${{ translateY: 'spring' }}>
-      ${cells.map((cell, back) => html`
-        <view key=${back} style=${{ width: 290, height: 164, borderRadius: 14, overflow: 'hidden', backgroundColor: '#000000' }}>
+      ${cells.map((cell, index) => html`
+        <view key=${index} style=${{ width: 290, height: 164, borderRadius: 14, overflow: 'hidden', backgroundColor: '#000000' }}>
           ${cell.source && html`<image src=${cell.source} style=${fill} objectFit="cover" />`}
           ${cell.label && html`<text style=${{ position: 'absolute', left: 0, right: 0, bottom: 0, paddingVertical: 6, backgroundColor: '#000000a0',
             fontSize: 26, fontWeight: 800, textAlign: 'center', color: '#ffffff' }}>${cell.label}</text>`}
         </view>`)}
-      <${Frame} index=${rewind.back} radius=${20} theme=${theme} active=${true} inset=${-6} />
+      <${Frame} index=${selected} radius=${20} theme=${theme} active=${true} inset=${-6} />
+    </view>`;
+}
+
+function GuideHints({ shown, theme }) {
+  return html`
+    <view style=${{ position: 'absolute', left: edge, right: guideSpace, bottom: edge, height: barHeight, borderRadius: 24, backgroundColor: theme.panel,
+      backdropBlur: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 32, paddingHorizontal: 32 }} from=${{ opacity: 0 }}
+      transition=${{ opacity: 150 }}>
+      ${shown.map(hint => html`<${Button} key=${hint.button} letter=${hint.button} label=${hint.label} theme=${theme} />`)}
+    </view>`;
+}
+
+function Dialog({ view, theme }) {
+  return html`
+    <view style=${{ ...fill, backgroundColor: theme.scrim, alignItems: 'center', justifyContent: 'center' }} from=${{ opacity: 0 }} transition=${{ opacity: 150 }}>
+      <view style=${{ width: 760, borderRadius: 32, backgroundColor: theme.panel, backdropBlur: 1, padding: 48, gap: 40, alignItems: 'center',
+        shadowColor: '#00000066', shadowBlur: 30 }} from=${{ scale: 0.9 }} transition=${{ scale: 'spring' }}>
+        <text style=${{ fontSize: 40, fontWeight: 800, textAlign: 'center' }}>${view.title}</text>
+        <view style=${{ paddingVertical: 18, paddingHorizontal: 56, borderRadius: 18, borderWidth: 4, borderColor: accent }}>
+          <text style=${{ fontSize: 32, fontWeight: 800 }}>${view.rows[view.selected].label}</text>
+        </view>
+      </view>
     </view>`;
 }
 
@@ -369,7 +393,7 @@ function navigate(name, state, lastTile) {
   if (view.screen === 'whois' && name in moves) return move(selected + moves[name]);
   if (name === 'up' || name === 'down' || name === 'page-up' || name === 'page-down') sound('hover');
   if (name === 'left' || name === 'right') sound('press');
-  if (name === 'confirm') sound('select');
+  if (name === 'confirm' || name === 'x' || name === 'y') sound('select');
   if (name === 'back') sound('back');
   if (name === 'guide') sound(state.guide ? 'close' : 'open');
   return false;
@@ -385,11 +409,12 @@ function useNavigation(view) {
 export function app(theme) {
   return function App() {
     const state = useConsole();
-    const { dashboard, guide, picker } = planes(state);
+    const { dashboard, guide, picker, dialog } = planes(state);
     const shownDashboard = useLatest(dashboard);
     const launch = state.launching;
     const launched = launch && state.games.find(game => game.key === launch.game);
-    const preview = state.rewind.preview;
+    const preview = state.rewind.preview ?? state.saves.preview;
+    const shownHints = hints(state, dialog);
     const lastTile = useNavigation(dashboard);
     return html`
       <view style=${{ ...fill, fontFamily: font, color: theme.text }}>
@@ -401,7 +426,10 @@ export function app(theme) {
         ${launched && html`<${Launch} game=${launched} percent=${launch.percent} theme=${theme} />`}
         ${preview && html`<view style=${{ ...fill, backgroundColor: '#000000' }}><image src=${preview} style=${fill} /></view>`}
         <${Guide} state=${state} view=${guide} theme=${theme} />
-        ${state.rewind.choosing && html`<${Rewind} rewind=${state.rewind} theme=${theme} />`}
+        ${state.rewind.choosing && html`<${Carousel} cells=${rewindCells(state.rewind)} selected=${state.rewind.back} reverse=${true} theme=${theme} />`}
+        ${state.saves.choosing && html`<${Carousel} cells=${saveCells(state.saves)} selected=${state.saves.slot} theme=${theme} />`}
+        ${shownHints.length > 0 && html`<${GuideHints} shown=${shownHints} theme=${theme} />`}
+        ${dialog && html`<${Dialog} view=${dialog} theme=${theme} />`}
         ${picker && html`<${Picker} view=${picker} theme=${theme} />`}
         <${Notifications} notifications=${state.notifications} theme=${theme} />
       </view>`;

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <cairo.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <drm_fourcc.h>
 #include <errno.h>
@@ -72,6 +73,10 @@
 #define BOOST_GOVERNOR "performance"
 #define REFRESH_PRECISION 100
 #define REWIND_STATES 20
+#define SAVE_SLOTS 10
+#define UNNUMBERED_SLOT 0
+#define SLOT_TIME_FORMAT "%b %d %H:%M"
+#define SLOT_TIME_SAMPLE "Sep 30 23:59"
 #define KEPT_SESSIONS 4
 #define SAVE_SECONDS 5
 #define SAVE_CHANGE_PERCENT 1
@@ -96,19 +101,22 @@
 #define SKIN_TREE_DEPTH 16
 #define BLUR_BOXES_MAX 16
 #define SKINS_MAX 64
+#define DIRECTORY_MODE (S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH)
 
-enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, MICROPHONES, CONTROLLERS, CONTROLLER, SETTINGS, WHOIS, LOG_OUT, ATTRACT };
-enum plane { DASHBOARD_PLANE, GUIDE_PLANE, PICKER_PLANE };
-static const char *const planes[] = {[DASHBOARD_PLANE] = "dashboard", [GUIDE_PLANE] = "guide", [PICKER_PLANE] = "picker"};
+enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, MICROPHONES, CONTROLLERS, CONTROLLER, SETTINGS, WHOIS, LOG_OUT, ATTRACT, DELETE_DIALOG, OVERWRITE_DIALOG };
+enum plane { DASHBOARD_PLANE, GUIDE_PLANE, PICKER_PLANE, DIALOG_PLANE };
+static const char *const planes[] = {[DASHBOARD_PLANE] = "dashboard", [GUIDE_PLANE] = "guide", [PICKER_PLANE] = "picker", [DIALOG_PLANE] = "dialog"};
 static const struct { const char *name, *title; enum plane plane; } screens[] = {
     [HOME] = {"home", "Home"}, [STORE] = {"store", "Store"}, [GAME] = {"game", ""},
     [GUIDE] = {"guide", "Guide", GUIDE_PLANE}, [OUTPUTS] = {"outputs", "Output", GUIDE_PLANE}, [MICROPHONES] = {"microphones", "Microphone", GUIDE_PLANE},
     [CONTROLLERS] = {"controllers", "Controllers", GUIDE_PLANE}, [CONTROLLER] = {"controller", "", GUIDE_PLANE}, [SETTINGS] = {"settings", "Settings"},
     [WHOIS] = {"whois", "", PICKER_PLANE}, [LOG_OUT] = {"logout", "", GUIDE_PLANE}, [ATTRACT] = {"attract", ""},
+    [DELETE_DIALOG] = {"delete-state", "", DIALOG_PLANE}, [OVERWRITE_DIALOG] = {"overwrite-state", "", DIALOG_PLANE},
 };
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
-              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN, CLEAR_THUMBNAILS };
+              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN, CLEAR_THUMBNAILS,
+              SAVE_STATES, DELETE_STATE, OVERWRITE_STATE };
 static const char *const actions[] = {
     [NOTHING] = "nothing", [OPEN_STORE] = "open-store", [OPEN_SETTINGS] = "open-settings", [OPEN_GAME] = "open-game", [PLAY] = "play", [RESUME] = "resume",
     [CLOSE] = "close", [UNINSTALL] = "uninstall", [INSTALL] = "install", [SHOW_DASHBOARD] = "dashboard", [VOLUME] = "volume", [OPEN_OUTPUTS] = "open-outputs",
@@ -117,11 +125,12 @@ static const char *const actions[] = {
     [CHOOSE_DISPLAY] = "display", [CHOOSE_DISPLAY_MODE] = "display-mode", [APPLY_RESOLUTIONS] = "apply-resolutions", [CHOOSE_RESOLUTION] = "resolution",
     [CHOOSE_SLEEP] = "sleep", [REWIND] = "rewind", [LOGIN] = "login", [EMULATE] = "emulate", [LOG_OUT_PLAYER] = "log-out",
     [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen", [CHOOSE_SKIN] = "skin",
-    [CLEAR_THUMBNAILS] = "clear-thumbnails"};
+    [CLEAR_THUMBNAILS] = "clear-thumbnails", [SAVE_STATES] = "save-states", [DELETE_STATE] = "delete-state", [OVERWRITE_STATE] = "overwrite-state"};
 static const char *const criteria[] = {"action", "label", "value", "arg"};
-enum command { NONE, UP, DOWN, PAGE_UP, PAGE_DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
+enum command { NONE, UP, DOWN, PAGE_UP, PAGE_DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON, X_BUTTON, Y_BUTTON };
 static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [PAGE_UP] = "page-up", [PAGE_DOWN] = "page-down",
-                                       [LEFT] = "left", [RIGHT] = "right", [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide"};
+                                       [LEFT] = "left", [RIGHT] = "right", [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide",
+                                       [X_BUTTON] = "x", [Y_BUTTON] = "y"};
 static const struct { const char *name, *label; } mode_labels[] = {
     {"analog", "Analog pad"}, {"digital", "Digital pad"}, {"keyboard", "Keyboard"}, {"mouse", "Mouse"}, {"keyboard-mouse", "Keyboard & mouse"}};
 enum task { INSTALLING, UNINSTALLING, LAUNCHING };
@@ -188,7 +197,9 @@ static json_object *emulate_choices[PROFILES + 1];
 static char rewinds[REWIND_STATES][NAME_MAX + 1];
 static cairo_surface_t *pending_screen, *newest_screen;
 static char newest_name[NAME_MAX + 1];
-static int pending_after;
+static int pending_after, save_slot;
+static cairo_surface_t *current_screen;
+static struct { int game, profile, slot, after; cairo_surface_t *screen; } saving = {.game = -1};
 static struct capture capture;
 static struct request requests[REQUESTS_MAX];
 static int request_count;
@@ -215,7 +226,7 @@ static struct wl_surface *surface;
 static struct zwlr_layer_surface_v1 *layer;
 static struct ext_background_effect_manager_v1 *effects;
 static struct ext_background_effect_surface_v1 *effect;
-static int width, frame_pending, paint_needed, skin_moving, skin_timer, skin_watches[SKIN_WATCHES_MAX], skin_watch_count, has_current_screen;
+static int width, frame_pending, paint_needed, skin_moving, skin_timer, skin_watches[SKIN_WATCHES_MAX], skin_watch_count;
 static struct box blurred[BLUR_BOXES_MAX];
 static int blurred_count;
 static double reload_due = -1;
@@ -374,10 +385,12 @@ static void keep_interrupted_rewinds(void) {
 
 static int is_state(const struct dirent *entry) {
     const char *extension = strrchr(entry->d_name, '.');
-    return extension && !strncmp(extension, STATE_EXTENSION, strlen(STATE_EXTENSION));
+    return extension && !strncmp(extension, STATE_EXTENSION, strlen(STATE_EXTENSION)) && isdigit((unsigned char)extension[strlen(STATE_EXTENSION)]);
 }
 
 static int slot(const char *state) { return atoi(strrchr(state, '.') + strlen(STATE_EXTENSION)); }
+
+static int newest_slot(void) { return rewind_count ? slot(rewinds[rewind_count - 1]) : -1; }
 
 static int by_slot(const struct dirent **left, const struct dirent **right) { return slot((*left)->d_name) - slot((*right)->d_name); }
 
@@ -385,6 +398,66 @@ static void remove_state(const char *state) {
     char path[PATH_MAX];
     unlink(rewind_path(path, active, "/" STATES "/%s", state));
     unlink(rewind_path(path, active, "/" STATES "/%s" SCREEN_EXTENSION, state));
+}
+
+static char *slot_directory(char *path, int profile, int slot) {
+    snprintf(path, PATH_MAX, PROFILES_DIR "/%d/" STATES "/%s/%d", profile, name(active), slot + 1);
+    return path;
+}
+
+static int saved_state(int profile, int slot, char *state, time_t *saved) {
+    char path[PATH_MAX];
+    struct dirent **entries = NULL;
+    struct stat status;
+    int count = scandir(slot_directory(path, profile, slot), &entries, is_state, alphasort);
+    if (count > 0) snprintf(state, NAME_MAX + 1, "%s", entries[0]->d_name);
+    for (int i = 0; i < count; i++) free(entries[i]);
+    free(entries);
+    if (count <= 0) return 0;
+    snprintf(path + strlen(path), PATH_MAX - strlen(path), "/%s", state);
+    *saved = stat(path, &status) ? 0 : status.st_mtime;
+    return 1;
+}
+
+static const char *saved_time(time_t saved) {
+    static char text[sizeof SLOT_TIME_SAMPLE];
+    strftime(text, sizeof text, SLOT_TIME_FORMAT, localtime(&saved));
+    return text;
+}
+
+static const char *save_slot_value(void) {
+    static char text[TEXT_MAX];
+    char state[NAME_MAX + 1];
+    time_t saved;
+    int filled = saved_state(guide_profile, save_slot, state, &saved);
+    snprintf(text, sizeof text, "Slot %d  \u00b7  %s", save_slot + 1, filled ? saved_time(saved) : "Empty");
+    return text;
+}
+
+static void make_directories(char *path) {
+    for (char *slash = strchr(path + strlen(PROFILES_DIR), '/'); slash; slash = strchr(slash + 1, '/')) {
+        *slash = '\0';
+        mkdir(path, DIRECTORY_MODE);
+        *slash = '/';
+    }
+    mkdir(path, DIRECTORY_MODE);
+}
+
+static void keep_saved(const char *state) {
+    char directory[PATH_MAX], from[PATH_MAX], to[PATH_MAX + NAME_MAX + sizeof SCREEN_EXTENSION];
+    remove_tree(slot_directory(directory, saving.profile, saving.slot));
+    make_directories(directory);
+    snprintf(to, sizeof to, "%s/%s", directory, state);
+    if (link(rewind_path(from, active, "/" STATES "/%s", state), to) < 0) perror(to);
+    if (saving.screen) {
+        cairo_surface_write_to_png(saving.screen, rewind_path(from, active, "/" STATES "/%s" SCREEN_EXTENSION, state));
+        snprintf(to, sizeof to, "%s/%s" SCREEN_EXTENSION, directory, state);
+        if (link(from, to) < 0) perror(to);
+    }
+    notify("Saved state %d", saving.slot + 1);
+    cairo_surface_destroy(saving.screen);
+    saving.screen = NULL;
+    saving.game = -1;
 }
 
 static void remember_newest(cairo_surface_t *screen) {
@@ -411,6 +484,11 @@ static void refresh_rewinds(void) {
         pending_screen = NULL;
         paint_needed = 1;
     }
+    for (int i = 0; saving.game == active && i < rewind_count; i++)
+        if (slot(rewinds[i]) > saving.after) {
+            keep_saved(rewinds[i]);
+            break;
+        }
     changed = 1;
 }
 
@@ -1044,7 +1122,7 @@ static void choose_mode(int profile, int game, const char *kind, const char *mod
     if (*mode) json_object_object_add(game_choices, kind, json_object_new_string(mode));
     else json_object_object_del(game_choices, kind);
     snprintf(directory, sizeof directory, PROFILES_DIR "/%d", profile);
-    mkdir(directory, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
+    mkdir(directory, DIRECTORY_MODE);
     write_json(emulate_path(profile), choices);
 }
 
@@ -1123,6 +1201,7 @@ static int build(struct view *view) {
     case GUIDE:
         if (in_game()) count = add_row(count, SHOW_DASHBOARD, 0, "Dashboard", "");
         if (rewindable()) count = add_row(count, REWIND, 0, "Rewind", "%s", rewind_age());
+        if (rewindable() && guide_profile) count = add_row(count, SAVE_STATES, 0, "Save States", "%s", save_slot_value());
         if (in_game() && guide_profile) count = add_row(count, EMULATE, 0, "Emulate", "%s", emulate_value());
         if (in_game() && games[active].second_screen)
             count = add_row(count, SECOND_SCREEN, 0, "Second screen", "%s", games[active].screen_shown ? "Inset" : "Off");
@@ -1150,6 +1229,12 @@ static int build(struct view *view) {
         count = add_row(count, CONFIRM_LOG_OUT, 0, "Log out", "Closes %d games", owned_games(guide_profile));
         break;
     case ATTRACT:
+        break;
+    case DELETE_DIALOG:
+        count = add_row(count, DELETE_STATE, 0, "Delete", "");
+        break;
+    case OVERWRITE_DIALOG:
+        count = add_row(count, OVERWRITE_STATE, 0, "Overwrite", "");
         break;
     case OUTPUTS:
     case MICROPHONES:
@@ -1189,6 +1274,8 @@ static const char *title(struct view *view) {
     if (view->screen == CONTROLLER) return controller_name();
     if (view->screen == WHOIS) return player_count ? "Who is using this controller?" : "Who's playing?";
     if (view->screen == LOG_OUT) snprintf(text, sizeof text, "Log out %s", profile_name(guide_profile));
+    else if (view->screen == DELETE_DIALOG) snprintf(text, sizeof text, "Delete save state %d?", save_slot + 1);
+    else if (view->screen == OVERWRITE_DIALOG) snprintf(text, sizeof text, "Overwrite save state %d?", save_slot + 1);
     else if (view->screen == GUIDE && guide_profile) snprintf(text, sizeof text, "%s  \u00b7  Pad %d", profile_name(guide_profile), seat_of(guide_profile) + 1);
     else return screens[view->screen].title;
     return text;
@@ -1243,7 +1330,7 @@ static int listen_socket(int index, char *directory, size_t size) {
     int closer[2];
     snprintf(directory, size, SOCKETS_DIR "/%s", name(index));
     snprintf(path, sizeof path, "%s/" WAYLAND_SOCKET, directory);
-    mkdir(directory, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
+    mkdir(directory, DIRECTORY_MODE);
     int fd = bind_socket(path, 0);
     if (fd < 0) return 0;
     if (pipe2(closer, O_CLOEXEC) < 0) {
@@ -1300,6 +1387,7 @@ static void ended(int index, int status) {
         keep_rewinds(name(index));
     } else remove_rewinds(index);
     game->pid = 0;
+    if (saving.game == index) saving.game = -1;
     if (active == index) active = -1;
     refresh_rewinds();
     apply_modes();
@@ -1340,12 +1428,13 @@ static void end_capture(int captured) {
     if (capture.save && capture.game == active && screen && changed_since_save(screen)) {
         cairo_surface_destroy(pending_screen);
         pending_screen = cairo_surface_reference(screen);
-        pending_after = rewind_count ? slot(rewinds[rewind_count - 1]) : -1;
+        pending_after = newest_slot();
         send_command(active, "SAVE_STATE");
     }
     if (capture.current && screen) scene_image(CURRENT_SCREEN, screen);
     if (capture.current) {
-        has_current_screen = screen != NULL;
+        cairo_surface_destroy(current_screen);
+        current_screen = cairo_surface_reference(screen);
         guide_shown = 1;
     }
     cairo_surface_destroy(screen);
@@ -1471,6 +1560,39 @@ static void load_rewind(void) {
     resume(active);
 }
 
+static void save_to_slot(void) {
+    cairo_surface_destroy(saving.screen);
+    saving.game = active;
+    saving.profile = guide_profile;
+    saving.slot = save_slot;
+    saving.after = newest_slot();
+    saving.screen = cairo_surface_reference(current_screen);
+    send_command(active, "SAVE_STATE");
+    resume(active);
+}
+
+static void load_saved(void) {
+    char state[NAME_MAX + 1], directory[PATH_MAX], from[PATH_MAX + NAME_MAX + 1], to[PATH_MAX];
+    time_t saved;
+    if (!saved_state(guide_profile, save_slot, state, &saved)) return;
+    snprintf(from, sizeof from, "%s/%s", slot_directory(directory, guide_profile, save_slot), state);
+    strrchr(state, '.')[strlen(STATE_EXTENSION)] = '\0';
+    unlink(rewind_path(to, active, "/" STATES "/%s", state));
+    if (link(from, to) < 0) perror(to);
+    send_command(active, "LOAD_STATE_SLOT " STRINGIFY(UNNUMBERED_SLOT));
+    rewind_back = 0;
+    resume(active);
+}
+
+static void press_save_states(enum command command) {
+    char state[NAME_MAX + 1];
+    time_t saved;
+    int filled = saved_state(guide_profile, save_slot, state, &saved);
+    if (command == X_BUTTON && filled) push(OVERWRITE_DIALOG, -1);
+    else if (command == X_BUTTON) save_to_slot();
+    else if (command == Y_BUTTON && filled) push(DELETE_DIALOG, -1);
+}
+
 static void freeze(int index, int pause) {
     struct game *game = &games[index];
     game->paused = pause;
@@ -1527,6 +1649,7 @@ static void play(int index) {
     prepare_rewinds(index, states);
     memset(guide_depths, 0, sizeof guide_depths);
     game->rewinds = 0;
+    save_slot = 0;
     game->paused = game->closing = 0;
     show_game(index);
     snprintf(owner, sizeof owner, "%d", game->owner);
@@ -1713,12 +1836,16 @@ static void logout(int profile, int device) {
 }
 
 static void act(struct row *row, int profile) {
-    char id[TEXT_MAX], store[TEXT_MAX];
+    char id[TEXT_MAX], store[TEXT_MAX], directory[PATH_MAX];
     struct view *view = top();
     struct game *game = view->game >= 0 ? &games[view->game] : NULL;
+    if (screens[view->screen].plane == DIALOG_PLANE) guide_depths[guide_profile]--;
     switch (row->action) {
     case NOTHING: case VOLUME: case MICROPHONE_VOLUME: case SECOND_SCREEN: case CHOOSE_DISPLAY: case CHOOSE_DISPLAY_MODE: case CHOOSE_RESOLUTION: case CHOOSE_SLEEP: case CHOOSE_SKIN: case EMULATE: break;
     case REWIND: load_rewind(); break;
+    case SAVE_STATES: load_saved(); break;
+    case DELETE_STATE: remove_tree(slot_directory(directory, guide_profile, save_slot)); break;
+    case OVERWRITE_STATE: save_to_slot(); break;
     case CLEAR_THUMBNAILS: thumbnail_clearer = spawn((char *[]){"thumbnails", "clear", NULL}, -1, log_file, log_file); break;
     case LOGIN: login(row->arg, picker); break;
     case LOG_OUT_PLAYER:
@@ -1774,6 +1901,13 @@ static void act(struct row *row, int profile) {
     }
 }
 
+static int press_row(struct row *row, enum command command, int profile) {
+    if (command == CONFIRM) act(row, profile);
+    else if (row->action == SAVE_STATES) press_save_states(command);
+    else return 0;
+    return 1;
+}
+
 static void change_volume(char *node, const char *direction) {
     char step[TEXT_MAX];
     snprintf(step, sizeof step, "%s%s", VOLUME_STEP, direction);
@@ -1789,6 +1923,7 @@ static void adjust(enum action action, int step) {
     if (action == CHOOSE_SLEEP) cycle_sleep(step);
     if (action == CHOOSE_SKIN) cycle_skin(step);
     if (action == REWIND && rewind_back - step >= 0 && rewind_back - step <= rewind_count) rewind_back -= step;
+    if (action == SAVE_STATES && save_slot + step >= 0 && save_slot + step < SAVE_SLOTS) save_slot += step;
     if (action == EMULATE) cycle_mode(step);
     if (action == SECOND_SCREEN) toggle_second_screen();
 }
@@ -1836,7 +1971,7 @@ static void navigate(int device, enum command command) {
     case PAGE_UP: view->selected = 0; break;
     case PAGE_DOWN: if (count) view->selected = count - 1; break;
     case LEFT: case RIGHT: if (row) adjust(row->action, command == LEFT ? -1 : 1); break;
-    case CONFIRM: if (row) act(row, profile_of(device)); break;
+    case CONFIRM: case X_BUTTON: case Y_BUTTON: if (row) press_row(row, command, profile_of(device)); break;
     case BACK: case GUIDE_BUTTON:
         if (picker != NO_DEVICE) picker = NO_DEVICE;
         else if (guide_shown && guide_depths[guide_profile] > 1) guide_depths[guide_profile]--;
@@ -2048,17 +2183,43 @@ static json_object *launch_object(void) {
     return object;
 }
 
-static json_object *views_object(int *choosing) {
+static json_object *views_object(enum action *choosing) {
     json_object *list = json_object_new_array();
     int count;
-    *choosing = 0;
+    *choosing = NOTHING;
     if (dashboard_open) json_object_array_add(list, view_object(DASHBOARD_PLANE, &dashboard[dashboard_depth - 1], &count));
     if (guide_shown) {
-        json_object_array_add(list, view_object(GUIDE_PLANE, guide_view(), &count));
-        *choosing = guide_view()->selected < count && rows[guide_view()->selected].action == REWIND;
+        struct view *top_view = guide_view(), *guide = top_view;
+        int dialog = screens[top_view->screen].plane == DIALOG_PLANE;
+        if (dialog) guide = &guides[guide_profile][guide_depths[guide_profile] - 2];
+        json_object_array_add(list, view_object(GUIDE_PLANE, guide, &count));
+        if (guide->selected < count) *choosing = rows[guide->selected].action;
+        if (dialog) json_object_array_add(list, view_object(DIALOG_PLANE, top_view, &count));
     }
     if (picker != NO_DEVICE) json_object_array_add(list, view_object(PICKER_PLANE, &whois, &count));
     return list;
+}
+
+static json_object *saves_object(int choosing) {
+    json_object *saves = json_object_new_object(), *slots = json_object_new_array(), *preview = NULL;
+    char state[NAME_MAX + 1], directory[PATH_MAX], path[PATH_MAX + NAME_MAX + sizeof SCREEN_EXTENSION];
+    time_t saved;
+    for (int i = 0; choosing && i < SAVE_SLOTS; i++) {
+        json_object *entry = NULL;
+        if (saved_state(guide_profile, i, state, &saved)) {
+            entry = json_object_new_object();
+            snprintf(path, sizeof path, "%s/%s" SCREEN_EXTENSION, slot_directory(directory, guide_profile, i), state);
+            json_object_object_add(entry, "screen", access(path, F_OK) ? NULL : json_object_new_string(path));
+            json_object_object_add(entry, "time", json_object_new_string(saved_time(saved)));
+            if (i == save_slot) preview = json_object_get(json_object_object_get(entry, "screen"));
+        }
+        json_object_array_add(slots, entry);
+    }
+    json_object_object_add(saves, "choosing", json_object_new_boolean(choosing));
+    json_object_object_add(saves, "slot", json_object_new_int(save_slot));
+    json_object_object_add(saves, "slots", slots);
+    json_object_object_add(saves, "preview", preview);
+    return saves;
 }
 
 static json_object *state_object(int count) {
@@ -2066,7 +2227,7 @@ static json_object *state_object(int count) {
     json_object *list = json_object_new_array();
     struct view *view = top();
     char path[PATH_MAX];
-    int choosing;
+    enum action choosing;
     for (int i = 0; i < count; i++) json_object_array_add(list, row_object(&rows[i]));
     json_object *views = views_object(&choosing);
     json_object *session = json_object_new_object(), *entries = json_object_new_array();
@@ -2093,15 +2254,16 @@ static json_object *state_object(int count) {
     json_object_object_add(history, "back", json_object_new_int(rewind_back));
     for (int back = 1; back <= rewind_count; back++)
         json_object_array_add(screens_list, json_object_new_string(rewind_path(path, active, "/" STATES "/%s" SCREEN_EXTENSION, rewinds[rewind_count - back])));
-    json_object_object_add(history, "choosing", json_object_new_boolean(choosing));
-    json_object_object_add(history, "preview", choosing && rewind_back ? json_object_get(json_object_array_get_idx(screens_list, rewind_back - 1)) : NULL);
+    json_object_object_add(history, "choosing", json_object_new_boolean(choosing == REWIND));
+    json_object_object_add(history, "preview", choosing == REWIND && rewind_back ? json_object_get(json_object_array_get_idx(screens_list, rewind_back - 1)) : NULL);
     json_object_object_add(history, "screens", screens_list);
-    json_object_object_add(history, "current", has_current_screen ? json_object_new_string(CURRENT_SCREEN) : NULL);
+    json_object_object_add(history, "current", current_screen ? json_object_new_string(CURRENT_SCREEN) : NULL);
     json_object_object_add(state, "views", views);
     json_object_object_add(state, "launching", launching() ? launch_object() : NULL);
     json_object_object_add(state, "splash", json_object_new_string(SPLASH_IMAGE));
     json_object_object_add(state, "skin", json_object_new_string(loaded_skin));
     json_object_object_add(state, "rewind", history);
+    json_object_object_add(state, "saves", saves_object(choosing == SAVE_STATES));
     json_object_object_add(state, "active", active < 0 ? NULL : json_object_new_string(key(active)));
     list = json_object_new_array();
     for (int i = 0; i < notification_count; i++) json_object_array_add(list, json_object_new_string(notifications[i].text));
@@ -2228,6 +2390,10 @@ static void settle(void) {
     changed = 0;
     if (active >= 0 && !games[active].pid && !games[active].job) active = -1;
     if (active < 0) dashboard_open = 1;
+    if (!guide_shown) {
+        cairo_surface_destroy(current_screen);
+        current_screen = NULL;
+    }
     for (int i = 0; i < game_count; i++) {
         int pause = i != active || interactive();
         if (!games[i].pid || !game_window(i) || games[i].closing || games[i].paused == pause || games[i].freezer) continue;
@@ -2493,6 +2659,7 @@ static void open_screen(enum screen screen, int game, int profile, int device) {
         if (screen != HOME) push(screen, game);
         break;
     case GUIDE_PLANE:
+    case DIALOG_PLANE:
         for (int i = 0; device == NO_DEVICE && i < member_count; i++)
             if (members[i].profile == profile) device = members[i].device;
         enter_guide(profile, device, 1);
@@ -2503,6 +2670,7 @@ static void open_screen(enum screen screen, int game, int profile, int device) {
 
 static void run_request(struct request *request, json_object *wanted) {
     int game = -1, given = 0, index;
+    enum command command = json_object_object_get_ex(wanted, "command", NULL) ? command_named(string_at(wanted, "command", NULL)) : CONFIRM;
     for (unsigned i = 0; i < sizeof criteria / sizeof *criteria; i++) given += json_object_object_get_ex(wanted, criteria[i], NULL);
     int profile = json_object_object_get_ex(wanted, "profile", NULL) ? int_at(wanted, "profile") : guide_shown ? guide_profile : player_count ? players[0] : 0;
     struct view *view = top(), candidate;
@@ -2532,7 +2700,7 @@ static void run_request(struct request *request, json_object *wanted) {
     if (view->screen == found) select_row(view, index);
     request->game = view->game;
     if (json_object_object_get_ex(wanted, "step", NULL)) adjust(rows[index].action, int_at(wanted, "step"));
-    else act(&rows[index], profile);
+    else if (!press_row(&rows[index], command, profile)) refuse(request, "%s takes no %s", actions[rows[index].action], commands[command]);
     if (request->game < 0) request->game = active;
 }
 

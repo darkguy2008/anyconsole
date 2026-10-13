@@ -1,4 +1,4 @@
-import { fill, html, mount, planes, rewindCells, time, useClock, useConsole, useLatest } from 'anyconsole';
+import { fill, hints, html, mount, planes, rewindCells, saveCells, time, useClock, useConsole, useLatest } from 'anyconsole';
 
 const white = '#ffffff';
 const black = '#000000';
@@ -7,6 +7,8 @@ const dim = '#000000b3';
 const margin = 48;
 const fade = { opacity: 200 };
 const guideWidth = 640;
+const barHeight = 72;
+const carouselHeight = 226;
 
 function Players({ players }) {
   return players.map(player => html`
@@ -83,12 +85,38 @@ function Cell({ source, label, selected }) {
     </view>`;
 }
 
-function Rewind({ rewind }) {
-  const cells = rewindCells(rewind);
+function Carousel({ cells, selected, reverse }) {
   return html`
-    <view style=${{ position: 'absolute', left: guideWidth, right: 0, bottom: 0, height: 226, backgroundColor: black, flexDirection: 'row-reverse',
-      gap: 24, padding: 32, overflow: 'hidden' }} follow=${rewind.back} from=${{ translateY: 226 }} transition=${{ translateY: 220 }}>
-      ${cells.map((cell, back) => html`<${Cell} key=${back} source=${cell.source} label=${cell.label} selected=${back === rewind.back} />`)}
+    <view style=${{ position: 'absolute', left: guideWidth, right: 0, bottom: barHeight, height: carouselHeight, backgroundColor: black,
+      flexDirection: reverse ? 'row-reverse' : 'row', gap: 24, padding: 32, overflow: 'hidden' }} follow=${selected}
+      from=${{ translateY: carouselHeight + barHeight }} transition=${{ translateY: 220 }}>
+      ${cells.map((cell, index) => html`<${Cell} key=${index} source=${cell.source} label=${cell.label} selected=${index === selected} />`)}
+    </view>`;
+}
+
+function Hints({ shown }) {
+  return html`
+    <view style=${{ position: 'absolute', left: guideWidth, right: 0, bottom: 0, height: barHeight, backgroundColor: black, borderTopWidth: 2,
+      borderColor: grey, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 36, paddingHorizontal: margin }}>
+      ${shown.map(hint => html`
+        <view key=${hint.button} style=${{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <view style=${{ width: 40, height: 40, borderRadius: 20, backgroundColor: white, alignItems: 'center', justifyContent: 'center' }}>
+            <text style=${{ fontSize: 26, fontWeight: 700, color: black }}>${hint.button}</text>
+          </view>
+          <text style=${{ fontSize: 28 }}>${hint.label}</text>
+        </view>`)}
+    </view>`;
+}
+
+function Dialog({ view }) {
+  return html`
+    <view style=${{ ...fill, backgroundColor: dim, alignItems: 'center', justifyContent: 'center' }} from=${{ opacity: 0 }} transition=${fade}>
+      <view style=${{ width: 720, backgroundColor: black, borderRadius: 16, borderWidth: 2, borderColor: white, padding: margin, gap: 36, alignItems: 'center' }}>
+        <text style=${{ fontSize: 40, fontWeight: 700, textAlign: 'center' }}>${view.title}</text>
+        <view style=${{ backgroundColor: white, borderRadius: 16, paddingVertical: 16, paddingHorizontal: 56 }}>
+          <text style=${{ fontSize: 36, color: black }}>${view.rows[view.selected].label}</text>
+        </view>
+      </view>
     </view>`;
 }
 
@@ -105,11 +133,12 @@ function Notifications({ notifications }) {
 
 function App() {
   const state = useConsole();
-  const { dashboard, guide, picker } = planes(state);
+  const { dashboard, guide, picker, dialog } = planes(state);
   const players = state.session.players;
   const launch = state.launching;
   const launched = launch && state.games.find(game => game.key === launch.game);
-  const preview = state.rewind.preview;
+  const preview = state.rewind.preview ?? state.saves.preview;
+  const shownHints = hints(state, dialog);
   return html`
     <view style=${{ ...fill, fontFamily: 'Inter.ttf', color: white }}>
       ${state.screen === 'attract' ? html`<${Attract} state=${state} />` : html`
@@ -117,7 +146,10 @@ function App() {
       ${launched && html`<${Launch} game=${launched} percent=${launch.percent} />`}
       ${preview && html`<view style=${{ ...fill, backgroundColor: black }}><image src=${preview} style=${fill} /></view>`}
       <${Panel} view=${guide} players=${players} width=${guideWidth} shown=${!!guide} side=${-guideWidth} />
-      ${state.rewind.choosing && html`<${Rewind} rewind=${state.rewind} />`}
+      ${state.rewind.choosing && html`<${Carousel} cells=${rewindCells(state.rewind)} selected=${state.rewind.back} reverse=${true} />`}
+      ${state.saves.choosing && html`<${Carousel} cells=${saveCells(state.saves)} selected=${state.saves.slot} />`}
+      ${shownHints.length > 0 && html`<${Hints} shown=${shownHints} />`}
+      ${dialog && html`<${Dialog} view=${dialog} />`}
       ${picker && html`<view style=${{ ...fill, backgroundColor: black }}><${TitleBar} title=${picker.title} /><${List} view=${picker} /></view>`}
       <${Notifications} notifications=${state.notifications} />
     </view>`;

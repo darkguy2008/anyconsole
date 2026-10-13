@@ -101,6 +101,8 @@ expect() { wait_for $STEP_SECONDS holds "$1"; log ok "$1"; }
 game_name() { echo "${1%/*}-${1#*/}"; }
 game_log() { echo "$LOG_DIR/$(game_name "$1").log"; }
 saves_of() { echo "$PROFILES_DIR/1/saves/$(game_name "$1")"; }
+states_of() { echo "$PROFILES_DIR/1/states/$(game_name "$1")"; }
+closed_and_running() { echo "(.guide | not) and ($(status_of "$1" running))"; }
 status_of() { echo "(.games[] | select(.key == \"$1\") | .status == \"$2\")"; }
 close_by_action() { expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of "$1" installed))" --arg action close --arg game "$1"; }
 row_value() { echo ".rows[] | select(.label == \"$1\") | .value"; }
@@ -346,7 +348,7 @@ rewind_to_older_state() {
   tap dpleft
   expect '.rewind.back == 1 and .rows[.selected].value != "Now"'
   tap guide
-  expect "(.guide | not) and ($(status_of "$1" running))"
+  expect "$(closed_and_running "$1")"
   tap guide
   expect '.guide and .rewind.back == 0 and .rows[.selected].label == "Rewind" and .rows[.selected].value == "Now"'
   snapshot rewind-now
@@ -359,6 +361,39 @@ rewind_to_older_state() {
   expect "(.guide | not) and .rewind.states == $((states - 1)) and .rewind.back == 0 and ($(status_of "$1" running))"
   wait_for $STEP_SECONDS guest "grep -q 'Loading state' $(game_log "$1") && ! grep -q 'Failed to load state' $(game_log "$1")"
   log ok "rewound $1 to an older state"
+}
+
+retroarch_loaded_saved_state() { guest "grep -q 'Loading state \".*\\.state\",' $(game_log "$1") && ! grep -q 'Failed to load state' $(game_log "$1")"; }
+
+save_states() {
+  saved=$(states_of "$1")/2
+  expect_reply $STEP_SECONDS 200 '.ok and .state.saves.choosing and .state.saves.slot == 1 and .state.saves.slots[1] == null and .state.rows[.state.selected].value == "Slot 2  \u00b7  Empty"' \
+    --arg action save-states --arg step 1
+  expect_reply $STEP_SECONDS 200 ".ok and (.state | $(closed_and_running "$1"))" --arg action save-states --arg command x
+  expect 'any(.notifications[]; . == "Saved state 2")'
+  guest "ls $saved/*.state*[0-9] $saved/*.screen.png"
+  log ok "Save put the state and its screen in slot 2 of Player 1"
+  inode=$(guest "stat -c %i $saved/*.state*[0-9]")
+  expect_reply $STEP_SECONDS 200 '.ok and .state.views[-1].screen == "overwrite-state" and .state.views[-1].title == "Overwrite save state 2?" and .state.saves.slots[1].screen != null' \
+    --arg action save-states --arg command x
+  expect_reply $STEP_SECONDS 200 ".ok and (.state | $(closed_and_running "$1"))" --arg action overwrite-state
+  wait_for $STEP_SECONDS guest "[ \"\$(stat -c %i $saved/*.state*[0-9])\" != $inode ]"
+  log ok "Save over a filled slot asks first, then replaces the state"
+  expect_reply $STEP_SECONDS 200 ".ok and (.state | $(closed_and_running "$1"))" --arg action save-states
+  wait_for $STEP_SECONDS "$2" "$1"
+  log ok "Load put $1 back to the state in slot 2"
+  tap guide
+  expect '.guide and .rows[.selected].label == "Save States" and .saves.slot == 1 and .saves.slots[1] != null'
+  snapshot save-states
+  tap y
+  expect '.views[-1].screen == "delete-state" and .views[-1].title == "Delete save state 2?"'
+  snapshot delete-state
+  tap a
+  expect '.guide and .views[-1].screen == "guide" and .saves.slots[1] == null'
+  guest "[ ! -e $saved ]"
+  log ok "Y deletes the slot after the dialog confirms"
+  tap guide
+  expect "$(closed_and_running "$1")"
 }
 
 install_and_play() {
@@ -701,8 +736,10 @@ push_test_bios() { [ ! -d "$TEST_BIOS" ] || tar -C "$TEST_BIOS" -c . | guest "mk
 redream_preloaded() { guest "tr '\\0' '\\n' < /proc/\$(pidof redream)/environ | grep -q '^LD_PRELOAD='"; }
 redream_read_loaded_state() { guest "for state in $REWIND_DIR/$(game_name "$1")/states/*.2.sav; do [ \"\$(stat -c %x \"\$state\")\" \\> \"\$(stat -c %y \"\$state\")\" ] || exit 1; done"; }
 
+has_redream_license() { [ -f "$TEST_BIOS/$REDREAM_LICENSE" ]; }
+
 rewind_dreamcast() {
-  if [ ! -f "$TEST_BIOS/$REDREAM_LICENSE" ]; then
+  if ! has_redream_license; then
     log skip "rewinding $1: no redream premium key at $TEST_BIOS/$REDREAM_LICENSE on the build host"
     return
   fi
@@ -877,6 +914,7 @@ test_nes() {
   blow_into_microphone
   change_emulation
   second_player_joins_and_leaves alter-ego/nes
+  save_states alter-ego/nes retroarch_loaded_saved_state
 
   tap guide
   expect ".guide and .screen == \"guide\" and ($(status_of alter-ego/nes paused)) and .audio.output != \"\""
@@ -950,6 +988,7 @@ test_dreamcast() {
   log ok "the manifest's pad map moves with the left stick and aims with the right"
   second_player_joins_and_leaves gravity-wave/dreamcast redream_gave_second_pad
   rewind_dreamcast gravity-wave/dreamcast
+  ! has_redream_license || save_states gravity-wave/dreamcast redream_read_loaded_state
   close_game gravity-wave/dreamcast "Gravity Wave"
 }
 
