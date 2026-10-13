@@ -6,6 +6,7 @@ struct node;
 struct box { float x, y, width, height; };
 #define DEFAULT_STIFFNESS 150.0f
 #define SKIN_ENTRY "skin.js"
+#define GAMES_MAX 512
 
 void scene_init(struct wl_display *display);
 void scene_attach(struct wl_surface *surface, int width, int height);
@@ -29,6 +30,7 @@ void scene_from(struct node *node, const char *name, const char *text, double va
 int scene_page(struct node *list, int selected, int direction);
 void scene_folder(const char *folder);
 const char *scene_resolve(const char *name, char path[PATH_MAX]);
+double scene_aspect(const char *path);
 
 int script_load(const char *folder);
 void script_state(const char *json);

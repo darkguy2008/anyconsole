@@ -8,6 +8,9 @@ const accent = '#00c3e3';
 const storeColumns = 5;
 const pulseMilliseconds = 900;
 const artMarginDivisor = 16;
+const fillCropPerSide = 0.02;
+const backdropDim = '#000000b3';
+const coverBlur = 0.05;
 const tileRadius = 6;
 const moves = { left: -1, right: 1 };
 const steps = { up: -storeColumns, down: storeColumns, left: -1, right: 1 };
@@ -56,16 +59,23 @@ function Frame({ index, radius, theme, active, inset = -10 }) {
       track=${index} transition=${{ shadowBlur: pulseMilliseconds, opacity: 150, track: 'spring' }} />`;
 }
 
+function fillsSquare(aspect) {
+  return aspect && (Math.max(aspect, 1 / aspect) - 1) / 2 < fillCropPerSide;
+}
+
 function Tile({ game, size, theme }) {
   const art = game.thumbnailCached;
+  const filled = fillsSquare(game.thumbnailAspect);
+  const backdrop = art && !filled;
   return html`
     <view style=${{ width: size, height: size, borderRadius: tileRadius, overflow: 'hidden', backgroundColor: hsl(hue(game.title), 0.45, theme.tileLightness),
       padding: 24, justifyContent: 'space-between', color: '#ffffff', shadowColor: '#00000040', shadowBlur: 10, shadowOffsetY: 4 }}>
       <text style=${{ fontSize: size / 8, fontWeight: 800, lineHeight: 1.1, opacity: art ? 0 : 1 }}>${game.title}</text>
       <text style=${{ fontSize: size / 16, fontWeight: 700, opacity: art ? 0 : 0.8 }}>${game.platform.toUpperCase()}</text>
-      ${art && html`<image src=${game.thumbnail} style=${{ ...fill, borderRadius: tileRadius }} objectFit="cover" />`}
-      ${art && html`<view style=${{ ...fill, borderRadius: tileRadius, backdropBlur: 1, backgroundColor: '#00000033' }} />`}
-      ${game.thumbnail && html`<image src=${game.thumbnail} style=${{ ...fill, margin: size / artMarginDivisor }} objectFit="contain" />`}
+      ${backdrop && html`<image src=${game.thumbnail} style=${{ ...fill, borderRadius: tileRadius, blur: coverBlur }} objectFit="cover" />`}
+      ${backdrop && html`<view style=${{ ...fill, borderRadius: tileRadius, backgroundColor: backdropDim }} />`}
+      ${game.thumbnail && html`<image src=${game.thumbnail} style=${{ ...fill, borderRadius: tileRadius, margin: filled ? 0 : size / artMarginDivisor }}
+        objectFit=${filled ? 'cover' : 'contain'} />`}
     </view>`;
 }
 
@@ -112,15 +122,16 @@ function Home({ state, view, theme }) {
   const tiles = list.filter(Boolean), buttons = view.rows.slice(tiles.length);
   const inTiles = view.selected < tiles.length;
   const chosen = inTiles ? tiles[view.selected] : null;
+  const shownTile = useLatest(inTiles ? view.selected : null) ?? 0;
   return html`
     <view style=${fill}>
       <${TopBar} state=${state} theme=${theme} />
       <text style=${{ position: 'absolute', left: 104, right: 104, top: 168, fontSize: 36, fontWeight: 800, color: accent, textOverflow: 'marquee',
         opacity: chosen ? 1 : 0 }} transition=${{ opacity: 150 }}>${chosen ? chosen.title : ''}</text>
       <view style=${{ position: 'absolute', left: 0, right: 0, top: 230, height: 470, flexDirection: 'row', gap: 28, paddingHorizontal: 104,
-        alignItems: 'center', overflow: 'hidden' }} follow=${inTiles ? view.selected : 0} plane=${inTiles ? view.plane : null}>
+        alignItems: 'center', overflow: 'hidden' }} follow=${shownTile} plane=${inTiles ? view.plane : null}>
         ${tiles.map(game => html`<${Tile} key=${game.key} game=${game} size=${400} theme=${theme} />`)}
-        <${Frame} index=${inTiles ? view.selected : 0} radius=${14} theme=${theme} active=${inTiles} />
+        <${Frame} index=${shownTile} radius=${14} theme=${theme} active=${inTiles} />
       </view>
       <view style=${{ position: 'absolute', left: 0, right: 0, top: 760, flexDirection: 'row', justifyContent: 'center', gap: 40 }}>
         ${buttons.map(row => html`

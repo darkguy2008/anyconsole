@@ -1021,12 +1021,13 @@ test_thumbnails() {
   api POST settings "skin switch-black" >/dev/null
   expect '.skin == "switch-black" and (.games[] | select(.key == "alter-ego/nes") | .thumbnail == null)'
   open_store_by_action
-  expect "$KEEN_ART | .thumbnailCached"
+  expect "$KEEN_ART | .thumbnailCached and .thumbnailAspect > 0"
   guest "[ -e $LOG_DIR/kiosk.log ] && ! grep -q 'not a PNG or JPEG image' $LOG_DIR/kiosk.log"
   log ok "the Store downloads and draws the boxart of the games it shows"
   art=$(state | jq -r "$KEEN_ART | .thumbnail")
   unnamed=$THUMBNAILS_DIR/msdos/unnamed$THUMBNAIL_EXTENSION
   guest "printf $STALE_ART > /tmp/stale && cp /tmp/stale '$art' && touch -d $STALE_DATE '$art' && cp /tmp/stale '$unnamed'"
+  expect "$KEEN_ART | .thumbnailCached and .thumbnailAspect == null"
   open_store_by_action
   wait_for $STEP_SECONDS guest "! cmp -s /tmp/stale '$art' && [ ! -e '$unnamed' ]"
   log ok "a refresh downloads boxart libretro changed and deletes boxart no manifest names"

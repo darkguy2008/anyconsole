@@ -9,6 +9,8 @@
 #include <hb.h>
 #include <limits.h>
 #include <math.h>
+#include <pixman.h>
+#include <png.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,7 +32,10 @@
 #define ATLAS_PAGES_MAX 16
 #define GLYPH_PADDING 1
 #define FACES_MAX 32
-#define IMAGES_MAX 256
+#define SKIN_IMAGES_MAX 256
+#define IMAGES_MAX (2 * GAMES_MAX + SKIN_IMAGES_MAX)
+#define BLUR_SMOOTHING 4
+#define FILTER_SUBSAMPLE_BITS 4
 #define IMAGE_LOADS_PER_FRAME 2
 #define VARIATION_MAX 128
 #define AXES_MAX 16
@@ -65,7 +70,7 @@ enum prop {
     TOP, LEFT, RIGHT, BOTTOM, MARGIN, MARGIN_TOP, MARGIN_LEFT, MARGIN_RIGHT, MARGIN_BOTTOM, MARGIN_HORIZONTAL, MARGIN_VERTICAL,
     PADDING, PADDING_TOP, PADDING_LEFT, PADDING_RIGHT, PADDING_BOTTOM, PADDING_HORIZONTAL, PADDING_VERTICAL, BORDER_WIDTH,
     OPACITY, TRANSLATE_X, TRANSLATE_Y, SCALE, BORDER_RADIUS, SHADOW_BLUR, SHADOW_OFFSET_X, SHADOW_OFFSET_Y, FONT_SIZE, FONT_WEIGHT, LINE_HEIGHT,
-    BACKDROP_BLUR, FOLLOW, TRACK, BACKGROUND_COLOR, BORDER_COLOR, COLOR_PROP, SHADOW_COLOR,
+    BACKDROP_BLUR, BLUR, FOLLOW, TRACK, BACKGROUND_COLOR, BORDER_COLOR, COLOR_PROP, SHADOW_COLOR,
     FLEX_DIRECTION, JUSTIFY_CONTENT, ALIGN_ITEMS, ALIGN_SELF, ALIGN_CONTENT, FLEX_WRAP, POSITION, DISPLAY, OVERFLOW, TEXT_ALIGN, TEXT_OVERFLOW, OBJECT_FIT,
     FONT_FAMILY, FONT_VARIATION, SOURCE, PROP_COUNT
 };
@@ -90,7 +95,7 @@ static const struct { const char *name; enum kind kind; float initial; int inher
     [TRANSLATE_Y] = {"translateY", NUMBER, 0}, [SCALE] = {"scale", RATIO, 1}, [BORDER_RADIUS] = {"borderRadius", NUMBER, 0},
     [SHADOW_BLUR] = {"shadowBlur", NUMBER, 0}, [SHADOW_OFFSET_X] = {"shadowOffsetX", NUMBER, 0}, [SHADOW_OFFSET_Y] = {"shadowOffsetY", NUMBER, 0},
     [FONT_SIZE] = {"fontSize", NUMBER, DEFAULT_FONT_SIZE, 1}, [FONT_WEIGHT] = {"fontWeight", NUMBER, DEFAULT_WEIGHT, 1},
-    [LINE_HEIGHT] = {"lineHeight", RATIO, DEFAULT_LINE_HEIGHT, 1}, [BACKDROP_BLUR] = {"backdropBlur", NUMBER, 0}, [FOLLOW] = {"follow", INDEX}, [TRACK] = {"track", INDEX},
+    [LINE_HEIGHT] = {"lineHeight", RATIO, DEFAULT_LINE_HEIGHT, 1}, [BACKDROP_BLUR] = {"backdropBlur", NUMBER, 0}, [BLUR] = {"blur", NUMBER, 0}, [FOLLOW] = {"follow", INDEX}, [TRACK] = {"track", INDEX},
     [BACKGROUND_COLOR] = {"backgroundColor", COLOR}, [BORDER_COLOR] = {"borderColor", COLOR}, [COLOR_PROP] = {"color", COLOR, 1, 1},
     [SHADOW_COLOR] = {"shadowColor", COLOR}, [FLEX_DIRECTION] = {"flexDirection", ENUM}, [JUSTIFY_CONTENT] = {"justifyContent", ENUM},
     [ALIGN_ITEMS] = {"alignItems", ENUM}, [ALIGN_SELF] = {"alignSelf", ENUM}, [ALIGN_CONTENT] = {"alignContent", ENUM},
@@ -969,13 +974,21 @@ static unsigned char *read_whole(const char *path, long *size) {
     return data;
 }
 
+static tjhandle jpeg_header(const unsigned char *data, long size) {
+    tjhandle decoder = tj3Init(TJINIT_DECOMPRESS);
+    if (!data || tj3DecompressHeader(decoder, data, size)) {
+        tj3Destroy(decoder);
+        return NULL;
+    }
+    return decoder;
+}
+
 static cairo_surface_t *load_jpeg(const char *path) {
     long size;
     unsigned char *data = read_whole(path, &size);
-    if (!data) return NULL;
     cairo_surface_t *surface = NULL;
-    tjhandle decoder = tj3Init(TJINIT_DECOMPRESS);
-    if (!tj3DecompressHeader(decoder, data, size)) {
+    tjhandle decoder = jpeg_header(data, size);
+    if (decoder) {
         surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, tj3Get(decoder, TJPARAM_JPEGWIDTH), tj3Get(decoder, TJPARAM_JPEGHEIGHT));
         if (tj3Decompress8(decoder, data, size, cairo_image_surface_get_data(surface), cairo_image_surface_get_stride(surface), TJPF_BGRX)) {
             cairo_surface_destroy(surface);
@@ -983,8 +996,8 @@ static cairo_surface_t *load_jpeg(const char *path) {
         } else {
             cairo_surface_mark_dirty(surface);
         }
+        tj3Destroy(decoder);
     }
-    tj3Destroy(decoder);
     free(data);
     return surface;
 }
@@ -1001,20 +1014,82 @@ static cairo_surface_t *load_picture(const char *path) {
     return jpeg;
 }
 
+static cairo_surface_t *resample(cairo_surface_t *source, int width, int height, pixman_kernel_t reconstruct, pixman_kernel_t sample) {
+    cairo_surface_flush(source);
+    int source_width = cairo_image_surface_get_width(source), source_height = cairo_image_surface_get_height(source), count;
+    pixman_image_t *from = pixman_image_create_bits(cairo_image_surface_get_format(source) == CAIRO_FORMAT_RGB24 ? PIXMAN_x8r8g8b8 : PIXMAN_a8r8g8b8,
+                                                    source_width, source_height, (uint32_t *)cairo_image_surface_get_data(source),
+                                                    cairo_image_surface_get_stride(source));
+    cairo_surface_t *target = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+    pixman_image_t *to = pixman_image_create_bits(PIXMAN_a8r8g8b8, width, height, (uint32_t *)cairo_image_surface_get_data(target),
+                                                  cairo_image_surface_get_stride(target));
+    pixman_fixed_t scale_x = pixman_double_to_fixed((double)source_width / width), scale_y = pixman_double_to_fixed((double)source_height / height);
+    pixman_transform_t transform;
+    pixman_transform_init_scale(&transform, scale_x, scale_y);
+    pixman_fixed_t *filter = pixman_filter_create_separable_convolution(&count, scale_x, scale_y, reconstruct, reconstruct, sample, sample,
+                                                                        FILTER_SUBSAMPLE_BITS, FILTER_SUBSAMPLE_BITS);
+    pixman_image_set_transform(from, &transform);
+    pixman_image_set_filter(from, PIXMAN_FILTER_SEPARABLE_CONVOLUTION, filter, count);
+    pixman_image_set_repeat(from, PIXMAN_REPEAT_PAD);
+    pixman_image_composite32(PIXMAN_OP_SRC, from, NULL, to, 0, 0, 0, 0, 0, 0, width, height);
+    free(filter);
+    pixman_image_unref(from);
+    pixman_image_unref(to);
+    cairo_surface_mark_dirty(target);
+    return target;
+}
+
+static cairo_surface_t *blurred(cairo_surface_t *picture, float blur) {
+    if (cairo_surface_status(picture)) return picture;
+    int width = cairo_image_surface_get_width(picture), height = cairo_image_surface_get_height(picture);
+    float texels = 1 / (blur * fmaxf(width, height));
+    int small_width = fmaxf(1, roundf(width * texels)), small_height = fmaxf(1, roundf(height * texels));
+    cairo_surface_t *small = resample(picture, small_width, small_height, PIXMAN_KERNEL_BOX, PIXMAN_KERNEL_GAUSSIAN);
+    cairo_surface_t *smooth = resample(small, small_width * BLUR_SMOOTHING, small_height * BLUR_SMOOTHING, PIXMAN_KERNEL_GAUSSIAN, PIXMAN_KERNEL_IMPULSE);
+    cairo_surface_destroy(small);
+    cairo_surface_destroy(picture);
+    return smooth;
+}
+
+double scene_aspect(const char *path) {
+    png_image png = {.version = PNG_IMAGE_VERSION};
+    if (png_image_begin_read_from_file(&png, path)) {
+        double aspect = (double)png.width / png.height;
+        png_image_free(&png);
+        return aspect;
+    }
+    double aspect = 0;
+    long size;
+    unsigned char *data = read_whole(path, &size);
+    tjhandle decoder = jpeg_header(data, size);
+    if (decoder) {
+        aspect = (double)tj3Get(decoder, TJPARAM_JPEGWIDTH) / tj3Get(decoder, TJPARAM_JPEGHEIGHT);
+        tj3Destroy(decoder);
+    }
+    free(data);
+    return aspect;
+}
+
 static struct image *node_image(struct node *node) {
     const char *source = node->strings[SOURCE];
-    char resolved[PATH_MAX];
+    char resolved[PATH_MAX], baked[PATH_MAX];
     struct stat status;
+    float blur = own(node, BLUR, 0);
     if (!source) {
         release_image(node);
         return NULL;
     }
     struct image *named = find_image(source);
-    const char *path = named && named->named ? source : scene_resolve(source, resolved);
+    int registered = named && named->named, baking = blur > 0 && !registered;
+    const char *path = registered ? source : scene_resolve(source, resolved), *key = path;
     if (!path) return NULL;
-    if (!node->image || strcmp(node->image->key, path)) {
+    if (baking) {
+        if (snprintf(baked, sizeof baked, "%s\n%g", path, blur) >= (int)sizeof baked) return NULL;
+        key = baked;
+    }
+    if (!node->image || strcmp(node->image->key, key)) {
         release_image(node);
-        node->image = image_entry(path);
+        node->image = image_entry(key);
         if (node->image) node->image->users++;
     }
     struct image *image = node->image;
@@ -1034,6 +1109,7 @@ static struct image *node_image(struct node *node) {
     }
     loads_left--;
     cairo_surface_t *picture = image->named ? image->surface : load_picture(path);
+    if (baking) picture = blurred(picture, blur);
     image->surface = NULL;
     image->loaded = 1;
     if (!cairo_surface_status(picture)) upload(image, picture);
