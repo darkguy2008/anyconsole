@@ -148,8 +148,8 @@ function App() {
       <${Panel} view=${guide} players=${players} width=${guideWidth} shown=${!!guide} side=${-guideWidth} />
       ${state.rewind.choosing && html`<${Carousel} cells=${rewindCells(state.rewind)} selected=${state.rewind.back} reverse=${true} />`}
       ${state.saves.choosing && html`<${Carousel} cells=${saveCells(state.saves)} selected=${state.saves.slot} />`}
-      ${shownHints.length > 0 && html`<${Hints} shown=${shownHints} />`}
       ${dialog && html`<${Dialog} view=${dialog} />`}
+      ${shownHints.length > 0 && html`<${Hints} shown=${shownHints} />`}
       ${picker && html`<view style=${{ ...fill, backgroundColor: black }}><${TitleBar} title=${picker.title} /><${List} view=${picker} /></view>`}
       <${Notifications} notifications=${state.notifications} />
     </view>`;

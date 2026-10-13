@@ -428,8 +428,8 @@ export function app(theme) {
         <${Guide} state=${state} view=${guide} theme=${theme} />
         ${state.rewind.choosing && html`<${Carousel} cells=${rewindCells(state.rewind)} selected=${state.rewind.back} reverse=${true} theme=${theme} />`}
         ${state.saves.choosing && html`<${Carousel} cells=${saveCells(state.saves)} selected=${state.saves.slot} theme=${theme} />`}
-        ${shownHints.length > 0 && html`<${GuideHints} shown=${shownHints} theme=${theme} />`}
         ${dialog && html`<${Dialog} view=${dialog} theme=${theme} />`}
+        ${shownHints.length > 0 && html`<${GuideHints} shown=${shownHints} theme=${theme} />`}
         ${picker && html`<${Picker} view=${picker} theme=${theme} />`}
         <${Notifications} notifications=${state.notifications} theme=${theme} />
       </view>`;
