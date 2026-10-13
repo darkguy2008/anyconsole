@@ -2587,7 +2587,7 @@ static int numbers(const char *list, int *parsed, int max) {
 }
 
 int main(void) {
-    enum { WAYLAND, CHANGES, SIGNALS, REPEAT, NOTIFICATIONS, MESSAGES, SAVE, SKIN, MONITOR, LISTENER, FIXED };
+    enum { WAYLAND, CHANGES, SIGNALS, REPEAT, NOTIFICATIONS, MESSAGES, SAVE, SKIN, DECODED, MONITOR, LISTENER, FIXED };
     struct pollfd watched[FIXED + JOB_FDS * GAMES_MAX + REQUESTS_MAX];
     int jobs[GAMES_MAX], served[REQUESTS_MAX];
     char stores_directory[PATH_MAX], display_directory[PATH_MAX], settings_directory[PATH_MAX], controllers_directory[PATH_MAX];
@@ -2634,6 +2634,7 @@ int main(void) {
     watched[MESSAGES] = (struct pollfd){.fd = open(OVERLAY_FIFO, O_RDWR | O_NONBLOCK | O_CLOEXEC), .events = POLLIN};
     watched[SAVE] = (struct pollfd){.fd = save_timer, .events = POLLIN};
     watched[SKIN] = (struct pollfd){.fd = skin_timer, .events = POLLIN};
+    watched[DECODED] = (struct pollfd){.fd = scene_start_decoder(), .events = POLLIN};
     watched[LISTENER] = (struct pollfd){.fd = bind_socket(OVERLAY_SOCKET, SOCK_NONBLOCK), .events = POLLIN};
     keep_interrupted_rewinds();
     read_stores();
@@ -2678,6 +2679,7 @@ int main(void) {
         if (watched[MESSAGES].revents) read_messages(watched[MESSAGES].fd);
         if (watched[SAVE].revents && read(save_timer, &expirations, sizeof expirations) > 0) sample_screen();
         if (watched[SKIN].revents && read(skin_timer, &expirations, sizeof expirations) > 0) run_skin_timers();
+        if (watched[DECODED].revents && read(watched[DECODED].fd, &expirations, sizeof expirations) > 0) paint_needed = 1;
         if (watched[MONITOR].revents) read_monitor();
         for (int i = 0; i < job_count; i++) {
             if (watched[FIXED + JOB_FDS * i].revents) read_job(jobs[i]);

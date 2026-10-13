@@ -117,12 +117,12 @@ function Hints({ theme, back = true }) {
     </view>`;
 }
 
-function Home({ state, view, theme }) {
+function Home({ state, view, theme, lastTile }) {
   const list = games(state, view);
   const tiles = list.filter(Boolean), buttons = view.rows.slice(tiles.length);
   const inTiles = view.selected < tiles.length;
   const chosen = inTiles ? tiles[view.selected] : null;
-  const shownTile = useLatest(inTiles ? view.selected : null) ?? 0;
+  const shownTile = inTiles ? view.selected : lastTile;
   return html`
     <view style=${fill}>
       <${TopBar} state=${state} theme=${theme} />
@@ -230,10 +230,10 @@ function Settings({ state, view, theme }) {
     </view>`;
 }
 
-function Dashboard({ state, view, theme }) {
+function Dashboard({ state, view, theme, lastTile }) {
   const screens = { home: Home, store: Store, game: GamePage, settings: Settings };
   const Screen = screens[view.screen] ?? Store;
-  return html`<${Screen} state=${state} view=${view} theme=${theme} />`;
+  return html`<${Screen} state=${state} view=${view} theme=${theme} lastTile=${lastTile} />`;
 }
 
 function Slider({ value }) {
@@ -379,6 +379,7 @@ function useNavigation(view) {
   const lastTile = useRef(0);
   if (view && view.screen === 'home' && view.rows[view.selected]?.action === 'open-game') lastTile.current = view.selected;
   useCommand(useCallback((name, state) => navigate(name, state, lastTile.current), []));
+  return lastTile.current;
 }
 
 export function app(theme) {
@@ -389,13 +390,13 @@ export function app(theme) {
     const launch = state.launching;
     const launched = launch && state.games.find(game => game.key === launch.game);
     const preview = state.rewind.preview;
-    useNavigation(dashboard);
+    const lastTile = useNavigation(dashboard);
     return html`
       <view style=${{ ...fill, fontFamily: font, color: theme.text }}>
         ${state.screen === 'attract' ? html`<${Attract} state=${state} theme=${theme} />` : shownDashboard && html`
           <view style=${{ ...fill, backgroundColor: theme.background, opacity: dashboard && !launch ? 1 : 0 }} from=${{ opacity: 0 }}
             transition=${{ opacity: 220 }}>
-            <${Dashboard} state=${state} view=${shownDashboard} theme=${theme} />
+            <${Dashboard} state=${state} view=${shownDashboard} theme=${theme} lastTile=${lastTile} />
           </view>`}
         ${launched && html`<${Launch} game=${launched} percent=${launch.percent} theme=${theme} />`}
         ${preview && html`<view style=${{ ...fill, backgroundColor: '#000000' }}><image src=${preview} style=${fill} /></view>`}

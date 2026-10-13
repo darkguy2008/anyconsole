@@ -11,9 +11,11 @@
 #include <math.h>
 #include <pixman.h>
 #include <png.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <sys/stat.h>
 #include <turbojpeg.h>
 #include <wayland-egl.h>
@@ -123,7 +125,8 @@ struct face {
     struct glyph *glyphs;
     int glyph_count, glyph_capacity;
 };
-struct image { char key[PATH_MAX]; GLuint texture; int width, height, users, named, loaded; time_t mtime; cairo_surface_t *surface; };
+struct image { char key[PATH_MAX]; GLuint texture; int width, height, users, named, loaded, pending; time_t mtime; unsigned long drawn; cairo_surface_t *surface; };
+struct decode { struct decode *next; struct image *image; char path[PATH_MAX]; float blur; time_t mtime; cairo_surface_t *picture; };
 struct shaped { unsigned id; float advance, x_offset, y_offset; int breakable; };
 struct line { int start, end; float width; };
 struct node {
@@ -157,7 +160,8 @@ static EGLContext egl_context;
 static EGLConfig egl_config;
 static EGLSurface egl_surface = EGL_NO_SURFACE;
 static struct wl_egl_window *egl_window;
-static int surface_width, surface_height, loads_left, moving, layout_dirty;
+static int surface_width, surface_height, loads_left, moving, layout_dirty, decoded_fd;
+static unsigned long frame;
 static float unit;
 static struct node *root;
 static YGConfigRef yoga_config;
@@ -168,6 +172,9 @@ static int face_count;
 static struct page pages[ATLAS_PAGES_MAX];
 static int page_count;
 static struct image images[IMAGES_MAX];
+static struct decode *requested, *decoded;
+static pthread_mutex_t decode_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t decode_wanted = PTHREAD_COND_INITIALIZER;
 static struct program box_program, shadow_program, text_program, *bound;
 static GLuint quad_buffer, glyph_buffer, vertex_array, snapshot_texture, snapshot_framebuffer, blur_textures[BLUR_LEVELS + 1], blur_framebuffers[BLUR_LEVELS + 1];
 static int blur_width, blur_height;
@@ -827,12 +834,7 @@ struct node *scene_node(const char *type) {
 }
 
 static void release_image(struct node *node) {
-    if (!node->image) return;
-    if (!--node->image->users) {
-        glDeleteTextures(1, &node->image->texture);
-        if (node->image->surface) cairo_surface_destroy(node->image->surface);
-        *node->image = (struct image){0};
-    }
+    if (node->image) node->image->users--;
     node->image = NULL;
 }
 
@@ -911,9 +913,19 @@ static struct image *find_image(const char *key) {
     return NULL;
 }
 
+static struct image *least_recently_drawn(void) {
+    struct image *oldest = NULL;
+    for (int i = 0; i < IMAGES_MAX; i++)
+        if (!images[i].users && !images[i].pending && (!oldest || images[i].drawn < oldest->drawn)) oldest = &images[i];
+    return oldest;
+}
+
 static struct image *image_entry(const char *key) {
     struct image *image = find_image(key);
-    if (image || !(image = find_image(""))) return image;
+    if (image || !(image = least_recently_drawn())) return image;
+    glDeleteTextures(1, &image->texture);
+    if (image->surface) cairo_surface_destroy(image->surface);
+    *image = (struct image){0};
     snprintf(image->key, sizeof image->key, "%s", key);
     return image;
 }
@@ -1070,6 +1082,82 @@ double scene_aspect(const char *path) {
     return aspect;
 }
 
+static struct decode *take_path(const char *path) {
+    struct decode *taken = NULL, **link = &requested;
+    while (*link) {
+        struct decode *job = *link;
+        if (strcmp(job->path, path)) {
+            link = &job->next;
+            continue;
+        }
+        *link = job->next;
+        job->next = taken;
+        taken = job;
+    }
+    return taken;
+}
+
+static void *decode_requests(void *unused) {
+    (void)unused;
+    for (;;) {
+        pthread_mutex_lock(&decode_lock);
+        while (!requested) pthread_cond_wait(&decode_wanted, &decode_lock);
+        struct decode *batch = take_path(requested->path), *last = batch;
+        pthread_mutex_unlock(&decode_lock);
+        cairo_surface_t *picture = load_picture(batch->path);
+        for (struct decode *job = batch; job; last = job, job = job->next)
+            job->picture = job->blur > 0 ? blurred(cairo_surface_reference(picture), job->blur) : cairo_surface_reference(picture);
+        cairo_surface_destroy(picture);
+        pthread_mutex_lock(&decode_lock);
+        last->next = decoded;
+        decoded = batch;
+        pthread_mutex_unlock(&decode_lock);
+        eventfd_write(decoded_fd, 1);
+    }
+    return NULL;
+}
+
+static void request_decode(struct image *image, const char *path, float blur, time_t mtime) {
+    struct decode *job = calloc(1, sizeof *job);
+    job->image = image;
+    snprintf(job->path, sizeof job->path, "%s", path);
+    job->blur = blur;
+    job->mtime = mtime;
+    image->pending = 1;
+    pthread_mutex_lock(&decode_lock);
+    job->next = requested;
+    requested = job;
+    pthread_cond_signal(&decode_wanted);
+    pthread_mutex_unlock(&decode_lock);
+}
+
+static void upload_decoded(void) {
+    for (; loads_left; loads_left--) {
+        pthread_mutex_lock(&decode_lock);
+        struct decode *job = decoded;
+        if (job) decoded = job->next;
+        pthread_mutex_unlock(&decode_lock);
+        if (!job) return;
+        if (!cairo_surface_status(job->picture)) upload(job->image, job->picture);
+        job->image->mtime = job->mtime;
+        job->image->loaded = 1;
+        job->image->pending = 0;
+        cairo_surface_destroy(job->picture);
+        free(job);
+    }
+    pthread_mutex_lock(&decode_lock);
+    moving |= decoded != NULL;
+    pthread_mutex_unlock(&decode_lock);
+}
+
+int scene_start_decoder(void) {
+    pthread_t decoder;
+    decoded_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    pthread_create(&decoder, NULL, decode_requests, NULL);
+    pthread_detach(decoder);
+    return decoded_fd;
+}
+
 static struct image *node_image(struct node *node) {
     const char *source = node->strings[SOURCE];
     char resolved[PATH_MAX], baked[PATH_MAX];
@@ -1094,26 +1182,26 @@ static struct image *node_image(struct node *node) {
     }
     struct image *image = node->image;
     if (!image) return NULL;
+    image->drawn = frame;
     if (!image->named && stat(path, &status)) {
         skin_missing(path);
         return NULL;
     }
-    if (!image->named && status.st_mtime != image->mtime) {
-        image->mtime = status.st_mtime;
-        image->loaded = 0;
-    }
+    if (!image->named && status.st_mtime != image->mtime) image->loaded = 0;
     if (image->loaded) return image;
+    if (!image->named) {
+        if (!image->pending) request_decode(image, path, baking ? blur : 0, status.st_mtime);
+        return image->texture ? image : NULL;
+    }
     if (!loads_left) {
         moving = 1;
         return image->texture ? image : NULL;
     }
     loads_left--;
-    cairo_surface_t *picture = image->named ? image->surface : load_picture(path);
-    if (baking) picture = blurred(picture, blur);
-    image->surface = NULL;
     image->loaded = 1;
-    if (!cairo_surface_status(picture)) upload(image, picture);
-    cairo_surface_destroy(picture);
+    if (!cairo_surface_status(image->surface)) upload(image, image->surface);
+    cairo_surface_destroy(image->surface);
+    image->surface = NULL;
     return image->texture ? image : NULL;
 }
 
@@ -1458,6 +1546,7 @@ static void render(double now) {
     now_seconds = now;
     loads_left = IMAGE_LOADS_PER_FRAME;
     moving = 0;
+    frame++;
     bound = NULL;
     blur_count = 0;
     glViewport(0, 0, surface_width, surface_height);
@@ -1469,6 +1558,7 @@ static void render(double now) {
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glActiveTexture(GL_TEXTURE0);
     if (!root) return;
+    upload_decoded();
     step_node(root);
     if (layout_dirty) YGNodeCalculateLayout(root->yoga, surface_width / unit, DESIGN_HEIGHT, YGDirectionLTR);
     layout_dirty = 0;
