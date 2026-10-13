@@ -7,6 +7,8 @@ const sound = name => play(`../switch/${name}.ogg`);
 const accent = '#00c3e3';
 const storeColumns = 5;
 const pulseMilliseconds = 900;
+const artMarginDivisor = 16;
+const tileRadius = 6;
 const moves = { left: -1, right: 1 };
 const steps = { up: -storeColumns, down: storeColumns, left: -1, right: 1 };
 const actionIcons = {
@@ -55,11 +57,15 @@ function Frame({ index, radius, theme, active, inset = -10 }) {
 }
 
 function Tile({ game, size, theme }) {
+  const art = game.thumbnailCached;
   return html`
-    <view style=${{ width: size, height: size, borderRadius: 6, backgroundColor: hsl(hue(game.title), 0.45, theme.tileLightness), padding: 24,
-      justifyContent: 'space-between', color: '#ffffff', shadowColor: '#00000040', shadowBlur: 10, shadowOffsetY: 4 }}>
-      <text style=${{ fontSize: size / 8, fontWeight: 800, lineHeight: 1.1 }}>${game.title}</text>
-      <text style=${{ fontSize: size / 16, fontWeight: 700, opacity: 0.8 }}>${game.platform.toUpperCase()}</text>
+    <view style=${{ width: size, height: size, borderRadius: tileRadius, overflow: 'hidden', backgroundColor: hsl(hue(game.title), 0.45, theme.tileLightness),
+      padding: 24, justifyContent: 'space-between', color: '#ffffff', shadowColor: '#00000040', shadowBlur: 10, shadowOffsetY: 4 }}>
+      <text style=${{ fontSize: size / 8, fontWeight: 800, lineHeight: 1.1, opacity: art ? 0 : 1 }}>${game.title}</text>
+      <text style=${{ fontSize: size / 16, fontWeight: 700, opacity: art ? 0 : 0.8 }}>${game.platform.toUpperCase()}</text>
+      ${art && html`<image src=${game.thumbnail} style=${{ ...fill, borderRadius: tileRadius }} objectFit="cover" />`}
+      ${art && html`<view style=${{ ...fill, borderRadius: tileRadius, backdropBlur: 1, backgroundColor: '#00000033' }} />`}
+      ${game.thumbnail && html`<image src=${game.thumbnail} style=${{ ...fill, margin: size / artMarginDivisor }} objectFit="contain" />`}
     </view>`;
 }
 
@@ -135,7 +141,11 @@ function Store({ state, view, theme }) {
   return html`
     <view style=${fill}>
       <${TopBar} state=${state} theme=${theme} />
-      <text style=${{ position: 'absolute', left: 104, top: 130, fontSize: 52, fontWeight: 800 }}>${view.title}</text>
+      <view style=${{ position: 'absolute', left: 104, right: 104, top: 130, flexDirection: 'row', alignItems: 'center', gap: 48 }}>
+        <text style=${{ fontSize: 52, fontWeight: 800 }}>${view.title}</text>
+        <text style=${{ flexGrow: 1, flexShrink: 1, fontSize: 36, fontWeight: 800, color: accent, textAlign: 'right', textOverflow: 'marquee' }}>
+          ${tiles[view.selected]?.title ?? ''}</text>
+      </view>
       <view style=${{ position: 'absolute', left: 0, right: 0, top: 220, bottom: 100, overflow: 'hidden', flexDirection: 'row', flexWrap: 'wrap',
         alignContent: 'flex-start', gap: 32, paddingHorizontal: 104, paddingVertical: 24 }} follow=${view.selected} plane=${view.plane}>
         ${tiles.map(game => html`<${Tile} key=${game.key} game=${game} size=${308} theme=${theme} />`)}
@@ -203,7 +213,7 @@ function Settings({ state, view, theme }) {
             <text style=${{ flexGrow: 1, flexShrink: 1, fontSize: 40, fontWeight: 700, textAlign: 'center' }}>${chosen.value || chosen.label}</text>
             <${Icon} name="chevron_right" size=${56} color=${accent} />
           </view>
-          <text style=${{ fontSize: 28, color: theme.muted }}>${chosen.action === 'apply-resolutions' ? 'Press A to apply' : 'Press left or right to change'}</text>
+          <text style=${{ fontSize: 28, color: theme.muted }}>${chosen.value ? 'Press left or right to change' : `Press A to ${chosen.label.toLowerCase()}`}</text>
         </view>`}
       <${Hints} theme=${theme} />
     </view>`;

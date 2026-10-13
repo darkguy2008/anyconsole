@@ -1,0 +1,89 @@
+#!/bin/sh
+set -eu
+. /etc/anyconsole.conf
+SYSTEM_LABEL=anyconsole.thumbnails
+SOURCE=https://thumbnails.libretro.com
+KIND=Named_Boxarts
+LOCK=/run/thumbnails.lock
+PARTIAL=.part
+
+TAB=$(printf '\t')
+
+urls() {
+  jq -nr --arg engines "$PUBLISHED_ENGINES" --arg label "$SYSTEM_LABEL" --arg dir "$THUMBNAILS_DIR" --arg source "$SOURCE" --arg kind "$KIND" '
+    (reduce inputs as $index ({}; .[input_filename | ltrimstr("\($engines)/") | rtrimstr(".json")] = $index.manifests[0].annotations[$label])) as $systems
+    | $ARGS.positional[]
+    | (ltrimstr("\($dir)/") | split("/")) as $parts
+    | if startswith("\($dir)/") and ($parts | length) == 2 and $systems[$parts[0]] then "\(.)\t\($source)/\($systems[$parts[0]] | @uri)/\($kind)/\($parts[1] | @uri)"
+      else "\(.) has no libretro boxart\n" | stderr | empty end' "$PUBLISHED_ENGINES"/*.json --args "$@"
+}
+
+fetch() {
+  [ $# -gt 0 ] || return 0
+  transfers=$(mktemp)
+  urls "$@" > "$transfers"
+  set --
+  next=
+  while IFS=$TAB read -r path url; do
+    mkdir -p "${path%/*}"
+    set -- "$@" $next -fsSR -w '%{http_code} %{filename_effective}\n' -o "$path$PARTIAL"
+    [ ! -f "$path" ] || set -- "$@" -z "$path"
+    set -- "$@" "$url"
+    next=--next
+  done < "$transfers"
+  rm "$transfers"
+  [ $# -gt 0 ] || return 0
+  curl --cacert "$CA_BUNDLE" --parallel "$@" | while read -r code partial; do
+    if [ "$code" = 200 ]; then mv "$partial" "${partial%"$PARTIAL"}"; else rm -f "$partial"; fi
+  done
+}
+
+every_store_listed() {
+  [ -f "$STORES_FILE" ] || return 0
+  store=0
+  while read -r url; do
+    store=$((store + 1))
+    [ -d "$CATALOG_DIR/$store" ] || return
+  done < "$STORES_FILE"
+}
+
+referenced() {
+  set -- "$CATALOG_DIR"/*/*/"$MANIFEST" "$GAMES_DIR"/*/"$MANIFEST"
+  for manifest; do [ ! -f "$manifest" ] || set -- "$@" "$manifest"; shift; done
+  [ $# -gt 0 ] || return 0
+  jq -r --arg dir "$THUMBNAILS_DIR" --arg extension "$THUMBNAIL_EXTENSION" \
+    'to_entries[] | select((.value | type) == "object" and (.value.thumbnail | type) == "string") | "\($dir)/\(.key)/\(.value.thumbnail)\($extension)"' "$@"
+}
+
+prune() {
+  keep=$(mktemp)
+  every_store_listed && referenced > "$keep" || { rm "$keep"; echo "kept every thumbnail: a store is offline or a manifest is unreadable" >&2; return 0; }
+  find "$THUMBNAILS_DIR" -type f | grep -vxF -f "$keep" | while IFS= read -r file; do rm -f "$file"; done
+  rm "$keep"
+}
+
+refresh() {
+  [ -d "$THUMBNAILS_DIR" ] || return 0
+  prune
+  cached=$(mktemp)
+  find "$THUMBNAILS_DIR" -type f > "$cached"
+  set --
+  while IFS= read -r path; do set -- "$@" "$path"; done < "$cached"
+  rm "$cached"
+  fetch "$@"
+}
+
+clear() { rm -rf "${THUMBNAILS_DIR:?}"; }
+
+exec 9>"$LOCK"
+flock 9
+case "${1:-}" in
+  fetch|refresh|clear) command=$1; shift; $command "$@" ;;
+  *) cat >&2 <<'USAGE'
+usage: thumbnails <command>
+  fetch <path>...   download the libretro boxart each cache path names, from the system its platform's engine declares
+  refresh           delete cached boxart no manifest names anymore, then download the ones libretro changed
+  clear             delete every cached boxart, so each downloads again when shown
+USAGE
+    exit 1 ;;
+esac

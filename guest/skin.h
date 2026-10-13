@@ -40,4 +40,5 @@ void sound_init(void);
 void sound_play(const char *path);
 
 void skin_select(int index);
+void skin_missing(const char *path);
 double skin_now(void);

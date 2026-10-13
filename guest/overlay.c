@@ -109,7 +109,7 @@ static const struct { const char *name, *title; enum plane plane; } screens[] = 
 };
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
-              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN };
+              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN, CLEAR_THUMBNAILS };
 static const char *const actions[] = {
     [NOTHING] = "nothing", [OPEN_STORE] = "open-store", [OPEN_SETTINGS] = "open-settings", [OPEN_GAME] = "open-game", [PLAY] = "play", [RESUME] = "resume",
     [CLOSE] = "close", [UNINSTALL] = "uninstall", [INSTALL] = "install", [SHOW_DASHBOARD] = "dashboard", [VOLUME] = "volume", [OPEN_OUTPUTS] = "open-outputs",
@@ -117,7 +117,8 @@ static const char *const actions[] = {
     [OPEN_CONTROLLER] = "open-controller", [FORGET] = "forget", [RELOAD] = "reload", [RESTART] = "restart", [POWER_OFF] = "power-off",
     [CHOOSE_DISPLAY] = "display", [CHOOSE_DISPLAY_MODE] = "display-mode", [APPLY_RESOLUTIONS] = "apply-resolutions", [CHOOSE_RESOLUTION] = "resolution",
     [CHOOSE_SLEEP] = "sleep", [REWIND] = "rewind", [LOGIN] = "login", [EMULATE] = "emulate", [LOG_OUT_PLAYER] = "log-out",
-    [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen", [CHOOSE_SKIN] = "skin"};
+    [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen", [CHOOSE_SKIN] = "skin",
+    [CLEAR_THUMBNAILS] = "clear-thumbnails"};
 static const char *const criteria[] = {"action", "label", "value", "arg"};
 enum command { NONE, UP, DOWN, PAGE_UP, PAGE_DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
 static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [PAGE_UP] = "page-up", [PAGE_DOWN] = "page-down",
@@ -128,7 +129,7 @@ enum task { INSTALLING, UNINSTALLING, LAUNCHING };
 static const char *const tasks[] = {[INSTALLING] = "installing", [UNINSTALLING] = "uninstalling", [LAUNCHING] = "launching"};
 
 struct game {
-    char slug[NAME_MAX + 1], platform[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX], job_error[TEXT_MAX], error_line[TEXT_MAX];
+    char slug[NAME_MAX + 1], platform[NAME_MAX + 1], thumbnail[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX], job_error[TEXT_MAX], error_line[TEXT_MAX];
     json_object *emulate;
     int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown, error_output;
     size_t job_length, error_length;
@@ -163,7 +164,9 @@ static struct game games[GAMES_MAX];
 static int game_count, active = -1;
 static char stores[STORES_MAX][PATH_MAX];
 static int store_count;
-static pid_t refresher, monitor;
+static pid_t refresher, monitor, thumbnail_fetcher, thumbnail_refresher, thumbnail_clearer;
+static char **wanted_thumbnails;
+static int wanted_thumbnail_count, sent_thumbnail_count;
 static int refresh_pending, monitor_output = -1;
 static json_tokener *monitor_parser;
 static struct view dashboard[DEPTH_MAX] = {{.screen = HOME, .game = -1}}, guides[PROFILES + 1][DEPTH_MAX];
@@ -451,31 +454,35 @@ static int find_game(const char *slug, const char *platform) {
     return game_count++;
 }
 
-static void read_title(const char *directory, const char *slug, char *title) {
-    char path[PATH_MAX];
+static const char *string_at(json_object *object, const char *first, const char *second) {
     json_object *field;
-    snprintf(path, sizeof path, "%s/%s/" MANIFEST, directory, slug);
-    json_object *manifest = json_object_from_file(path);
-    snprintf(title, TEXT_MAX, "%s", json_object_object_get_ex(manifest, "title", &field) ? json_object_get_string(field) : slug);
-    json_object_put(manifest);
+    if (!json_object_object_get_ex(object, first, &field)) return "";
+    if (second && !json_object_object_get_ex(field, second, &field)) return "";
+    const char *text = json_object_get_string(field);
+    return text ? text : "";
 }
 
 static void scan(const char *directory, int store) {
     DIR *slugs = opendir(directory);
     for (struct dirent *slug; slugs && (slug = readdir(slugs));) {
-        char path[PATH_MAX], title[TEXT_MAX];
+        char path[PATH_MAX];
         if (slug->d_name[0] == '.' || slug->d_type != DT_DIR) continue;
+        snprintf(path, sizeof path, "%s/%s/" MANIFEST, directory, slug->d_name);
+        json_object *manifest = json_object_from_file(path);
+        const char *title = string_at(manifest, "title", NULL);
         snprintf(path, sizeof path, "%s/%s", directory, slug->d_name);
-        read_title(directory, slug->d_name, title);
         DIR *platforms = opendir(path);
         for (struct dirent *platform; platforms && (platform = readdir(platforms));) {
             int index = platform->d_name[0] == '.' || platform->d_type != DT_DIR ? -1 : find_game(slug->d_name, platform->d_name);
             if (index < 0) continue;
-            snprintf(games[index].title, sizeof games[index].title, "%s", title);
+            const char *thumbnail = string_at(manifest, platform->d_name, "thumbnail");
+            snprintf(games[index].title, sizeof games[index].title, "%s", *title ? title : slug->d_name);
+            snprintf(games[index].thumbnail, sizeof games[index].thumbnail, "%s", strchr(thumbnail, '/') ? "" : thumbnail);
             if (store < 0) games[index].installed = 1;
             else games[index].stores |= 1u << store;
         }
         if (platforms) closedir(platforms);
+        json_object_put(manifest);
     }
     if (slugs) closedir(slugs);
 }
@@ -517,12 +524,29 @@ static void refresh(void) {
     refresher = spawn((char *[]){"games", "refresh", NULL}, -1, log_file, log_file);
 }
 
-static const char *string_at(json_object *object, const char *first, const char *second) {
-    json_object *field;
-    if (!json_object_object_get_ex(object, first, &field)) return "";
-    if (second && !json_object_object_get_ex(field, second, &field)) return "";
-    const char *text = json_object_get_string(field);
-    return text ? text : "";
+static void forget_thumbnails(void) {
+    for (int i = 0; i < wanted_thumbnail_count; i++) free(wanted_thumbnails[i]);
+    wanted_thumbnail_count = sent_thumbnail_count = 0;
+}
+
+void skin_missing(const char *path) {
+    if (strncmp(path, THUMBNAILS_DIR "/", sizeof THUMBNAILS_DIR)) return;
+    for (int i = 0; i < wanted_thumbnail_count; i++)
+        if (!strcmp(wanted_thumbnails[i], path)) return;
+    wanted_thumbnails = realloc(wanted_thumbnails, (wanted_thumbnail_count + 1) * sizeof *wanted_thumbnails);
+    wanted_thumbnails[wanted_thumbnail_count++] = strdup(path);
+}
+
+static void fetch_thumbnails(void) {
+    int count = wanted_thumbnail_count - sent_thumbnail_count;
+    if (thumbnail_fetcher > 0 || !count) return;
+    char **argv = calloc(count + 3, sizeof *argv);
+    argv[0] = "thumbnails";
+    argv[1] = "fetch";
+    memcpy(argv + 2, wanted_thumbnails + sent_thumbnail_count, count * sizeof *argv);
+    thumbnail_fetcher = spawn(argv, -1, log_file, log_file);
+    free(argv);
+    sent_thumbnail_count = wanted_thumbnail_count;
 }
 
 static int level_in(json_object *props) {
@@ -1147,6 +1171,7 @@ static int build(struct view *view) {
         count = add_resolution_rows(count);
         count = add_row(count, CHOOSE_SLEEP, 0, "Controller sleep", "%s", sleep_value());
         count = add_row(count, CHOOSE_SKIN, 0, "Skin", "%s", skin_name());
+        count = add_row(count, CLEAR_THUMBNAILS, 0, "Clear thumbnails", "");
         break;
     }
     for (int i = 0; i < count; i++)
@@ -1691,6 +1716,7 @@ static void act(struct row *row, int profile) {
     switch (row->action) {
     case NOTHING: case VOLUME: case MICROPHONE_VOLUME: case SECOND_SCREEN: case CHOOSE_DISPLAY: case CHOOSE_DISPLAY_MODE: case CHOOSE_RESOLUTION: case CHOOSE_SLEEP: case CHOOSE_SKIN: case EMULATE: break;
     case REWIND: load_rewind(); break;
+    case CLEAR_THUMBNAILS: thumbnail_clearer = spawn((char *[]){"thumbnails", "clear", NULL}, -1, log_file, log_file); break;
     case LOGIN: login(row->arg, picker); break;
     case LOG_OUT_PLAYER:
         if (owned_games(guide_profile)) push(LOG_OUT, -1);
@@ -2086,6 +2112,10 @@ static json_object *state_object(int count) {
         json_object_object_add(game, "title", json_object_new_string(games[i].title));
         json_object_object_add(game, "status", json_object_new_string(status(i)));
         json_object_object_add(game, "platform", json_object_new_string(games[i].platform));
+        int named = *games[i].thumbnail &&
+                    snprintf(path, sizeof path, THUMBNAILS_DIR "/%s/%s" THUMBNAIL_EXTENSION, games[i].platform, games[i].thumbnail) < (int)sizeof path;
+        json_object_object_add(game, "thumbnail", named ? json_object_new_string(path) : NULL);
+        json_object_object_add(game, "thumbnailCached", json_object_new_boolean(named && !access(path, F_OK)));
         json_object_object_add(game, "owner", games[i].owner ? json_object_new_int(games[i].owner) : NULL);
         json_object_object_add(game, "stores", offers);
         json_object_array_add(list, game);
@@ -2229,7 +2259,23 @@ static void reap(void) {
             refresher = 0;
             rescan();
             changed = 1;
+            thumbnail_refresher = spawn((char *[]){"thumbnails", "refresh", NULL}, -1, log_file, log_file);
             if (refresh_pending) refresh();
+        }
+        if (pid == thumbnail_fetcher) {
+            thumbnail_fetcher = 0;
+            paint_needed = changed = 1;
+        }
+        if (pid == thumbnail_refresher) {
+            thumbnail_refresher = 0;
+            forget_thumbnails();
+            paint_needed = changed = 1;
+        }
+        if (pid == thumbnail_clearer) {
+            thumbnail_clearer = 0;
+            notify("Thumbnails cleared");
+            forget_thumbnails();
+            paint_needed = changed = 1;
         }
         if (pid == monitor) {
             monitor = 0;
@@ -2644,6 +2690,7 @@ int main(void) {
         }
         settle();
         if (layer && width && paint_needed && !frame_pending) paint();
+        fetch_thumbnails();
         arm_skin_timer();
     }
 }

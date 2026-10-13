@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <turbojpeg.h>
 #include <wayland-egl.h>
 #include <yoga/Yoga.h>
 #include "anyconsole.h"
@@ -955,6 +956,51 @@ static void upload(struct image *image, cairo_surface_t *source) {
     cairo_surface_destroy(surface);
 }
 
+static unsigned char *read_whole(const char *path, long *size) {
+    FILE *file = fopen(path, "rb");
+    if (!file) return NULL;
+    unsigned char *data = NULL;
+    if (!fseek(file, 0, SEEK_END) && (*size = ftell(file)) > 0 && !fseek(file, 0, SEEK_SET) && (data = malloc(*size)) &&
+        fread(data, 1, *size, file) != (size_t)*size) {
+        free(data);
+        data = NULL;
+    }
+    fclose(file);
+    return data;
+}
+
+static cairo_surface_t *load_jpeg(const char *path) {
+    long size;
+    unsigned char *data = read_whole(path, &size);
+    if (!data) return NULL;
+    cairo_surface_t *surface = NULL;
+    tjhandle decoder = tj3Init(TJINIT_DECOMPRESS);
+    if (!tj3DecompressHeader(decoder, data, size)) {
+        surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, tj3Get(decoder, TJPARAM_JPEGWIDTH), tj3Get(decoder, TJPARAM_JPEGHEIGHT));
+        if (tj3Decompress8(decoder, data, size, cairo_image_surface_get_data(surface), cairo_image_surface_get_stride(surface), TJPF_BGRX)) {
+            cairo_surface_destroy(surface);
+            surface = NULL;
+        } else {
+            cairo_surface_mark_dirty(surface);
+        }
+    }
+    tj3Destroy(decoder);
+    free(data);
+    return surface;
+}
+
+static cairo_surface_t *load_picture(const char *path) {
+    cairo_surface_t *png = cairo_image_surface_create_from_png(path);
+    if (!cairo_surface_status(png)) return png;
+    cairo_surface_t *jpeg = load_jpeg(path);
+    if (!jpeg) {
+        fprintf(stderr, "%s: not a PNG or JPEG image\n", path);
+        return png;
+    }
+    cairo_surface_destroy(png);
+    return jpeg;
+}
+
 static struct image *node_image(struct node *node) {
     const char *source = node->strings[SOURCE];
     char resolved[PATH_MAX];
@@ -973,7 +1019,11 @@ static struct image *node_image(struct node *node) {
     }
     struct image *image = node->image;
     if (!image) return NULL;
-    if (!image->named && !stat(path, &status) && status.st_mtime != image->mtime) {
+    if (!image->named && stat(path, &status)) {
+        skin_missing(path);
+        return NULL;
+    }
+    if (!image->named && status.st_mtime != image->mtime) {
         image->mtime = status.st_mtime;
         image->loaded = 0;
     }
@@ -983,7 +1033,7 @@ static struct image *node_image(struct node *node) {
         return image->texture ? image : NULL;
     }
     loads_left--;
-    cairo_surface_t *picture = image->named ? image->surface : cairo_image_surface_create_from_png(path);
+    cairo_surface_t *picture = image->named ? image->surface : load_picture(path);
     image->surface = NULL;
     image->loaded = 1;
     if (!cairo_surface_status(picture)) upload(image, picture);
@@ -1298,19 +1348,19 @@ static void draw_node(struct node *node, struct transform parent, float scroll_x
     memcpy(at.clip, parent.clip, sizeof at.clip);
     if (at.opacity <= VISIBLE_ALPHA) return;
     float pixel_width = width * at.scale, pixel_height = height * at.scale;
+    int shown[RECT_FLOATS];
+    intersect(at.clip, at.x, at.y, pixel_width, pixel_height, shown);
+    int visible = shown[2] > 0 && shown[3] > 0;
     draw_shadow(node, &at, pixel_width, pixel_height);
-    if (own(node, BACKDROP_BLUR, 0) > 0) {
-        add_blur(at.x, at.y, pixel_width, pixel_height);
-        draw_backdrop(node, &at, pixel_width, pixel_height);
-    }
-    draw_box(node, &at, pixel_width, pixel_height);
-    if (node->text_node || node->container) {
-        scissor(at.clip);
-        if (inherited_enum(node, TEXT_OVERFLOW) != WRAP) {
-            int box[RECT_FLOATS];
-            intersect(at.clip, at.x, at.y, pixel_width, pixel_height, box);
-            scissor(box);
+    if (visible) {
+        if (own(node, BACKDROP_BLUR, 0) > 0) {
+            add_blur(at.x, at.y, pixel_width, pixel_height);
+            draw_backdrop(node, &at, pixel_width, pixel_height);
         }
+        draw_box(node, &at, pixel_width, pixel_height);
+    }
+    if (visible && (node->text_node || node->container)) {
+        scissor(inherited_enum(node, TEXT_OVERFLOW) != WRAP ? shown : at.clip);
         draw_text(node, &at, pixel_width);
         scissor(at.clip);
     }

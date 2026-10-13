@@ -14,7 +14,11 @@ platforms() { docker build -q --call targets,format=json $RECIPES | jq -r '.targ
 export_engine() {
   name=docker.io/$GAME_IMAGE/$1:latest
   export_engine_image "$name" "$BUILT" --target "$1" $RECIPES
-  jq --arg name "$name" '.manifests |= [map(select(.annotations["io.containerd.image.name"] == $name)) | last]' "$BUILT/index.json" > "$BUILT/$LIST/$1.json"
+  index=$BUILT/$LIST/$1.json
+  jq --arg name "$name" '.manifests |= [map(select(.annotations["io.containerd.image.name"] == $name)) | last]' "$BUILT/index.json" > "$index"
+  config=$BUILT/$(blob_paths '.config.digest' "$BUILT/$(blob_paths '.manifests[0].digest' "$index")")
+  jq --slurpfile image "$config" '.manifests[0].annotations += ($image[0].config.Labels // {})' "$index" > "$index.partial"
+  mv "$index.partial" "$index"
 }
 
 fetch_blobs() { echo "$1 lacks a blob its engine lists name" >&2; return 1; }
