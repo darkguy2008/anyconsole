@@ -46,6 +46,7 @@ AREA_SIZE='(.display.area_box | "\(.width)x\(.height)")'
 KEEN_ART='(.games[] | select(.key == "commander-keen/msdos"))'
 STALE_ART=stale
 STALE_DATE=2000-01-01
+UNDECODABLE="not a PNG or JPEG image"
 ORACLE_ART="Commander Keen 4 - Secret of the Oracle (1991)"
 ARMAGEDDON_ART="Commander Keen 5 - The Armageddon Machine (1991)"
 
@@ -1022,7 +1023,7 @@ test_thumbnails() {
   expect '.skin == "switch-black" and (.games[] | select(.key == "alter-ego/nes") | .thumbnail == null)'
   open_store_by_action
   expect "$KEEN_ART | .thumbnailCached and .thumbnailAspect > 0"
-  guest "[ -e $LOG_DIR/kiosk.log ] && ! grep -q 'not a PNG or JPEG image' $LOG_DIR/kiosk.log"
+  guest "[ -e $LOG_DIR/kiosk.log ] && ! grep -q '$UNDECODABLE' $LOG_DIR/kiosk.log"
   log ok "the Store downloads and draws the boxart of the games it shows"
   art=$(state | jq -r "$KEEN_ART | .thumbnail")
   unnamed=$THUMBNAILS_DIR/msdos/unnamed$THUMBNAIL_EXTENSION
@@ -1031,6 +1032,10 @@ test_thumbnails() {
   open_store_by_action
   wait_for $STEP_SECONDS guest "! cmp -s /tmp/stale '$art' && [ ! -e '$unnamed' ]"
   log ok "a refresh downloads boxart libretro changed and deletes boxart no manifest names"
+  undecodable=$(guest "grep -c '$UNDECODABLE' $LOG_DIR/kiosk.log || true")
+  expect_reply $STEP_SECONDS 200 .ok --arg action open-settings
+  guest "printf $STALE_ART > /tmp/stale && touch -r '$art' /tmp/stale && cp -p /tmp/stale '$art'"
+  open_store_by_action
   expect_reply $STEP_SECONDS 200 .ok --arg action clear-thumbnails
   wait_for $STEP_SECONDS guest "[ ! -e $THUMBNAILS_DIR ]"
   expect "$KEEN_ART | .thumbnailCached | not"
@@ -1038,6 +1043,8 @@ test_thumbnails() {
   open_store_by_action
   expect "$KEEN_ART | .thumbnailCached"
   log ok "cleared boxart downloads again when shown"
+  guest "[ \$(grep -c '$UNDECODABLE' $LOG_DIR/kiosk.log) = $undecodable ]"
+  log ok "boxart drawn before stays drawn after leaving the Store and coming back, without decoding it again"
   oracle=$THUMBNAILS_DIR/msdos/$ORACLE_ART$THUMBNAIL_EXTENSION
   armageddon=$THUMBNAILS_DIR/msdos/$ARMAGEDDON_ART$THUMBNAIL_EXTENSION
   guest "thumbnails fetch '$oracle' '$armageddon' && [ -s '$oracle' ] && [ -s '$armageddon' ]"

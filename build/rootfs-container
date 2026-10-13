@@ -92,7 +92,7 @@ build_overlay() {
     /tmp/wlr-layer-shell-unstable-v1.c /tmp/wlr-foreign-toplevel-management-unstable-v1.c /tmp/security-context-v1.c /tmp/ext-foreign-toplevel-list-v1.c \
     /tmp/ext-image-capture-source-v1.c /tmp/ext-image-copy-capture-v1.c /tmp/linux-dmabuf-v1.c /tmp/xdg-shell.c /tmp/ext-background-effect-v1.c /usr/local/lib/libquickjs.a /usr/local/lib/libyogacore.a \
     $(pkg-config --cflags --libs cairo libpng pixman-1 json-c wayland-client wayland-egl egl glesv2 gbm libdrm freetype2 harfbuzz opusfile libpipewire-0.3 libturbojpeg) \
-    -lstdc++ -lm
+    -lstdc++ -lm -pthread
 }
 
 build_compositor() {

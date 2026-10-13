@@ -15,6 +15,7 @@ int scene_paint(double now);
 void scene_present(void);
 int scene_blur(struct box *boxes, int max);
 void scene_image(const char *name, cairo_surface_t *surface);
+int scene_start_decoder(void);
 void scene_crossfade(double now);
 struct node *scene_root(void);
 struct node *scene_node(const char *type);
