@@ -987,8 +987,45 @@ static json_object *controller(const char *name, const char *address, const char
     return entry;
 }
 
+static const char *const hinted_commands[] = {"confirm", "back", "x", "y"};
+static const struct { const char *button, *face; } playstation_faces[] = {{"a", "cross"}, {"b", "circle"}, {"x", "square"}, {"y", "triangle"}};
+
+static int playstation(struct pad *controller_pad) {
+    SDL_GameControllerType type = controller_pad ? SDL_GameControllerGetType(controller_pad->controller) : SDL_CONTROLLER_TYPE_UNKNOWN;
+    return type == SDL_CONTROLLER_TYPE_PS3 || type == SDL_CONTROLLER_TYPE_PS4 || type == SDL_CONTROLLER_TYPE_PS5;
+}
+
+static json_object *labelled(const char *name) {
+    char label[NAME_MAX + 1];
+    snprintf(label, sizeof label, "%s", name);
+    SDL_strlwr(label);
+    *label = SDL_toupper(*label);
+    return json_object_new_string(label);
+}
+
+static json_object *pad_face(struct pad *controller_pad, const char *button) {
+    int symbols = playstation(controller_pad);
+    for (unsigned i = 0; symbols && i < SDL_arraysize(playstation_faces); i++)
+        if (!strcmp(playstation_faces[i].button, button)) return json_object_new_string(playstation_faces[i].face);
+    return labelled(button);
+}
+
+static json_object *face_of(struct device *device, struct pad *controller_pad, const char *command) {
+    if (device->kind == PAD) {
+        for (unsigned i = 0; i < CONTROL_COUNT; i++)
+            if (controls[i].type == EV_KEY && !strcmp(command_of(controls[i].code), command)) return pad_face(controller_pad, controls[i].name);
+        return NULL;
+    }
+    for (unsigned code = 0; code <= KEY_MAX; code++)
+        if ((!device->evdev || libevdev_has_event_code(device->evdev, EV_KEY, code)) && !strcmp(command_of(code), command)) {
+            const char *name = libevdev_event_code_get_name(EV_KEY, code);
+            return labelled(name + strcspn(name, "_") + 1);
+        }
+    return NULL;
+}
+
 static json_object *device_entry(struct device *device) {
-    json_object *entry = json_object_new_object(), *allowed = json_object_new_array();
+    json_object *entry = json_object_new_object(), *allowed = json_object_new_array(), *buttons = json_object_new_object();
     struct pad *controller_pad = pad_with_input(device);
     for (enum mode mode = ANALOG; mode < MODE_COUNT; mode++)
         if (kinds[device->kind].modes & MODE(mode)) json_object_array_add(allowed, json_object_new_string(modes[mode]));
@@ -1001,6 +1038,8 @@ static json_object *device_entry(struct device *device) {
     json_object_object_add(entry, "mode", json_object_new_string(modes[device->mode]));
     json_object_object_add(entry, "native", json_object_new_string(modes[kinds[device->kind].native]));
     json_object_object_add(entry, "modes", allowed);
+    for (unsigned i = 0; i < SDL_arraysize(hinted_commands); i++) json_object_object_add(buttons, hinted_commands[i], face_of(device, controller_pad, hinted_commands[i]));
+    json_object_object_add(entry, "buttons", buttons);
     return entry;
 }
 
