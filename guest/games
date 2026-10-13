@@ -14,18 +14,17 @@ SHARED_LABEL=anyconsole.shared
 SANDBOX="--init --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp --tmpfs /dev/shm"
 ENGINE_SOURCE=rsync://$OTA_HOST/$ENGINES_MODULE
 ENGINE_RUN=/run/engines
-PUBLISHED=$ENGINE_IMAGES/published
 LOADED=$ENGINE_IMAGES/loaded
 PREPARED=$ENGINE_IMAGES/prepared
 FAILED=$ENGINE_IMAGES/failed
 STORE=$ENGINE_IMAGES/store
 STAGING=$ENGINE_IMAGES/staging
 
-fetch_published() { rsync -rt --delete --mkpath "$ENGINE_SOURCE/contracts/$ENGINE_CONTRACT/" "$PUBLISHED/"; }
+fetch_published() { rsync -rt --delete --mkpath "$ENGINE_SOURCE/contracts/$ENGINE_CONTRACT/" "$PUBLISHED_ENGINES/"; }
 
 platforms() {
-  [ -d "$PUBLISHED" ] || fetch_published
-  ls "$PUBLISHED" | sed -n 's/\.json$//p'
+  [ -d "$PUBLISHED_ENGINES" ] || fetch_published
+  ls "$PUBLISHED_ENGINES" | sed -n 's/\.json$//p'
 }
 
 progress() { awk -v RS='\r' -v step="$1" '$2 != shown { shown = $2; print step, $2 + 0; fflush() }'; }
@@ -56,7 +55,7 @@ download() (
   staged=$STAGING/$1
   rm -rf "$staged"
   mkdir -p "$staged" "$LOADED"
-  cp "$PUBLISHED/$1.json" "$staged/index.json"
+  cp "$PUBLISHED_ENGINES/$1.json" "$staged/index.json"
   echo "downloading 0"
   blobs=$(blobs_of "$STORE" "$staged/index.json")
   printf 'oci-layout\n%s\n' "$blobs" | fetch_blobs --no-inc-recursive --info=progress2 | progress downloading
@@ -105,9 +104,9 @@ lock_engine() {
 prepare() {
   lock_engine "$1"
   flock -n 8 || follow "$1"
-  [ -f "$PUBLISHED/$1.json" ] || fetch_published
-  [ -f "$PUBLISHED/$1.json" ] || { echo "no $1 engine is published for this console" >&2; return 1; }
-  published=$(published_digest "$PUBLISHED/$1.json")
+  [ -f "$PUBLISHED_ENGINES/$1.json" ] || fetch_published
+  [ -f "$PUBLISHED_ENGINES/$1.json" ] || { echo "no $1 engine is published for this console" >&2; return 1; }
+  published=$(published_digest "$PUBLISHED_ENGINES/$1.json")
   [ "$(image_id "$1")" = "$published" ] || (set -o pipefail; download "$1" | tee "$ENGINE_RUN/$1.progress")
   image=$(image_config "$1")
   prepare_engine "$1" "$published"
@@ -135,8 +134,8 @@ update() {
   fetch_published 2>/dev/null || return 0
   mkdir -p "$FAILED"
   for platform in $(engines); do
-    [ -f "$PUBLISHED/$platform.json" ] || continue
-    digest=$(published_digest "$PUBLISHED/$platform.json")
+    [ -f "$PUBLISHED_ENGINES/$platform.json" ] || continue
+    digest=$(published_digest "$PUBLISHED_ENGINES/$platform.json")
     { [ "$(cat "$PREPARED/$platform" 2>/dev/null)" = "$digest" ] || [ "$(cat "$FAILED/$platform" 2>/dev/null)" = "$digest" ]; } && continue
     [ -z "$(containers)" ] || return 0
     "$0" prepare "$platform" >/dev/null || echo "$digest" > "$FAILED/$platform"

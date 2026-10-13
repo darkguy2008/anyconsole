@@ -43,6 +43,9 @@ PACED_GAMES=/tmp/paced-games
 INSTALL_STEPS=/tmp/install-steps
 HALFWAY_PERCENT=50
 AREA_SIZE='(.display.area_box | "\(.width)x\(.height)")'
+KEEN_ART='(.games[] | select(.key == "commander-keen/msdos"))'
+STALE_ART=stale
+STALE_DATE=2000-01-01
 
 monitor() { echo "$1" | socat - UNIX-CONNECT:$OUT/monitor.sock >/dev/null; }
 guest() {
@@ -418,7 +421,7 @@ HOLD
 }
 hold_downloads() { rm -f $OUT/held; mkfifo $OUT/gate; }
 download_held() { [ -e $OUT/held ]; }
-console_sees_nes() { [ "$(guest "jq -r '.manifests[0].digest' $ENGINE_IMAGES/published/nes.json")" = "$(published_digest $OUT/$ENGINE_LIST/nes.json)" ]; }
+console_sees_nes() { [ "$(guest "jq -r '.manifests[0].digest' $PUBLISHED_ENGINES/nes.json")" = "$(published_digest $OUT/$ENGINE_LIST/nes.json)" ]; }
 release_downloads() { exec 3<>$OUT/gate; rm $OUT/gate; exec 3>&-; }
 publish_nes() { cp "$1" $OUT/$ENGINE_LIST/nes.json.new && mv $OUT/$ENGINE_LIST/nes.json.new $OUT/$ENGINE_LIST/nes.json; }
 console_nes() { guest "docker image inspect -f '{{.Id}}' $GAME_IMAGE/nes"; }
@@ -992,7 +995,31 @@ test_reboot() {
   expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
 }
 
-TESTS="capture symlinks display audio controllers nes actions dreamcast msdos stores gpu logout reboot skins engines"
+open_store_by_action() { expect_reply $STEP_SECONDS 200 .ok --arg action open-store; }
+
+test_thumbnails() {
+  api POST settings "skin switch-black" >/dev/null
+  expect '.skin == "switch-black" and (.games[] | select(.key == "alter-ego/nes") | .thumbnail == null)'
+  open_store_by_action
+  expect "$KEEN_ART | .thumbnailCached"
+  guest "[ -e $LOG_DIR/kiosk.log ] && ! grep -q 'not a PNG or JPEG image' $LOG_DIR/kiosk.log"
+  log ok "the Store downloads and draws the boxart of the games it shows"
+  art=$(state | jq -r "$KEEN_ART | .thumbnail")
+  unnamed=$THUMBNAILS_DIR/msdos/unnamed$THUMBNAIL_EXTENSION
+  guest "printf $STALE_ART > /tmp/stale && cp /tmp/stale '$art' && touch -d $STALE_DATE '$art' && cp /tmp/stale '$unnamed'"
+  open_store_by_action
+  wait_for $STEP_SECONDS guest "! cmp -s /tmp/stale '$art' && [ ! -e '$unnamed' ]"
+  log ok "a refresh downloads boxart libretro changed and deletes boxart no manifest names"
+  expect_reply $STEP_SECONDS 200 .ok --arg action clear-thumbnails
+  wait_for $STEP_SECONDS guest "[ ! -e $THUMBNAILS_DIR ]"
+  expect "$KEEN_ART | .thumbnailCached | not"
+  log ok "Clear thumbnails deletes every cached boxart"
+  open_store_by_action
+  expect "$KEEN_ART | .thumbnailCached"
+  log ok "cleared boxart downloads again when shown"
+}
+
+TESTS="capture symlinks display audio controllers nes actions dreamcast msdos stores gpu logout reboot skins engines thumbnails"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in

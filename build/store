@@ -35,18 +35,18 @@ add_zipped() {
 }
 
 add_zipped_without() {
-  slug=$1 title=$2 platform=$3 file=$1-${4##*/}
+  slug=$1 title=$2 platform=$3 file=$1-${4##*/} config=$5
   extract "$file" "$4"
-  shift 4
+  shift 5
   (cd "$SCRATCH/$file" && rm "$@" && python3 -m zipfile -c "$SCRATCH/$slug.zip" *)
-  add_game "$slug" "$title" "$platform" "$SCRATCH/$slug.zip"
+  add_game "$slug" "$title" "$platform" "$SCRATCH/$slug.zip" "$config"
 }
 
 rm -rf "$SCRATCH" "$TEST_STORE"
 mkdir -p "$DOWNLOADS" "$SCRATCH"
 add_zipped alter-ego "Alter Ego" nes "$SHIRU/nes/alter_ego.zip" '*.nes'
 add_zipped lan-master "LAN Master" nes "$SHIRU/nes/lan_master.zip" '*.nes'
-add_zipped_without commander-keen "Commander Keen" msdos "$ARCHIVE/keen1-sw/keen1.zip" CATALOG.EXE DEALERS.EXE
+add_zipped_without commander-keen "Commander Keen" msdos "$ARCHIVE/keen1-sw/keen1.zip" '{"thumbnail": "Commander Keen 1 - Marooned on Mars (1990)"}' CATALOG.EXE DEALERS.EXE
 add_zipped christmas-craze "Christmas Craze" snes "$SHIRU/snes/christmas_craze.zip" '*.smc'
 add_download gentris "Gentris" genesis "$GITHUB/Stephane-D/SGDK/raw/2eac605a7744a6eb4f61824bb24ccab39b8bd8b8/sample/game/gentris/out/release/rom.bin" '{"options": {"genesis_plus_gx_audio_filter": "low-pass"}}'
 add_download libbet "Libbet and the Magic Floor" gb "$GITHUB/pinobatch/libbet/releases/download/v0.08/libbet.gb"
