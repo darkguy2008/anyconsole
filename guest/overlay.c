@@ -55,7 +55,6 @@
 #define PERCENT 100
 #define RGB_MASK 0x00ffffffu
 #define VOLUME_STEP "5%"
-#define GAMES_MAX 512
 #define STORES_MAX 32
 #define DEVICES_MAX 32
 #define DEPTH_MAX 4
@@ -131,6 +130,8 @@ static const char *const tasks[] = {[INSTALLING] = "installing", [UNINSTALLING] 
 struct game {
     char slug[NAME_MAX + 1], platform[NAME_MAX + 1], thumbnail[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX], job_error[TEXT_MAX], error_line[TEXT_MAX];
     json_object *emulate;
+    double thumbnail_aspect;
+    time_t thumbnail_time;
     int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown, error_output;
     size_t job_length, error_length;
     enum task task;
@@ -476,8 +477,10 @@ static void scan(const char *directory, int store) {
             int index = platform->d_name[0] == '.' || platform->d_type != DT_DIR ? -1 : find_game(slug->d_name, platform->d_name);
             if (index < 0) continue;
             const char *thumbnail = string_at(manifest, platform->d_name, "thumbnail");
+            if (strchr(thumbnail, '/')) thumbnail = "";
+            if (strcmp(games[index].thumbnail, thumbnail)) games[index].thumbnail_time = 0;
             snprintf(games[index].title, sizeof games[index].title, "%s", *title ? title : slug->d_name);
-            snprintf(games[index].thumbnail, sizeof games[index].thumbnail, "%s", strchr(thumbnail, '/') ? "" : thumbnail);
+            snprintf(games[index].thumbnail, sizeof games[index].thumbnail, "%s", thumbnail);
             if (store < 0) games[index].installed = 1;
             else games[index].stores |= 1u << store;
         }
@@ -2115,7 +2118,14 @@ static json_object *state_object(int count) {
         int named = *games[i].thumbnail &&
                     snprintf(path, sizeof path, THUMBNAILS_DIR "/%s/%s" THUMBNAIL_EXTENSION, games[i].platform, games[i].thumbnail) < (int)sizeof path;
         json_object_object_add(game, "thumbnail", named ? json_object_new_string(path) : NULL);
-        json_object_object_add(game, "thumbnailCached", json_object_new_boolean(named && !access(path, F_OK)));
+        struct stat status;
+        int cached = named && !stat(path, &status);
+        if (cached && status.st_mtime != games[i].thumbnail_time) {
+            games[i].thumbnail_time = status.st_mtime;
+            games[i].thumbnail_aspect = scene_aspect(path);
+        }
+        json_object_object_add(game, "thumbnailCached", json_object_new_boolean(cached));
+        json_object_object_add(game, "thumbnailAspect", cached && games[i].thumbnail_aspect ? json_object_new_double(games[i].thumbnail_aspect) : NULL);
         json_object_object_add(game, "owner", games[i].owner ? json_object_new_int(games[i].owner) : NULL);
         json_object_object_add(game, "stores", offers);
         json_object_array_add(list, game);
