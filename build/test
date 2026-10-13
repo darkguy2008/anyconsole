@@ -130,7 +130,8 @@ choose() {
 }
 capture() { gvnccapture "127.0.0.1:$VM_VNC_DISPLAY" "$OUT/$1.png"; }
 snapshot() { wait_for $STEP_SECONDS capture "$1"; }
-screen_moves() { capture before && capture after && ! cmp -s "$OUT/before.png" "$OUT/after.png"; }
+capture_differs() { capture "$2" && ! cmp -s "$OUT/$1.png" "$OUT/$2.png"; }
+screen_moves() { capture before && capture_differs before after; }
 booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /data/boots) = $1 ] && pidof overlay && [ -s $STATE_FILE ]"; }
 
 start_vm() {
@@ -782,8 +783,7 @@ test_skins() {
   log ok "classic leaves left and right to the rows"
   api POST settings "skin switch-black" >/dev/null
   expect '.settings.skin == "switch-black" and .skin == "switch-black"'
-  wait_for $STEP_SECONDS capture skin-switch-black
-  ! cmp -s "$OUT/skin-classic.png" "$OUT/skin-switch-black.png" || { log FAIL "switch-black drew the same screen as classic" >&2; diagnose; exit 1; }
+  wait_for $STEP_SECONDS capture_differs skin-classic skin-switch-black
   tap dpright
   expect '.rows[.selected].label == "Settings"'
   tap dpleft
