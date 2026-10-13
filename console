@@ -105,7 +105,7 @@ usage: console [box address] <command>
   store list  number every game store and show whether it is online
   store del <n>  remove the nth store listed by store list
   input <line>...  send remote pad lines ("1 a 1", "1 guide 0"), remote keyboard events ("EV_KEY KEY_LEFTMETA 1"), "pair" or "forget <address>"
-  action <field=value>...  run a menu action and print {ok, error, notifications, state}; fields: action (see state's .rows[].action), label, value, arg, game (slug/platform), profile, device, step
+  action <field=value>...  run a menu action and print {ok, error, notifications, state}; fields: action (see state's .rows[].action), label, value, arg, game (slug/platform), profile, device, step, command (confirm, x or y)
   screenshot <file>  save a PNG of the console's screen
   login <profile> [device]  sign a profile in, optionally with a device id from state
   logout <profile>  sign a profile out, closing the games it launched
