@@ -141,6 +141,7 @@ choose() {
 }
 capture() { gvnccapture "127.0.0.1:$VM_VNC_DISPLAY" "$OUT/$1.png"; }
 snapshot() { wait_for $STEP_SECONDS capture "$1"; }
+capture_settled() { capture "$1-previous" && capture "$1" && cmp -s "$OUT/$1-previous.png" "$OUT/$1.png"; }
 capture_differs() { capture "$2" && ! cmp -s "$OUT/$1.png" "$OUT/$2.png"; }
 screen_moves() { capture before && capture_differs before after; }
 booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /data/boots) = $1 ] && pidof overlay && [ -s $STATE_FILE ]"; }
@@ -857,6 +858,12 @@ test_skins() {
   tap leftshoulder
   expect '.selected == 5'
   log ok "switch-black pages its store grid a screen at a time with R1, L1 and Page Down, keeping the column"
+  tap b
+  expect '.screen == "home"'
+  tap dpright
+  tap a
+  expect '.screen == "settings"'
+  wait_for $STEP_SECONDS capture_settled settings-switch-black
   tap b
   expect '.screen == "home"'
   guest ". /etc/profile; WAYLAND_DISPLAY=$WAYLAND_SOCKET wayland-info | grep -q ext_background_effect_manager_v1"
