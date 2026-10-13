@@ -119,9 +119,9 @@ static const char *const actions[] = {
     [CHOOSE_SLEEP] = "sleep", [REWIND] = "rewind", [LOGIN] = "login", [EMULATE] = "emulate", [LOG_OUT_PLAYER] = "log-out",
     [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen", [CHOOSE_SKIN] = "skin"};
 static const char *const criteria[] = {"action", "label", "value", "arg"};
-enum command { NONE, UP, DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
-static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [LEFT] = "left", [RIGHT] = "right",
-                                       [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide"};
+enum command { NONE, UP, DOWN, PAGE_UP, PAGE_DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON };
+static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [PAGE_UP] = "page-up", [PAGE_DOWN] = "page-down",
+                                       [LEFT] = "left", [RIGHT] = "right", [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide"};
 static const struct { const char *name, *label; } mode_labels[] = {
     {"analog", "Analog pad"}, {"digital", "Digital pad"}, {"keyboard", "Keyboard"}, {"mouse", "Mouse"}, {"keyboard-mouse", "Keyboard & mouse"}};
 enum task { INSTALLING, UNINSTALLING, LAUNCHING };
@@ -1804,6 +1804,8 @@ static void navigate(int device, enum command command) {
     switch (command) {
     case UP: if (view->selected > 0) view->selected--; break;
     case DOWN: if (view->selected < count - 1) view->selected++; break;
+    case PAGE_UP: view->selected = 0; break;
+    case PAGE_DOWN: if (count) view->selected = count - 1; break;
     case LEFT: case RIGHT: if (row) adjust(row->action, command == LEFT ? -1 : 1); break;
     case CONFIRM: if (row) act(row, profile_of(device)); break;
     case BACK: case GUIDE_BUTTON:
@@ -1814,8 +1816,8 @@ static void navigate(int device, enum command command) {
         break;
     default: break;
     }
-    if (count && (command == UP || command == DOWN)) select_row(view, view->selected);
-    if (command != UP && command != DOWN) changed = 1;
+    if (count && command >= UP && command <= PAGE_DOWN) select_row(view, view->selected);
+    if (command < UP || command > PAGE_DOWN) changed = 1;
     else changed |= view->selected != selected;
 }
 

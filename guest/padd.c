@@ -662,6 +662,8 @@ static const char *command_of(unsigned short code) {
     case KEY_DOWN: return "down";
     case KEY_LEFT: return "left";
     case KEY_RIGHT: return "right";
+    case KEY_PAGEUP: case BTN_TL: return "page-up";
+    case KEY_PAGEDOWN: case BTN_TR: return "page-down";
     case KEY_ENTER: case KEY_KPENTER: case KEY_X: case BTN_SOUTH: case BTN_START: return "confirm";
     case KEY_ESC: case KEY_BACKSPACE: case KEY_Z: case BTN_EAST: return "back";
     case KEY_LEFTMETA: case KEY_RIGHTMETA: case BTN_MODE: return "guide";

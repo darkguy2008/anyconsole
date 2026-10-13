@@ -231,6 +231,14 @@ static JSValue native_select(JSContext *ctx, JSValueConst self, int count, JSVal
     return JS_UNDEFINED;
 }
 
+static JSValue native_page(JSContext *ctx, JSValueConst self, int count, JSValueConst *arguments) {
+    (void)self, (void)count;
+    int selected = 0, direction = 0;
+    JS_ToInt32(ctx, &selected, arguments[1]);
+    JS_ToInt32(ctx, &direction, arguments[2]);
+    return JS_NewInt32(ctx, scene_page(node_of(arguments[0]), selected, direction));
+}
+
 static JSValue native_play(JSContext *ctx, JSValueConst self, int count, JSValueConst *arguments) {
     (void)self, (void)count;
     char resolved[PATH_MAX];
@@ -245,7 +253,7 @@ static const JSCFunctionListEntry natives[] = {
     JS_CFUNC_DEF("remove", 1, native_remove), JS_CFUNC_DEF("text", 2, native_text),       JS_CFUNC_DEF("set", 3, native_set),
     JS_CFUNC_DEF("timer", 2, native_timer),   JS_CFUNC_DEF("cancel", 1, native_cancel),   JS_CFUNC_DEF("listen", 2, native_listen),
     JS_CFUNC_DEF("select", 1, native_select), JS_CFUNC_DEF("play", 1, native_play),       JS_CFUNC_DEF("transition", 2, native_transition),
-    JS_CFUNC_DEF("from", 2, native_from),
+    JS_CFUNC_DEF("from", 2, native_from),     JS_CFUNC_DEF("page", 3, native_page),
 };
 
 static int init_native(JSContext *ctx, JSModuleDef *module) { return JS_SetModuleExportList(ctx, module, natives, sizeof natives / sizeof *natives); }

@@ -112,7 +112,7 @@ function Home({ state, view, theme }) {
       <text style=${{ position: 'absolute', left: 104, right: 104, top: 168, fontSize: 36, fontWeight: 800, color: accent, textOverflow: 'marquee',
         opacity: chosen ? 1 : 0 }} transition=${{ opacity: 150 }}>${chosen ? chosen.title : ''}</text>
       <view style=${{ position: 'absolute', left: 0, right: 0, top: 230, height: 470, flexDirection: 'row', gap: 28, paddingHorizontal: 104,
-        alignItems: 'center', overflow: 'hidden' }} follow=${inTiles ? view.selected : 0}>
+        alignItems: 'center', overflow: 'hidden' }} follow=${inTiles ? view.selected : 0} plane=${inTiles ? view.plane : null}>
         ${tiles.map(game => html`<${Tile} key=${game.key} game=${game} size=${400} theme=${theme} />`)}
         <${Frame} index=${inTiles ? view.selected : 0} radius=${14} theme=${theme} active=${inTiles} />
       </view>
@@ -137,7 +137,7 @@ function Store({ state, view, theme }) {
       <${TopBar} state=${state} theme=${theme} />
       <text style=${{ position: 'absolute', left: 104, top: 130, fontSize: 52, fontWeight: 800 }}>${view.title}</text>
       <view style=${{ position: 'absolute', left: 0, right: 0, top: 220, bottom: 100, overflow: 'hidden', flexDirection: 'row', flexWrap: 'wrap',
-        alignContent: 'flex-start', gap: 32, paddingHorizontal: 104, paddingVertical: 24 }} follow=${view.selected}>
+        alignContent: 'flex-start', gap: 32, paddingHorizontal: 104, paddingVertical: 24 }} follow=${view.selected} plane=${view.plane}>
         ${tiles.map(game => html`<${Tile} key=${game.key} game=${game} size=${308} theme=${theme} />`)}
         <${Frame} index=${view.selected} radius=${14} theme=${theme} active=${true} />
       </view>
@@ -147,7 +147,7 @@ function Store({ state, view, theme }) {
 
 function ActionList({ view, theme, width }) {
   return html`
-    <view style=${{ width, gap: 16, overflow: 'hidden', padding: 10 }} follow=${view.selected}>
+    <view style=${{ width, gap: 16, overflow: 'hidden', padding: 10 }} follow=${view.selected} plane=${view.plane}>
       ${view.rows.map(row => html`
         <view key=${`${row.action} ${row.arg} ${row.label}`} style=${{ flexDirection: 'row', alignItems: 'center', gap: 20, paddingVertical: 20,
           paddingHorizontal: 28, borderRadius: 20, backgroundColor: theme.surface }}>
@@ -185,7 +185,7 @@ function Settings({ state, view, theme }) {
           <${Icon} name="settings" size=${52} />
           <text style=${{ fontSize: 44, fontWeight: 800 }}>System Settings</text>
         </view>
-        <view style=${{ gap: 4 }}>
+        <view style=${{ gap: 4 }} plane=${view.plane}>
           <view style=${{ position: 'absolute', backgroundColor: theme.surface, borderRadius: 12, borderWidth: 0 }} track=${view.selected}
             transition=${{ track: 'spring' }} />
           <view style=${{ position: 'absolute', width: 8, backgroundColor: accent, borderRadius: 4 }} track=${view.selected}
@@ -226,7 +226,7 @@ function Slider({ value }) {
 
 function GuideRows({ view, theme }) {
   return html`
-    <view style=${{ flexGrow: 1, flexShrink: 1, overflow: 'hidden', gap: 6, paddingHorizontal: 20, paddingBottom: 24 }} follow=${view.selected}>
+    <view style=${{ flexGrow: 1, flexShrink: 1, overflow: 'hidden', gap: 6, paddingHorizontal: 20, paddingBottom: 24 }} follow=${view.selected} plane=${view.plane}>
       <view style=${{ position: 'absolute', backgroundColor: theme.surface, borderRadius: 18 }} track=${view.selected} transition=${{ track: 'spring' }} />
       ${view.rows.map(row => html`
         <view key=${`${row.action} ${row.arg} ${row.label}`} style=${{ flexDirection: 'row', alignItems: 'center', gap: 20, paddingVertical: 18,
@@ -277,7 +277,7 @@ function Picker({ view, theme }) {
     <view style=${{ ...fill, backgroundColor: theme.scrim, alignItems: 'center', justifyContent: 'center', gap: 64 }}
       from=${{ opacity: 0 }} transition=${{ opacity: 200 }}>
       <text style=${{ fontSize: 56, fontWeight: 800, color: '#ffffff' }}>${view.title}</text>
-      <view style=${{ flexDirection: 'row', gap: 56 }}>
+      <view style=${{ flexDirection: 'row', gap: 56 }} plane=${view.plane}>
         ${view.rows.map(row => html`
           <view key=${row.label} style=${{ width: 192, height: 192, borderRadius: 96, backgroundColor: hsl(row.arg * 90, 0.6, 0.5),
             alignItems: 'center', justifyContent: 'center' }}>
@@ -346,7 +346,7 @@ function navigate(name, state, lastTile) {
   }
   if (view.screen === 'store' && name in steps) return move(Math.min(Math.max(selected + steps[name], 0), count - 1));
   if (view.screen === 'whois' && name in moves) return move(selected + moves[name]);
-  if (name === 'up' || name === 'down') sound('hover');
+  if (name === 'up' || name === 'down' || name === 'page-up' || name === 'page-down') sound('hover');
   if (name === 'left' || name === 'right') sound('press');
   if (name === 'confirm') sound('select');
   if (name === 'back') sound('back');

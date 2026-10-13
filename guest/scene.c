@@ -1242,6 +1242,35 @@ static void follow(struct node *node) {
     follow_motion(node, FOLLOW, node->scroll, AXES, goals);
 }
 
+static float leading(YGNodeRef yoga, int vertical) { return vertical ? YGNodeLayoutGetTop(yoga) : YGNodeLayoutGetLeft(yoga); }
+
+static float extent(YGNodeRef yoga, int vertical) { return vertical ? YGNodeLayoutGetHeight(yoga) : YGNodeLayoutGetWidth(yoga); }
+
+static float trailing(YGNodeRef yoga, int vertical) { return leading(yoga, vertical) + extent(yoga, vertical); }
+
+int scene_page(struct node *list, int selected, int direction) {
+    struct node *from = content_child(list, selected);
+    if (!from) return -1;
+    YGFlexDirection flow = YGNodeStyleGetFlexDirection(list->yoga);
+    int rows_flow = flow == YGFlexDirectionRow || flow == YGFlexDirectionRowReverse;
+    int wraps = YGNodeStyleGetFlexWrap(list->yoga) != YGWrapNoWrap;
+    int vertical = rows_flow == wraps;
+    float reach = extent(list->yoga, vertical) - YGNodeLayoutGetPadding(list->yoga, vertical ? YGEdgeTop : YGEdgeLeft) -
+                  YGNodeLayoutGetPadding(list->yoga, vertical ? YGEdgeBottom : YGEdgeRight);
+    int position = 0, index = selected, target = selected, neighbour = -1;
+    while (list->children[position] != from) position++;
+    for (position += direction; position >= 0 && position < list->count; position += direction) {
+        YGNodeRef child = list->children[position]->yoga;
+        if (list->children[position]->values[TRACK][0].set) continue;
+        index += direction;
+        if (leading(child, !vertical) >= trailing(from->yoga, !vertical) || trailing(child, !vertical) <= leading(from->yoga, !vertical)) continue;
+        if (neighbour < 0) neighbour = index;
+        if (fmaxf(trailing(child, vertical), trailing(from->yoga, vertical)) - fminf(leading(child, vertical), leading(from->yoga, vertical)) > reach) break;
+        target = index;
+    }
+    return target == selected && neighbour >= 0 ? neighbour : target;
+}
+
 static void place_node(struct node *node) {
     if (YGNodeStyleGetOverflow(node->yoga) != YGOverflowVisible) follow(node);
     track(node);
