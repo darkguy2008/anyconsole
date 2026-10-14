@@ -1010,17 +1010,17 @@ test_actions() {
 }
 
 test_dreamcast() {
-  install_and_play gravity-wave/dreamcast "Gravity Wave"
+  install_and_play gravity-wave-twin-stick-shooter/dreamcast "Gravity Wave"
   send "1 lefty 0"
   wait_for $STEP_SECONDS input_holds $PAD_NODES "$PAD_NAME" BTN_NORTH 1 ABS_Y $AXIS_CENTER
   send "1 lefty $AXIS_CENTER" "1 righty 0"
   wait_for $STEP_SECONDS input_holds $PAD_NODES "$PAD_NAME" BTN_NORTH 0 ABS_Y 0
   send "1 righty $AXIS_CENTER"
   log ok "the manifest's pad map moves with the left stick and aims with the right"
-  second_player_joins_and_leaves gravity-wave/dreamcast redream_gave_second_pad
-  rewind_dreamcast gravity-wave/dreamcast
-  ! has_redream_license || save_states gravity-wave/dreamcast redream_read_loaded_state
-  close_game gravity-wave/dreamcast "Gravity Wave"
+  second_player_joins_and_leaves gravity-wave-twin-stick-shooter/dreamcast redream_gave_second_pad
+  rewind_dreamcast gravity-wave-twin-stick-shooter/dreamcast
+  ! has_redream_license || save_states gravity-wave-twin-stick-shooter/dreamcast redream_read_loaded_state
+  close_game gravity-wave-twin-stick-shooter/dreamcast "Gravity Wave"
 }
 
 test_msdos() {
