@@ -1548,7 +1548,7 @@ static void detach(SDL_JoystickID instance);
 
 static void command(char *line) {
     char words[3][WORD_MAX + 1];
-    int count = sscanf(line, "%" STRINGIFY(WORD_MAX) "s %" STRINGIFY(WORD_MAX) "s %" STRINGIFY(WORD_MAX) "s", words[0], words[1], words[2]);
+    int argument = 0, count = sscanf(line, "%" STRINGIFY(WORD_MAX) "s %n%" STRINGIFY(WORD_MAX) "s %" STRINGIFY(WORD_MAX) "s", words[0], &argument, words[1], words[2]);
     struct device *device = count == 3 ? device_with_id(atoi(words[1])) : NULL, *remote;
     if (count == 1 && !strcmp(words[0], "pair")) {
         if (pairing == NOT_PAIRING) start_pairing();
@@ -1568,8 +1568,9 @@ static void command(char *line) {
         }
     } else if (count == 2 && !strcmp(words[0], "touchpad")) {
         touchpad_pointer = !strcmp(words[1], "pointer");
-    } else if (count == 2 && !strcmp(words[0], "game")) {
-        load_maps(strcmp(words[1], NO_GAME) ? words[1] : "");
+    } else if (count >= 2 && !strcmp(words[0], "game")) {
+        const char *game = line + argument;
+        load_maps(strcmp(game, NO_GAME) ? game : "");
     } else if (count == 2 && !strcmp(words[0], "menu")) {
         set_menu(atoi(words[1]));
     } else if (count == 2 && !strcmp(words[0], "pads")) {
@@ -1584,7 +1585,7 @@ static void command(char *line) {
     } else if (count == 3 && (remote = remote_pad(atoi(words[0])))) {
         pad_input(remote, control_named(words[1]), atoi(words[2]));
     } else {
-        fprintf(stderr, "bad command: %s", line);
+        fprintf(stderr, "bad command: %s\n", line);
     }
 }
 
@@ -1593,7 +1594,7 @@ static void inject(const char *line) {
     int value, type, code;
     if (sscanf(line, "%" STRINGIFY(WORD_MAX) "s %" STRINGIFY(WORD_MAX) "s %d", type_name, code_name, &value) != 3 ||
         (type = libevdev_event_type_from_name(type_name)) < 0 || (code = libevdev_event_code_from_name(type, code_name)) < 0) {
-        fprintf(stderr, "bad event: %s", line);
+        fprintf(stderr, "bad event: %s\n", line);
         return;
     }
     if (!remote_device(&remote_keyboard, REMOTE_KEYBOARD_NAME, KEYBOARD, 0)) return;
@@ -1609,7 +1610,7 @@ static void read_commands(int fd) {
     length += count;
     char *start = pending, line[sizeof pending + 1];
     for (char *end; (end = memchr(start, '\n', pending + length - start)); start = end + 1) {
-        snprintf(line, sizeof line, "%.*s", (int)(end - start + 1), start);
+        snprintf(line, sizeof line, "%.*s", (int)(end - start), start);
         if (!strncmp(line, "EV_", strlen("EV_"))) inject(line);
         else command(line);
     }

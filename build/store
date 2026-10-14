@@ -55,4 +55,4 @@ add_download legendary-spear "Legendary Spear" atari2600 "$GITHUB/DChristianson/
 add_download kumi-daiko-beatoff "Kumi-Daiko Beatoff 64" n64 "$GITHUB/ptimonen/n64-riistahillo/releases/download/1.0/Kumi-Daiko-Beatoff-64.n64"
 add_zipped cracky "Cracky" wsc "$INUFUTO/16bit/wsc/cracky_bin.zip" '*.wsc'
 add_zipped gc-controller-test "GC Controller Test" gamecube "$GITHUB/corenting/GC-Controller-Test/releases/download/v1.2/gc-1-2.zip" '*.dol'
-add_download gravity-wave "Gravity Wave" dreamcast "$GITHUB/richstokes/dreamcast-homebrew/releases/download/continuous/gravity-wave.cdi" "{\"pad\": $TWIN_STICK}"
+add_download gravity-wave-twin-stick-shooter "Gravity Wave" dreamcast "$GITHUB/richstokes/dreamcast-homebrew/releases/download/continuous/gravity-wave.cdi" "{\"pad\": $TWIN_STICK}"
