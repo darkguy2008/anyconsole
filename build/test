@@ -568,6 +568,25 @@ download_held() { [ -e $OUT/held ]; }
 console_sees_nes() { [ "$(guest "jq -r '.manifests[0].digest' $PUBLISHED_ENGINES/nes.json")" = "$(published_digest $OUT/$ENGINE_LIST/nes.json)" ]; }
 release_downloads() { exec 3<>$OUT/gate; rm $OUT/gate; exec 3>&-; }
 publish_nes() { cp "$1" $OUT/$ENGINE_LIST/nes.json.new && mv $OUT/$ENGINE_LIST/nes.json.new $OUT/$ENGINE_LIST/nes.json; }
+nes_is_prepared() { [ "$(guest "cat $PREPARED/nes")" = "$(published_digest $OUT/$ENGINE_LIST/nes.json)" ]; }
+prune_waits_for_other_downloads() {
+  dangling=$(guest "docker create --name dangling $FAKEPAD_IMAGE >/dev/null && docker commit dangling && docker rm dangling >/dev/null")
+  mkfifo $OUT/store-holder
+  guest "flock -s $ENGINE_RUN/store.lock cat" < $OUT/store-holder > /dev/null & holder=$!
+  exec 3>$OUT/store-holder
+  wait_for $STEP_SECONDS guest "! flock -n -x $ENGINE_RUN/store.lock true"
+  publish_nes $OUT/nes.json
+  wait_for $STEP_SECONDS nes_is_prepared
+  guest "docker image inspect $dangling >/dev/null" ||
+    { log FAIL "a finished nes download pruned images while another download held the engine store" >&2; diagnose; exit 1; }
+  exec 3>&-
+  wait $holder
+  rm $OUT/store-holder
+  publish_nes $OUT/prepared-nes.json
+  wait_for $STEP_SECONDS nes_is_prepared
+  wait_for $STEP_SECONDS guest "! docker image inspect $dangling"
+  log ok "an engine download prunes images only once no other download is loading one"
+}
 console_nes() { guest "docker image inspect -f '{{.Id}}' $GAME_IMAGE/nes"; }
 nes_is_published() { [ "$(console_nes)" = "$(published_digest $OUT/$ENGINE_LIST/nes.json)" ]; }
 build_prepared_nes() {
@@ -1037,7 +1056,10 @@ test_engines() {
   update_nes_in_background
   launch_waits_for_background_download
   cancel_launch_download
+  prune_waits_for_other_downloads
   forget_self_built_engines
+  tap b
+  expect '.screen == "home"'
 }
 
 test_nes() {
@@ -1118,6 +1140,7 @@ test_nes() {
 }
 
 test_actions() {
+  leave_game lan-master/nes
   expect_reply $INSTALL_SECONDS 200 ".ok and (.state | $(status_of lan-master/nes installed)) and any(.notifications[]; . == \"Installed LAN Master\")" \
     --arg action install --arg game lan-master/nes
   open_store_by_action

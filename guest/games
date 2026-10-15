@@ -14,9 +14,7 @@ SHARED_LABEL=anyconsole.shared
 ENHANCED_PICTURE=enhanced
 SANDBOX="--init --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp --tmpfs /dev/shm"
 ENGINE_SOURCE=rsync://$OTA_HOST/$ENGINES_MODULE
-ENGINE_RUN=/run/engines
 LOADED=$ENGINE_IMAGES/loaded
-PREPARED=$ENGINE_IMAGES/prepared
 FAILED=$ENGINE_IMAGES/failed
 STORE=$ENGINE_IMAGES/store
 STAGING=$ENGINE_IMAGES/staging
@@ -45,6 +43,7 @@ lock_store() {
 
 prune_store() {
   flock -n -x 7 || return 0
+  docker image prune -f >/dev/null
   set -- "$LOADED"/*.json
   [ -f "$1" ] || set --
   prune_blobs "$STORE" "$ENGINE_RUN/keep" "$@" || return 0
@@ -69,7 +68,6 @@ download() (
   [ "$(image_id "$1")" = "$(published_digest "$staged/index.json")" ] || { echo "the downloaded $1 engine is not the published one" >&2; exit 1; }
   mv "$staged/index.json" "$LOADED/$1.json"
   rm -rf "$staged"
-  docker image prune -f >/dev/null
   prune_store
 )
 
@@ -258,7 +256,7 @@ run() {
     --device /dev/dri --device-cgroup-rule 'c 13:* rw' -v "$PAD_NODES:/dev/input:ro" \
     -v "$3:/run/wayland" -v "$4:/states" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
     -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PADS="$PADS" -e PAD_NAME="$PAD_NAME" -e MOTION_NAME="$MOTION_NAME" -e MICROPHONE="$MICROPHONE_NODE" -e SCREEN="$(screen_state "$1" "$2")" \
-    -e GAME_CONFIG="$config" -e ENHANCED="$(enhanced "$config")" \
+    -e GAME_CONFIG="$config" -e ENHANCED="$(enhanced "$config")" -e RESUME_SLOT="$6" \
     -e REFRESH="$(printf '%s' "$config" | jq -r --argjson display "$display" --argjson mhz "$MHZ_PER_HZ" '.refresh // ($display.refresh / $mhz)')" \
     -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
     -v "$rom:/game:ro" -v "$saves:/saves" "$GAME_IMAGE/$2" $video "/game/$file"
@@ -288,7 +286,7 @@ usage: games <command>
   prepare <platform>              download the platform's published engine unless it is current, printing "<step> [percent]"
   install <store> <slug> <platform>  prepare the platform's engine and copy the game from a store, printing "<step> [percent]"
   uninstall <slug> <platform>     delete an installed game, keeping every profile's saves, and the engine with the platform's last game
-  run <slug> <platform> <wayland dir> <states dir> <profile>  play an installed game in its sandbox with the profile's saves
+  run <slug> <platform> <wayland dir> <states dir> <profile> <slot>  play an installed game in its sandbox with the profile's saves, starting from the states dir's state in that slot unless it is empty
   pause <slug> <platform>         freeze a running game
   resume <slug> <platform>        unfreeze a running game and show its second screen if chosen
   close <slug> <platform>         stop a running game, killing it if it hasn't quit by docker's stop timeout
