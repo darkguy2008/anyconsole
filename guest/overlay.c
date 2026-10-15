@@ -130,8 +130,8 @@ static const char *const actions[] = {
 static const char *const criteria[] = {"action", "label", "value", "arg"};
 enum tab { GAME_TAB, DEVICES_TAB, SYSTEM_TAB };
 static const char *const tabs[] = {[GAME_TAB] = "Game", [DEVICES_TAB] = "I/O", [SYSTEM_TAB] = "System"};
-enum picture { ORIGINAL, RETRO, ENHANCED };
-static const struct { const char *name, *label; } pictures[] = {[ORIGINAL] = {"original", "Original"}, [RETRO] = {"retro", "Retro"}, [ENHANCED] = {"enhanced", "Enhanced"}};
+enum picture { ORIGINAL, RETRO, ENHANCED, PICTURES };
+static const struct { const char *name, *label; } pictures[PICTURES] = {[ORIGINAL] = {"original", "Original"}, [RETRO] = {"retro", "Retro"}, [ENHANCED] = {"enhanced", "Enhanced"}};
 enum restart { PLAYING, SAVING, CLOSING, LOADING };
 enum command { NONE, UP, DOWN, PAGE_UP, PAGE_DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON, X_BUTTON, Y_BUTTON };
 static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [PAGE_UP] = "page-up", [PAGE_DOWN] = "page-down",
@@ -917,14 +917,13 @@ static void cycle_skin(int step) {
 
 static enum picture chosen_picture(void) {
     const char *chosen = string_at(settings, "picture", NULL);
-    for (unsigned picture = 0; picture < sizeof pictures / sizeof *pictures; picture++)
+    for (unsigned picture = 0; picture < PICTURES; picture++)
         if (!strcmp(chosen, pictures[picture].name)) return picture;
     return ORIGINAL;
 }
 
 static void cycle_picture(int step) {
-    int count = sizeof pictures / sizeof *pictures;
-    start((char *[]){"settings", "picture", (char *)pictures[(chosen_picture() + step + count) % count].name, NULL});
+    start((char *[]){"settings", "picture", (char *)pictures[(chosen_picture() + step + PICTURES) % PICTURES].name, NULL});
 }
 
 static char *skin_folder(const char *name, char folder[PATH_MAX]) {
@@ -1465,13 +1464,18 @@ static int changed_since_save(cairo_surface_t *screen) {
     return changed_percent(screen, newest_screen) >= SAVE_CHANGE_PERCENT;
 }
 
+static int save_state(void) {
+    int newest = newest_slot();
+    send_command(active, "SAVE_STATE");
+    return newest;
+}
+
 static void end_capture(int captured) {
     cairo_surface_t *screen = captured ? captured_screen() : NULL;
     if (capture.save && capture.game == active && screen && changed_since_save(screen)) {
         cairo_surface_destroy(pending_screen);
         pending_screen = cairo_surface_reference(screen);
-        pending_after = newest_slot();
-        send_command(active, "SAVE_STATE");
+        pending_after = save_state();
     }
     if (capture.current && screen) scene_image(CURRENT_SCREEN, screen);
     if (capture.current) {
@@ -1611,9 +1615,8 @@ static void save_to_slot(void) {
     saving.game = active;
     saving.profile = guide_profile;
     saving.slot = save_slot;
-    saving.after = newest_slot();
     saving.screen = cairo_surface_reference(current_screen);
-    send_command(active, "SAVE_STATE");
+    saving.after = save_state();
     resume(active);
 }
 
@@ -1633,8 +1636,7 @@ static void load_saved(void) {
 static void restart_enhanced(void) {
     if (!rewindable() || !games[active].enhanced || games[active].restart || games[active].closing) return;
     games[active].restart = SAVING;
-    games[active].restart_slot = newest_slot();
-    send_command(active, "SAVE_STATE");
+    games[active].restart_slot = save_state();
     resume(active);
 }
 
