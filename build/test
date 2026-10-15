@@ -1185,6 +1185,9 @@ test_msdos() {
   emulate_keyboard_with_pad
   wait_for $STEP_SECONDS guest "grep -q 'DOSBOX STATUS\] Program: KEEN1 ' $(game_log commander-keen/msdos)"
   log ok "DOSBox Pure started the only executable, KEEN1"
+  fps=$(container_env commander-keen/msdos REFRESH | jq round)
+  wait_for $STEP_SECONDS guest "grep -q 'FPS: $fps.0000,' $(game_log commander-keen/msdos)"
+  log ok "DOSBox Pure outputs at the game's $fps Hz refresh, so RetroArch paces it on vsync"
   snapshot keen
   rewind_to_older_state commander-keen/msdos
   send "1 a 1"

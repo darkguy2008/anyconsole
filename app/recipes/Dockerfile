@@ -58,7 +58,7 @@ FROM gpu AS retroarch
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y alsa-lib pipewire-jack-audio-connection-kit-libs fontconfig dbus-libs libXi libXrandr libXinerama libXxf86vm libXScrnSaver libXext libXrender libXcursor libXfixes libv4l systemd-libs libxkbcommon libwayland-egl libwayland-cursor sdl2-compat libusb1 jq
 COPY --from=retroarch-download /retroarch /retroarch
 RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib64/${bundled##*/}" ] || rm "$bundled"; done
-COPY retroarch.cfg vulkan.cfg enhanced.jq /retroarch/
+COPY retroarch.cfg vulkan.cfg enhanced.jq refresh.jq /retroarch/
 COPY retroarch-launch /retroarch/launch
 COPY --from=retroarch-frame-size /frame-size.so /retroarch/
 RUN touch /retroarch/core.opt /retroarch/vulkan.opt
@@ -76,6 +76,7 @@ FROM retroarch AS msdos
 LABEL anyconsole.launch="dosz zip exe com bat conf iso cue" anyconsole.thumbnails="DOS"
 COPY --from=cores /cores/dosbox_pure_libretro.so /retroarch/core.so
 COPY msdos.opt /retroarch/core.opt
+COPY msdos-refresh.jq /retroarch/refresh.jq
 
 # snes Super Nintendo
 FROM retroarch AS snes
