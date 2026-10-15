@@ -20,6 +20,7 @@ POLLS_PER_SECOND=10
 SSH_ALIVE_SECONDS=1
 POLL_INTERVAL=$(awk "BEGIN { print 1 / $POLLS_PER_SECOND }")
 STEP_SECONDS=15
+CRAB_PRIDE_FLAG_PRESSES="rightshoulder rightshoulder start"
 BOOT_SECONDS=180
 INSTALL_SECONDS=1200
 STARTED=$(date +%s)
@@ -420,8 +421,8 @@ install_and_play() {
 
 kiosk_log_lacks() { guest "! grep '$1' $LOG_DIR/kiosk.log" || { log FAIL "$2" >&2; exit 1; }; }
 
-core_geometry() { guest "grep -o 'Geometry: [0-9]*x[0-9]*' $(game_log "$1") | tail -1 | cut -d' ' -f2"; }
-core_aspect() { guest "grep -o ', Aspect: [0-9.]*' $(game_log "$1") | tail -1 | cut -d' ' -f3"; }
+core_geometry() { guest "grep -o '[0-9]*x[0-9]*, Aspect: ' $(game_log "$1") | tail -1 | cut -d, -f1"; }
+core_aspect() { guest "grep -o ', Aspect: [0-9]*\.[0-9]*' $(game_log "$1") | tail -1 | cut -d' ' -f3"; }
 
 integer_picture() {
   echo "(.display.frame | $SIZE_NUMBERS) as [\$width, \$height] | (\$height * $1 | round) as \$shown
@@ -433,12 +434,14 @@ integer_picture() {
 
 closed_at_box() { echo "$(closed_and_running "$1") and .display.frame == \"$2\" and .display.picture_box == $3 and (.moving | not)"; }
 
-retro_picture() {
+core_picture() {
   geometry=$(core_geometry "$1")
-  expect ".display.frame == \"$geometry\""
-  log ok "RetroArch hands the compositor the core's own $geometry pixels"
-  expect "$(integer_picture "$(core_aspect "$1")")"
-  log ok "the game is drawn at the core's aspect, at the largest integer scale of at least 2x, else fitted to the screen"
+  expect ".display.frame == \"$geometry\" and ($(integer_picture "$(core_aspect "$1")"))"
+  log ok "RetroArch hands the compositor the core's own $geometry pixels, drawn at the core's aspect, at the largest integer scale of at least 2x, else fitted to the screen"
+}
+
+retro_picture() {
+  core_picture "$1"
   box=$(state | jq -c .display.picture_box)
   tap guide
   highlight "Display Mode"
@@ -919,6 +922,8 @@ test_display() {
   expect_reply $STEP_SECONDS 200 .ok --arg action picture --arg step 1
   expect '.settings.picture == "original"'
   log ok "Settings switches Display Mode through the API"
+  tap b
+  expect '.screen == "home"'
 }
 
 probe_skin() { guest "mkdir -p $USER_SKINS_DIR/probe && echo \"$1\" > $USER_SKINS_DIR/probe/skin.js"; }
@@ -1134,6 +1139,29 @@ test_dreamcast() {
   retro_shrinks_to_tv gravity-wave-twin-stick-shooter/dreamcast "Gravity Wave"
 }
 
+test_genesis() {
+  install_and_play gentris/genesis Gentris
+  wait_for $STEP_SECONDS guest "grep -q 'SET_GEOMETRY: ' $(game_log gentris/genesis)"
+  core_picture gentris/genesis
+  close_game gentris/genesis Gentris
+}
+
+press_until_redrawn() {
+  wait_for $STEP_SECONDS capture_settled pressed
+  send "${PAD:-1} $1 1"
+  wait_for $STEP_SECONDS capture_differs pressed redrawn
+  send "${PAD:-1} $1 0"
+}
+
+test_snes() {
+  install_and_play snes-pride/snes SNESPride
+  startup=$(state | jq -r .display.frame)
+  for button in $CRAB_PRIDE_FLAG_PRESSES; do press_until_redrawn $button; done
+  expect ".display.frame != \"$startup\""
+  core_picture snes-pride/snes
+  close_game snes-pride/snes SNESPride
+}
+
 test_msdos() {
   install_and_play commander-keen/msdos "Commander Keen"
   expect '.rewind.states >= 1'
@@ -1232,7 +1260,7 @@ test_thumbnails() {
   log ok "one fetch downloads every boxart it asks for"
 }
 
-TESTS="capture symlinks display audio controllers nes actions dreamcast msdos stores gpu logout reboot skins engines thumbnails"
+TESTS="capture symlinks display audio controllers nes genesis snes actions dreamcast msdos stores gpu logout reboot skins engines thumbnails"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in

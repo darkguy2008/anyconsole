@@ -44,6 +44,12 @@ FROM unzip AS azahar
 ADD --checksum=sha256:2223444b74de2c922bae1efcfed60002f696b3c2aaf4fc73fc03e66a395dc26e https://github.com/azahar-emu/azahar/releases/download/2126.2/azahar-libretro-linux-x86_64-2126.2.zip .
 RUN 7z e azahar-libretro-linux-x86_64-2126.2.zip >/dev/null
 
+FROM fedora AS retroarch-frame-size
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gcc
+ADD --checksum=sha256:bd3398d29c3763d18617087020ff56b5450a48a63123403a4b674f8e79947acb https://raw.githubusercontent.com/libretro/RetroArch/69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576/libretro-common/include/libretro.h /
+COPY retroarch-frame-size.c /
+RUN gcc -O2 -Wall -Wextra -Werror -shared -fPIC -o /frame-size.so /retroarch-frame-size.c
+
 FROM fedora AS gpu
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y mesa-dri-drivers mesa-libGL mesa-libEGL libglvnd-gles vulkan-loader mesa-vulkan-drivers pulseaudio-libs
 ENV HOME=/tmp SDL_JOYSTICK_HIDAPI=0 SDL_JOYSTICK_DISABLE_UDEV=1 SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1
@@ -54,6 +60,7 @@ COPY --from=retroarch-download /retroarch /retroarch
 RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib64/${bundled##*/}" ] || rm "$bundled"; done
 COPY retroarch.cfg vulkan.cfg /retroarch/
 COPY retroarch-launch /retroarch/launch
+COPY --from=retroarch-frame-size /frame-size.so /retroarch/
 RUN touch /retroarch/core.opt /retroarch/vulkan.opt
 LABEL anyconsole.vulkan="--appendconfig=/retroarch/vulkan.cfg" anyconsole.rewind="true"
 ENV LD_LIBRARY_PATH=/retroarch/lib

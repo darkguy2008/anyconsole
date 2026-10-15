@@ -10,4 +10,4 @@ merge() {
 options=$(printf '%s' "$GAME_CONFIG" | jq -c '.options // {}')
 merge "$options" /retroarch/core.opt > /tmp/core.opt
 merge "$options" /retroarch/core.opt /retroarch/vulkan.opt > /tmp/vulkan.opt
-exec /retroarch/retroarch --verbose --config /retroarch/retroarch.cfg --libretro /retroarch/core.so "$@"
+LIBRETRO_CORE=/retroarch/core.so exec /retroarch/retroarch --verbose --config /retroarch/retroarch.cfg --libretro /retroarch/frame-size.so "$@"

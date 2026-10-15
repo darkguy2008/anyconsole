@@ -144,7 +144,8 @@ struct window {
     struct wlr_ext_foreign_toplevel_handle_v1 *listed;
     struct wlr_ext_image_capture_source_v1 source;
     char app_id[TEXT_MAX];
-    int sandboxed, display_width;
+    char log_name[TEXT_MAX + sizeof ".log"];
+    int sandboxed, display_width, width, height;
     long log_read;
     float aspect;
     struct wl_list link;
@@ -204,7 +205,7 @@ static GLuint retro_frames;
 static int retro;
 static char pinned[TEXT_MAX], chosen_mode[TEXT_MAX], *written_state;
 static struct wlr_output_mode *applied_mode;
-static int shown_refresh, watcher, manifest_watch = -1;
+static int shown_refresh, watcher, log_watch, manifest_watch = -1;
 static int resolution, canvas_width, canvas_height, started, stopping, dirty;
 static unsigned connections;
 static double pointer_x, pointer_y;
@@ -364,7 +365,7 @@ static struct wlr_box place(struct wlr_box outer, int width, int height) {
 static void size_window(struct window *window) {
     int fullscreen = window->toplevel->requested.fullscreen;
     wlr_xdg_toplevel_set_fullscreen(window->toplevel, fullscreen);
-    wlr_xdg_toplevel_set_size(window->toplevel, fullscreen ? canvas_width : 0, fullscreen ? canvas_height : 0);
+    wlr_xdg_toplevel_set_size(window->toplevel, fullscreen ? canvas_width : window->width, fullscreen ? canvas_height : window->height);
 }
 
 static struct wlr_box area(void) { return fit((struct wlr_box){0, 0, active->output->width, active->output->height}, ASPECT_WIDTH, ASPECT_HEIGHT); }
@@ -1145,27 +1146,48 @@ static void copy_game_frame(struct wlr_ext_image_capture_source_v1 *source, stru
 static const struct wlr_ext_image_capture_source_v1_interface game_source = {.schedule_frame = schedule_game_frame, .copy_frame = copy_game_frame};
 
 static int display_width(struct window *window) {
-    const char *platform = strchr(window->app_id, '/');
-    char path[PATH_MAX], *line = NULL, *field;
-    size_t size = 0;
-    float logged;
-    if (!platform) return window->source.width;
-    snprintf(path, sizeof path, LOG_DIR "/%.*s-%s.log", (int)(platform - window->app_id), window->app_id, platform + 1);
+    return window->aspect > 0 ? (int)lroundf(window->source.height * window->aspect) : (int)window->source.width;
+}
+
+static void read_log(struct window *window) {
+    char path[PATH_MAX], *line = NULL, *field, *size;
+    size_t length = 0;
+    ssize_t read;
+    int width, height;
+    if (!*window->log_name) return;
+    snprintf(path, sizeof path, LOG_DIR "/%s", window->log_name);
     FILE *log = fopen(path, "r");
-    if (log && !fseek(log, window->log_read, SEEK_SET)) {
-        while (getline(&line, &size, log) > 0)
-            if ((field = strstr(line, ASPECT_FIELD)) && sscanf(field, ASPECT_FIELD "%f", &logged) == 1) window->aspect = logged;
-        window->log_read = ftell(log);
+    if (!log) return;
+    if (!fseek(log, window->log_read, SEEK_SET)) {
+        while ((read = getline(&line, &length, log)) > 0 && line[read - 1] == '\n') {
+            window->log_read += read;
+            if (!(field = strstr(line, ASPECT_FIELD)) || sscanf(field, ASPECT_FIELD "%f", &window->aspect) != 1) continue;
+            *field = '\0';
+            if ((size = strrchr(line, ' ')) && sscanf(size, " %dx%d", &width, &height) == 2) window->width = width, window->height = height;
+        }
     }
     free(line);
-    if (log) fclose(log);
-    return window->aspect > 0 ? (int)lroundf(window->source.height * window->aspect) : (int)window->source.width;
+    fclose(log);
+}
+
+static void follow_log(struct window *window) {
+    int width = window->width, height = window->height;
+    read_log(window);
+    if (window->toplevel->base->initialized && (window->width != width || window->height != height)) size_window(window);
+    width = display_width(window);
+    if (width == window->display_width) return;
+    window->display_width = width;
+    write_state();
+    if (window == shown) redraw();
 }
 
 static void on_window_commit(struct wl_listener *listener, void *data) {
     (void)data;
     struct window *window = wl_container_of(listener, window, commit);
-    if (window->toplevel->base->initial_commit) size_window(window);
+    if (window->toplevel->base->initial_commit) {
+        read_log(window);
+        size_window(window);
+    }
     struct wlr_surface *surface = window->toplevel->base->surface;
     if (surface->buffer && ((uint32_t)surface->buffer->base.width != window->source.width || (uint32_t)surface->buffer->base.height != window->source.height)) {
         window->source.width = surface->buffer->base.width;
@@ -1233,6 +1255,8 @@ static void on_new_toplevel(struct wl_listener *listener, void *data) {
     window->source.dmabuf_device = render_gpu->device->dev;
     wlr_drm_format_set_add(&window->source.dmabuf_formats, DRM_FORMAT_XRGB8888, DRM_FORMAT_MOD_LINEAR);
     snprintf(window->app_id, sizeof window->app_id, "%s", context && context->app_id ? context->app_id : "");
+    const char *platform = strchr(window->app_id, '/');
+    if (platform) snprintf(window->log_name, sizeof window->log_name, "%.*s-%s.log", (int)(platform - window->app_id), window->app_id, platform + 1);
     listen(&window->commit, &toplevel->base->surface->events.commit, on_window_commit);
     listen(&window->map, &toplevel->base->surface->events.map, on_window_map);
     listen(&window->unmap, &toplevel->base->surface->events.unmap, on_window_unmap);
@@ -1404,7 +1428,11 @@ static int on_watched_change(int fd, uint32_t mask, void *data) {
         if (!event->len) continue;
         if (event->wd == manifest_watch && !strcmp(event->name, MANIFEST)) read_manifest(shown);
         else if (!strcmp(event->name, basename(SETTINGS_FILE))) load_settings();
-        else continue;
+        else if (event->wd == log_watch) {
+            struct window *window;
+            wl_list_for_each(window, &windows, link) if (!strcmp(event->name, window->log_name)) follow_log(window);
+            continue;
+        } else continue;
         choose_display();
     }
     return 0;
@@ -1483,6 +1511,7 @@ int main(int argc, char *argv[]) {
     snprintf(settings_directory, sizeof settings_directory, "%.*s", (int)(strrchr(SETTINGS_FILE, '/') - SETTINGS_FILE), SETTINGS_FILE);
     watcher = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
     inotify_add_watch(watcher, settings_directory, IN_MOVED_TO);
+    log_watch = inotify_add_watch(watcher, LOG_DIR, IN_MODIFY);
     wl_event_loop_add_fd(loop, watcher, WL_EVENT_READABLE, on_watched_change, NULL);
     wl_event_loop_add_signal(loop, SIGCHLD, on_child, NULL);
     flip_retry = wl_event_loop_add_timer(loop, on_flip_retry, NULL);
