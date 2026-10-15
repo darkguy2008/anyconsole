@@ -435,6 +435,10 @@ retro_picture() {
   expect ".display.frame == \"$size\""
   kiosk_log_lacks '^compositor: shader:' "the compositor could not build the Retro shader"
   log ok "the compositor draws $1 through CRT Geom"
+  close_game "$1" "$2"
+  install_and_play "$1" "$2"
+  expect ".display.frame == \"$(retroarch_size "$1")\""
+  log ok "RetroArch starts with only the game picture in Retro"
   api POST settings "picture original" >/dev/null
   expect '.settings.picture == "original" and .display.frame == .display.canvas'
   log ok "Original turns RetroArch back to fullscreen while playing"
@@ -985,7 +989,7 @@ test_nes() {
   change_emulation
   second_player_joins_and_leaves alter-ego/nes
   save_states alter-ego/nes retroarch_loaded_saved_state
-  retro_picture alter-ego/nes
+  retro_picture alter-ego/nes "Alter Ego"
 
   tap guide
   expect ".guide and .screen == \"guide\" and ($(status_of alter-ego/nes paused)) and .audio.output != \"\""
