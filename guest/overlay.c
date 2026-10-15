@@ -263,7 +263,24 @@ static pid_t spawn(char *const argv[], int input, int output, int errors) {
     return pid;
 }
 
-static void start(char *const argv[]) { spawn(argv, -1, log_file, log_file); }
+static pid_t *helpers;
+static int helper_count;
+
+static void start(char *const argv[]) {
+    pid_t pid = spawn(argv, -1, log_file, log_file);
+    if (pid < 0) return;
+    helpers = realloc(helpers, (helper_count + 1) * sizeof *helpers);
+    helpers[helper_count++] = pid;
+}
+
+static int reap_helper(pid_t pid) {
+    for (int i = 0; i < helper_count; i++)
+        if (helpers[i] == pid) {
+            helpers[i] = helpers[--helper_count];
+            return 1;
+        }
+    return 0;
+}
 
 static void tell_padd(const char *format, ...) {
     char line[PIPE_BUF];
@@ -1640,6 +1657,12 @@ static void restart_enhanced(void) {
     resume(active);
 }
 
+static void apply_settings(void) {
+    int was_enhanced = chosen_picture() == ENHANCED;
+    read_settings();
+    if ((chosen_picture() == ENHANCED) != was_enhanced) restart_enhanced();
+}
+
 static void press_save_states(enum command command) {
     int filled = slot_filled(guide_profile, save_slot);
     if (command == X_BUTTON && filled) push(OVERWRITE_DIALOG, -1);
@@ -2458,7 +2481,7 @@ static void apply_governor(void) {
 }
 
 static int settled(const struct request *request) {
-    if (capture.current || refresher > 0) return 0;
+    if (capture.current || refresher > 0 || helper_count) return 0;
     if (request->game < 0) return 1;
     const struct game *game = &games[request->game];
     return !game->job && !game->freezer && !game->probe && !game->restart && !(game->pid && (!game_window(request->game) || game->closing));
@@ -2556,6 +2579,7 @@ static void reap(void) {
     int status;
     for (pid_t pid; (pid = waitpid(-1, &status, WNOHANG)) > 0;) {
         int failed = !WIFEXITED(status) || WEXITSTATUS(status);
+        if (reap_helper(pid)) apply_settings();
         if (pid == refresher) {
             refresher = 0;
             rescan();
@@ -2625,9 +2649,7 @@ static void read_changes(int runtime_watch, int display_watch, int controllers_w
         } else if (event->wd == controllers_watch && !strcmp(event->name, basename(CONTROLLERS_FILE))) {
             read_controllers();
         } else if (event->wd != runtime_watch && !strcmp(event->name, basename(SETTINGS_FILE))) {
-            int was_enhanced = chosen_picture() == ENHANCED;
-            read_settings();
-            if ((chosen_picture() == ENHANCED) != was_enhanced) restart_enhanced();
+            apply_settings();
         } else if (event->wd != runtime_watch && !strcmp(event->name, basename(STORES_FILE))) {
             read_stores();
             refresh();

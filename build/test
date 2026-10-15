@@ -1254,7 +1254,7 @@ test_enhanced() {
   key=mini-mine-rt/psp
   install_and_play $key "Mini Mine RT"
   expect '.rewind.states >= 1'
-  restart_into $key 'Loading state' expect_reply $STEP_SECONDS 200 '.ok and .state.settings.picture == "enhanced"' --arg action picture --arg step -1
+  restart_into $key 'Loading state' expect_reply $STEP_SECONDS 200 ".ok and .state.settings.picture == \"enhanced\" and (.state | $(closed_and_running $key))" --arg action picture --arg step -1
   [ "$(container_env $key ENHANCED)" = '{"scale":2}' ] || { log FAIL "$key did not get its enhanced options" >&2; exit 1; }
   wait_for $STEP_SECONDS core_options_hold $key '{"ppsspp_internal_resolution": "960x544"}'
   log ok "Enhanced restarts $key at twice its resolution and loads the state it left"
@@ -1282,7 +1282,7 @@ test_ps2() {
   key=cubes-demo/ps2
   install_and_play $key "Cubes Demo"
   expect ".display.frame == \"$(picture_frame 4 3)\""
-  restart_into $key 'Loading GS' expect_reply $STEP_SECONDS 200 '.ok and .state.settings.picture == "enhanced"' --arg action picture --arg step -1
+  restart_into $key 'Loading GS' expect_reply $STEP_SECONDS 200 ".ok and .state.settings.picture == \"enhanced\" and (.state | $(closed_and_running $key))" --arg action picture --arg step -1
   expect ".display.frame == \"$(picture_frame 16 9)\""
   log ok "Enhanced restarts $key with its widescreen patch, loads the state it left, and the compositor widens its window to 16:9"
   restart_into $key 'Loading GS' api POST settings "picture original"
