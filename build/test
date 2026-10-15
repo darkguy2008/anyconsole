@@ -421,6 +421,13 @@ kiosk_log_lacks() { guest "! grep '$1' $LOG_DIR/kiosk.log" || { log FAIL "$2" >&
 retroarch_size() { guest "grep -o 'Set video size to: [0-9a-z]*' $(game_log "$1") | tail -1 | cut -d' ' -f5"; }
 retroarch_windowed() { [ "$(retroarch_size "$1")" != fullscreen ]; }
 
+integer_picture() {
+  echo '.display as $display | ($display.frame | split("x") | map(tonumber)) as [$width, $height]
+    | ([$display.area_box.width / $width, $display.area_box.height / $height] | min | floor) as $factor
+    | if $factor >= 2 then $display.picture_box.width == $factor * $width and $display.picture_box.height == $factor * $height
+      else $display.picture_box.width == $display.area_box.width or $display.picture_box.height == $display.area_box.height end'
+}
+
 retroarch_size_changes() { guest "grep -c 'Set video size to:' $(game_log "$1")"; }
 
 retro_picture() {
@@ -445,6 +452,8 @@ retro_picture() {
   size=$(retroarch_size "$1")
   expect ".display.frame == \"$size\""
   log ok "RetroArch leaves fullscreen while playing and hands the compositor only the game picture"
+  expect "$(integer_picture)"
+  log ok "Retro draws the game at the largest integer scale of at least 2x, else fits it to the screen"
   snapshot "${1%/*}-retro"
   expect ".display.frame == \"$size\""
   kiosk_log_lacks '^compositor: shader:' "the compositor could not build the Retro shader"
@@ -453,9 +462,17 @@ retro_picture() {
   install_and_play "$1" "$2"
   expect ".display.frame == \"$(retroarch_size "$1")\""
   log ok "RetroArch starts with only the game picture in Retro"
-  api POST settings "picture original" >/dev/null
-  expect '.settings.picture == "original" and .display.frame == .display.canvas'
-  log ok "Original turns RetroArch back to fullscreen while playing"
+  box=$(state | jq -c .display.picture_box)
+  tap guide
+  expect "$(status_of "$1" paused)"
+  highlight "Display Mode"
+  tap dpleft
+  expect ".settings.picture == \"original\" and .display.picture_box == $box"
+  log ok "Original keeps the game at the Retro size while the guide is open"
+  tap guide
+  expect "$(closed_and_running "$1") and .display.frame == .display.canvas"
+  log ok "Original turns RetroArch back to fullscreen when the guide closes"
+  snapshot "${1%/*}-original"
 }
 
 close_game() {
