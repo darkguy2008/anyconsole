@@ -147,7 +147,7 @@ struct game {
     json_object *emulate;
     double thumbnail_aspect;
     time_t thumbnail_time;
-    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown, error_output, enhanced, restart_slot;
+    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown, error_output, enhanced, restart_slot, booted;
     size_t job_length, error_length;
     enum task task;
     enum restart restart;
@@ -1709,7 +1709,7 @@ static void play(int index) {
     memset(guide_depths, 0, sizeof guide_depths);
     game->rewinds = 0;
     save_slot = 0;
-    game->paused = game->closing = 0;
+    game->paused = game->closing = game->booted = 0;
     show_game(index);
     snprintf(owner, sizeof owner, "%d", game->owner);
     game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, states, owner, NULL}, commands[0], output, output);
@@ -2515,6 +2515,11 @@ static void settle(void) {
     for (int i = 0; i < game_count; i++) {
         struct window *window = game_window(i);
         if (window && window->activated && (i != active || dashboard_open)) zwlr_foreign_toplevel_handle_v1_set_minimized(window->handle);
+    }
+    struct window *window = active >= 0 ? game_window(active) : NULL;
+    if (window && window->activated && !games[active].booted) {
+        games[active].booted = 1;
+        tell_padd("boot");
     }
     apply_governor();
     if (menu_told != menu_wanted()) {

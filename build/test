@@ -1204,6 +1204,16 @@ test_msdos() {
   close_game commander-keen/msdos "Commander Keen"
 }
 
+test_msx2() {
+  install_and_play cracky-msx/msx2 "Cracky MSX"
+  wait_for $STEP_SECONDS input_holds $INPUT_NODES "$KEYBOARD_NAME" KEY_LEFTCTRL 1
+  log ok "padd holds the manifest's boot key once the game's window is up"
+  hold_seconds=$(jq '.msx2.hold.ms / 1000 | ceil' "$TEST_STORE/cracky-msx/manifest.json")
+  wait_for $((hold_seconds + STEP_SECONDS)) input_holds $INPUT_NODES "$KEYBOARD_NAME" KEY_LEFTCTRL 0
+  log ok "padd lets go of the boot key once the manifest's time is up"
+  close_game cracky-msx/msx2 "Cracky MSX"
+}
+
 test_stores() {
   ensure_installed alter-ego/nes "Alter Ego"
   ensure_installed commander-keen/msdos "Commander Keen"
@@ -1318,7 +1328,7 @@ test_thumbnails() {
   log ok "one fetch downloads every boxart it asks for"
 }
 
-TESTS="capture symlinks display audio controllers nes genesis snes actions dreamcast msdos stores gpu logout reboot skins engines thumbnails enhanced ps2"
+TESTS="capture symlinks display audio controllers nes genesis snes actions dreamcast msdos msx2 stores gpu logout reboot skins engines thumbnails enhanced ps2"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in

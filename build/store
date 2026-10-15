@@ -33,7 +33,7 @@ add_download() {
 add_zipped() {
   file=${4##*/}
   extract "$file" "$4"
-  add_game "$1" "$2" "$3" "$(find "$SCRATCH/$file" -iname "$5" | head -1)"
+  add_game "$1" "$2" "$3" "$(find "$SCRATCH/$file" -iname "$5" | head -1)" "${6:-}"
 }
 
 add_zipped_without() {
@@ -72,6 +72,7 @@ add_zipped the-hat-chooses-the-wizard "The Hat Chooses the Wizard" gba "$GITHUB/
 add_download legendary-spear "Legendary Spear" atari2600 "$GITHUB/DChristianson/legendary-spear/releases/download/v1.1/LegendarySpear_NTSC.bin"
 add_download kumi-daiko-beatoff "Kumi-Daiko Beatoff 64" n64 "$GITHUB/ptimonen/n64-riistahillo/releases/download/1.0/Kumi-Daiko-Beatoff-64.n64"
 add_zipped cracky "Cracky" wsc "$INUFUTO/16bit/wsc/cracky_bin.zip" '*.wsc'
+add_zipped cracky-msx "Cracky MSX" msx2 "$INUFUTO/8bit/msx/cracky_rom.zip" '*.rom' '{"hold": {"key": "KEY_LEFTCTRL", "ms": 15000}}'
 add_zipped gc-controller-test "GC Controller Test" gamecube "$GITHUB/corenting/GC-Controller-Test/releases/download/v1.2/gc-1-2.zip" '*.dol'
 add_download mini-mine-rt "Mini Mine RT" psp "$GITHUB/Saymond/PSP-apps/releases/download/v2.0/EBOOT.PBP" '{"enhanced": {"scale": 2}}'
 [ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo "Cubes Demo" ps2 "$GITHUB/glampert/ps2-homebrew/raw/602441a6877a3136709d6320664340d52e3027a1/source/demos/bin/cubes_demo.elf" '{"enhanced": {"widescreen": true, "scale": 2}}'

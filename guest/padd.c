@@ -180,7 +180,7 @@ static const struct { const char *name; enum mode native; unsigned modes; } kind
     [MOUSE] = {"mouse", POINTER, MODE(POINTER) | MODE(ANALOG)},
 };
 
-enum source { COMMANDS, HOTPLUG, SETTINGS, PAIRING, SLEEP, POINTING, RESTING, BUS, BLOW, SPEAKER, FIXED_SOURCES, CAPTURED = FIXED_SOURCES, VIRTUAL_PAD, PHYSICAL_PAD, MICROPHONE, TUNNEL };
+enum source { COMMANDS, HOTPLUG, SETTINGS, PAIRING, SLEEP, POINTING, RESTING, BUS, BLOW, SPEAKER, HOLD, FIXED_SOURCES, CAPTURED = FIXED_SOURCES, VIRTUAL_PAD, PHYSICAL_PAD, MICROPHONE, TUNNEL };
 #define WATCHES_PER_PAD (TUNNEL - PHYSICAL_PAD + 1)
 #define WATCHED_MAX (FIXED_SOURCES + CAPTURED_MAX + WATCHES_PER_PAD * PHYSICAL_PADS_MAX + PADS)
 
@@ -227,8 +227,9 @@ struct bluetooth_device {
 };
 
 static struct libevdev_uinput *pad[PADS], *touchpad[PADS], *motion[PADS], *keyboard;
-static int emitted[PADS][CONTROL_COUNT], keymap[CONTROL_COUNT], rerouted[CONTROL_COUNT], route_count, axis_control[SDL_CONTROLLER_AXIS_MAX], button_control[SDL_CONTROLLER_BUTTON_MAX];
+static int boot_key, emitted[PADS][CONTROL_COUNT], keymap[CONTROL_COUNT], rerouted[CONTROL_COUNT], route_count, axis_control[SDL_CONTROLLER_AXIS_MAX], button_control[SDL_CONTROLLER_BUTTON_MAX];
 static struct route routes[CONTROL_COUNT * SIGNS];
+static struct itimerspec boot_hold;
 static struct ff_effect *effects[PADS];
 static int effect_count[PADS], gain[PADS];
 static SDL_JoystickID motion_source[PADS];
@@ -1493,10 +1494,33 @@ static void add_route(const char *source, const char *target) {
     rerouted[from] |= sign < 0 ? NEGATIVE_SIDE : sign > 0 ? POSITIVE_SIDE : BOTH_SIDES;
 }
 
+static void release_boot_key(void) {
+    press_key(boot_key, 0);
+    timerfd_settime(watched[HOLD].fd, 0, &(struct itimerspec){0}, NULL);
+}
+
+static void read_boot_hold(json_object *hold) {
+    json_object *key, *milliseconds;
+    if (!json_object_object_get_ex(hold, "key", &key) || !json_object_object_get_ex(hold, "ms", &milliseconds)) return;
+    int code = libevdev_event_code_from_name(EV_KEY, json_object_get_string(key));
+    if (code < 0) { fprintf(stderr, "padd: cannot hold %s\n", json_object_get_string(key)); return; }
+    int64_t duration = json_object_get_int64(milliseconds);
+    boot_key = code;
+    boot_hold = (struct itimerspec){.it_value = {duration / MSEC_PER_SEC, duration % MSEC_PER_SEC * NSEC_PER_MSEC}};
+}
+
+static void hold_boot_key(void) {
+    if (!boot_key) return;
+    press_key(boot_key, 1);
+    timerfd_settime(watched[HOLD].fd, 0, &boot_hold, NULL);
+}
+
 static void load_maps(const char *game) {
     char path[PATH_MAX], slug[NAME_MAX + 1];
-    json_object *manifest = NULL, *config = NULL, *keys, *pad_map;
+    json_object *manifest = NULL, *config = NULL, *keys, *pad_map, *hold;
     release_all();
+    release_boot_key();
+    boot_key = 0;
     memset(keymap, 0, sizeof keymap);
     memset(rerouted, 0, sizeof rerouted);
     route_count = 0;
@@ -1515,6 +1539,7 @@ static void load_maps(const char *game) {
     if (json_object_object_get_ex(config, "pad", &pad_map)) {
         json_object_object_foreach(pad_map, source, target) add_route(source, json_object_get_string(target));
     }
+    if (json_object_object_get_ex(config, "hold", &hold)) read_boot_hold(hold);
     json_object_put(manifest);
 }
 
@@ -1571,6 +1596,8 @@ static void command(char *line) {
     } else if (count >= 2 && !strcmp(words[0], "game")) {
         const char *game = line + argument;
         load_maps(strcmp(game, NO_GAME) ? game : "");
+    } else if (count == 1 && !strcmp(words[0], "boot")) {
+        hold_boot_key();
     } else if (count == 2 && !strcmp(words[0], "menu")) {
         set_menu(atoi(words[1]));
     } else if (count == 2 && !strcmp(words[0], "pads")) {
@@ -1963,7 +1990,7 @@ int main(void) {
         [SETTINGS] = inotify_init1(IN_NONBLOCK | IN_CLOEXEC), [PAIRING] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC),
         [SLEEP] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC), [POINTING] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC),
         [RESTING] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC), [BUS] = -1, [BLOW] = -1,
-        [SPEAKER] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)};
+        [SPEAKER] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC), [HOLD] = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)};
     snprintf(settings_directory, sizeof settings_directory, "%.*s", (int)(strrchr(SETTINGS_FILE, '/') - SETTINGS_FILE), SETTINGS_FILE);
     for (enum source source = COMMANDS; source < FIXED_SOURCES; source++) {
         watched[source] = (struct pollfd){.fd = fixed[source], .events = POLLIN};
@@ -2007,6 +2034,7 @@ int main(void) {
             case BUS: break;
             case BLOW: sent_blow(watched[i].fd); break;
             case SPEAKER: if (expired(watched[i].fd)) speak(); break;
+            case HOLD: if (expired(watched[i].fd)) release_boot_key(); break;
             case MICROPHONE: hear(i); break;
             case TUNNEL: reap_tunnel(i); break;
             case CAPTURED: pass_through(i); break;
