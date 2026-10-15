@@ -1397,6 +1397,8 @@ static void resume(int index) {
     }
     show_game(index);
     active = index;
+    dashboard[0].action = OPEN_GAME;
+    dashboard[0].arg = index;
     dashboard_open = 0;
     guide_shown = 0;
     refresh_rewinds();
