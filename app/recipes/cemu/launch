@@ -5,7 +5,6 @@ PRO_HOME_BUTTON=11
 GAMEPAD="Wii U GamePad"
 PRO_CONTROLLER="Wii U Pro Controller"
 FULL_VOLUME=100
-MAILBOX_VSYNC=2
 CEMU=$XDG_CONFIG_HOME/Cemu
 MLC=/saves/mlc01
 TV_PACING_PACK=$CEMU/graphicPacks/anyconsole-tv-pacing
@@ -28,7 +27,7 @@ settings() {
 <content>
 	<Graphic>
 		<api>1</api>
-		<VSync>$MAILBOX_VSYNC</VSync>
+		<VSync>1</VSync>
 	</Graphic>
 	<Audio>
 		<api>3</api>
@@ -60,7 +59,7 @@ version = 7
 default = true
 
 [Control]
-vsyncFrequency = $(jq -n --argjson hz "$REFRESH" '$hz | round')
+vsyncFrequency = $(printf '%.0f' "$REFRESH")
 EOF
 controller_profiles
 exec xwayland-run -fullscreen -geometry "$CANVAS" -- sh -c '/opt/cemu/screen environment && exec "$@"' sh /opt/cemu/AppRun -f -g "$1" -m "$MLC"
