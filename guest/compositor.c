@@ -59,6 +59,7 @@
 #define ASPECT_HEIGHT 9
 #define MIN_INTEGER_SCALE 2
 #define ASPECT_FIELD ", Aspect: "
+#define FITTED_ASPECT_FIELD "Setting aspect ratio to "
 #define GPUS_MAX 8
 #define TEXT_MAX 256
 #define NO_VULKAN -1
@@ -147,7 +148,7 @@ struct window {
     char log_name[TEXT_MAX + sizeof ".log"];
     int sandboxed, display_width, width, height;
     long log_read;
-    float aspect;
+    float aspect, fitted;
     struct wl_list link;
     struct wl_listener commit, map, unmap, destroy, activate, minimize, request_fullscreen;
 };
@@ -364,6 +365,7 @@ static struct wlr_box place(struct wlr_box outer, int width, int height) {
 
 static void size_window(struct window *window) {
     int fullscreen = window->toplevel->requested.fullscreen;
+    if (window->fitted > 0) window->width = lroundf(canvas_height * window->fitted), window->height = canvas_height;
     wlr_xdg_toplevel_set_fullscreen(window->toplevel, fullscreen);
     wlr_xdg_toplevel_set_size(window->toplevel, fullscreen ? canvas_width : window->width, fullscreen ? canvas_height : window->height);
 }
@@ -1162,6 +1164,7 @@ static void read_log(struct window *window) {
     if (!fseek(log, window->log_read, SEEK_SET)) {
         while ((read = getline(&line, &length, log)) > 0 && line[read - 1] == '\n') {
             window->log_read += read;
+            if ((field = strstr(line, FITTED_ASPECT_FIELD)) && sscanf(field, FITTED_ASPECT_FIELD "%f", &window->fitted) == 1) continue;
             if (!(field = strstr(line, ASPECT_FIELD)) || sscanf(field, ASPECT_FIELD "%f", &window->aspect) != 1) continue;
             *field = '\0';
             if ((size = strrchr(line, ' ')) && sscanf(size, " %dx%d", &width, &height) == 2) window->width = width, window->height = height;
@@ -1173,8 +1176,9 @@ static void read_log(struct window *window) {
 
 static void follow_log(struct window *window) {
     int width = window->width, height = window->height;
+    float fitted = window->fitted;
     read_log(window);
-    if (window->toplevel->base->initialized && (window->width != width || window->height != height)) size_window(window);
+    if (window->toplevel->base->initialized && (window->width != width || window->height != height || window->fitted != fitted)) size_window(window);
     width = display_width(window);
     if (width == window->display_width) return;
     window->display_width = width;

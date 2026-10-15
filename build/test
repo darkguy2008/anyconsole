@@ -376,12 +376,12 @@ rewind_to_older_state() {
   states=$(state | jq .rewind.states)
   tap a
   expect "(.guide | not) and .rewind.states == $((states - 1)) and .rewind.back == 0 and ($(status_of "$1" running))"
-  wait_for $STEP_SECONDS retroarch_loaded_a_state "$1"
+  wait_for $STEP_SECONDS loaded_a_state "$1" 'Loading state'
   log ok "rewound $1 to an older state"
 }
 
-retroarch_loaded_a_state() { guest "grep -q 'Loading state' $(game_log "$1") && ! grep -q 'Failed to load state' $(game_log "$1")"; }
-retroarch_loaded_saved_state() { guest "grep -q 'Loading state \".*\\.state\",' $(game_log "$1") && ! grep -q 'Failed to load state' $(game_log "$1")"; }
+loaded_a_state() { guest "grep -q '$2' $(game_log "$1") && ! grep -q 'Failed to load state' $(game_log "$1")"; }
+retroarch_loaded_saved_state() { loaded_a_state "$1" 'Loading state ".*\.state",'; }
 
 save_states() {
   saved=$(states_of "$1")/2
@@ -516,13 +516,13 @@ container_env() { guest "docker inspect -f '{{range .Config.Env}}{{println .}}{{
 
 container_of() { guest "echo $(game_container "$1")"; }
 
-restarted_with_state() { [ "$(container_of "$1")" != "$2" ] && retroarch_loaded_a_state "$1"; }
+restarted_with_state() { [ "$(container_of "$1")" != "$2" ] && loaded_a_state "$1" "$3"; }
 
 restart_into() {
-  restarting=$1 container=$(container_of "$1") states=$(state | jq .rewind.states)
-  shift
+  restarting=$1 loaded=$2 container=$(container_of "$1") states=$(state | jq .rewind.states)
+  shift 2
   "$@" >/dev/null
-  wait_for $STEP_SECONDS restarted_with_state "$restarting" "$container"
+  wait_for $STEP_SECONDS restarted_with_state "$restarting" "$container" "$loaded"
   expect "$(closed_and_running "$restarting") and .rewind.states > $states"
 }
 
@@ -1218,11 +1218,11 @@ test_enhanced() {
   key=mini-mine-rt/psp
   install_and_play $key "Mini Mine RT"
   expect '.rewind.states >= 1'
-  restart_into $key expect_reply $STEP_SECONDS 200 '.ok and .state.settings.picture == "enhanced"' --arg action picture --arg step -1
+  restart_into $key 'Loading state' expect_reply $STEP_SECONDS 200 '.ok and .state.settings.picture == "enhanced"' --arg action picture --arg step -1
   [ "$(container_env $key ENHANCED)" = '{"scale":2}' ] || { log FAIL "$key did not get its enhanced options" >&2; exit 1; }
   wait_for $STEP_SECONDS core_options_hold $key '{"ppsspp_internal_resolution": "960x544"}'
   log ok "Enhanced restarts $key at twice its resolution and loads the state it left"
-  restart_into $key api POST settings "picture original"
+  restart_into $key 'Loading state' api POST settings "picture original"
   [ "$(container_env $key ENHANCED)" = '{}' ] && guest "! docker exec $(game_container $key) grep -q ppsspp_internal_resolution /tmp/core.opt" ||
     { log FAIL "$key kept its enhanced options in Original" >&2; exit 1; }
   log ok "Original restarts $key at its native resolution and loads the state it left"
@@ -1234,6 +1234,25 @@ test_enhanced() {
   api POST settings "picture original" >/dev/null
   expect '.settings.picture == "original"'
   close_game $key "Mini Mine RT"
+}
+
+picture_frame() { height=$(state | jq ".display.canvas | $SIZE_NUMBERS | .[1]"); echo "$((height * $1 / $2))x$height"; }
+
+test_ps2() {
+  if [ ! -d "$TEST_BIOS/ps2" ]; then
+    log skip "ps2: no PS2 BIOS in $TEST_BIOS/ps2 on the build host"
+    return
+  fi
+  key=cubes-demo/ps2
+  install_and_play $key "Cubes Demo"
+  expect ".display.frame == \"$(picture_frame 4 3)\""
+  restart_into $key 'Loaded state from slot' expect_reply $STEP_SECONDS 200 '.ok and .state.settings.picture == "enhanced"' --arg action picture --arg step -1
+  expect ".display.frame == \"$(picture_frame 16 9)\""
+  log ok "Enhanced restarts $key with its widescreen patch, loads the state it left, and the compositor widens its window to 16:9"
+  restart_into $key 'Loaded state from slot' api POST settings "picture original"
+  expect ".display.frame == \"$(picture_frame 4 3)\""
+  log ok "Original restarts $key in its 4:3 window and loads the state it left"
+  close_game $key "Cubes Demo"
 }
 
 test_gpu() {
@@ -1299,7 +1318,7 @@ test_thumbnails() {
   log ok "one fetch downloads every boxart it asks for"
 }
 
-TESTS="capture symlinks display audio controllers nes genesis snes actions dreamcast msdos stores gpu logout reboot skins engines thumbnails enhanced"
+TESTS="capture symlinks display audio controllers nes genesis snes actions dreamcast msdos stores gpu logout reboot skins engines thumbnails enhanced ps2"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in

@@ -10,6 +10,7 @@ SAVE_SLOT=01
 LOAD_SLOT=02
 PICTURE_WIDTH=4
 PICTURE_HEIGHT=3
+PICTURE_ASPECT=$PICTURE_WIDTH:$PICTURE_HEIGHT
 WIDESCREEN_ASPECT_RATIO="Auto 4:3/3:2"
 NATIVE_SCALE=1
 
@@ -45,7 +46,7 @@ VsyncEnable = true
 SyncToHostRefreshRate = true
 UseVSyncForTiming = true
 AspectRatio = $aspect_ratio
-FMVAspectRatioSwitch = $PICTURE_WIDTH:$PICTURE_HEIGHT
+FMVAspectRatioSwitch = $PICTURE_ASPECT
 upscale_multiplier = $(enhanced scale $NATIVE_SCALE)
 OsdMessagesPos = $OSD_MESSAGES_NONE
 [EmuCore/Speedhacks]
@@ -64,7 +65,7 @@ if [ "${1:-}" = --vulkan ]; then
 fi
 game=${1##*/}
 widescreen=$(enhanced widescreen false)
-aspect_ratio=$PICTURE_WIDTH:$PICTURE_HEIGHT
+aspect_ratio=$PICTURE_ASPECT
 [ "$widescreen" = false ] || aspect_ratio=$WIDESCREEN_ASPECT_RATIO
 rm -rf "$PCSX2/patches"
 mkdir -p "$PCSX2/inis" "$PCSX2/bios" "$PCSX2/patches"

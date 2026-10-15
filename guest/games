@@ -259,7 +259,7 @@ run() {
     -v "$3:/run/wayland" -v "$4:/states" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
     -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PADS="$PADS" -e PAD_NAME="$PAD_NAME" -e MOTION_NAME="$MOTION_NAME" -e MICROPHONE="$MICROPHONE_NODE" -e SCREEN="$(screen_state "$1" "$2")" \
     -e GAME_CONFIG="$config" -e ENHANCED="$(enhanced "$config")" \
-    -e REFRESH="$(jq -r --arg platform "$2" --argjson display "$display" --argjson mhz "$MHZ_PER_HZ" '.[$platform].refresh // ($display.refresh / $mhz)' "$GAMES_DIR/$1/manifest.json")" \
+    -e REFRESH="$(printf '%s' "$config" | jq -r --argjson display "$display" --argjson mhz "$MHZ_PER_HZ" '.refresh // ($display.refresh / $mhz)')" \
     -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
     -v "$rom:/game:ro" -v "$saves:/saves" "$GAME_IMAGE/$2" $video "/game/$file"
 }
