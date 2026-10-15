@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
 #include <EGL/egl.h>
-#include <GLES3/gl3.h>
+#include <GLES3/gl32.h>
 #include <GLES2/gl2ext.h>
 #include <drm_fourcc.h>
 #include <json-c/json.h>
@@ -72,10 +72,13 @@
 #define CORNERS 4
 #define BACKGROUND_EFFECT_VERSION 1
 #define GAME_REFRESH_MHZ (60 * MHZ_PER_HZ)
-#define RETRO_SHADER SHADERS_DIR "/crt-geom"
+#define RETRO_PASSES SHADERS_DIR "/passes"
+#define RETRO_PASS SHADERS_DIR "/%d.%s"
 #define RETRO_PICTURE "retro"
 #define RETRO_POSITION 0
 #define RETRO_COORDINATE 1
+#define RETRO_BLOCKS 2
+#define RETRO_ORIGINAL_UNIT 1
 
 enum filter { NEAREST, LINEAR, PIXEL };
 static const char *filters[] = {[NEAREST] = "nearest", [LINEAR] = "linear", [PIXEL] = "pixel"};
@@ -146,7 +149,17 @@ struct window {
 struct keyboard { struct wlr_keyboard *keyboard; struct wl_listener key, modifiers, destroy; };
 struct pointer { struct wl_listener motion, button, axis, frame, destroy; };
 struct program { GLuint id; GLint position, coordinate, size, extent; };
-struct retro_program { GLuint id; GLint frame_count, mvp, output_size, source_size; };
+enum scale_type { SOURCE_SCALE, VIEWPORT_SCALE, ABSOLUTE_SCALE };
+struct retro_target { GLuint texture, framebuffer; int width, height; GLint filter; };
+struct retro_pass {
+    GLuint program;
+    GLint output_size[RETRO_BLOCKS], source_size[RETRO_BLOCKS], original_size[RETRO_BLOCKS], frame_count[RETRO_BLOCKS];
+    enum scale_type type_x, type_y;
+    float scale_x, scale_y;
+    int floating;
+    unsigned frame_count_mod;
+    struct retro_target target;
+};
 
 static struct wl_display *display;
 static struct wl_event_source *flip_retry;
@@ -174,8 +187,11 @@ static struct wlr_layer_surface_v1 *overlay;
 static struct wl_listener overlay_commit, overlay_destroy;
 static struct wlr_swapchain *canvas_chain;
 static struct program programs[sizeof sampler_prefixes / sizeof *sampler_prefixes];
-static const char *const retro_fragments[] = {RETRO_SHADER ".frag", RETRO_SHADER ".external.frag"};
-static struct retro_program retro_programs[sizeof retro_fragments / sizeof *retro_fragments];
+static const char *const scale_types[] = {[SOURCE_SCALE] = "source", [VIEWPORT_SCALE] = "viewport", [ABSOLUTE_SCALE] = "absolute"};
+static const char *const retro_blocks[RETRO_BLOCKS] = {"global", "registers"};
+static struct retro_pass *retro_passes;
+static struct retro_target retro_original;
+static int retro_pass_count;
 static struct wlr_swapchain *retro_chain;
 static GLuint retro_frames;
 static int retro;
@@ -697,6 +713,19 @@ static struct program *pixel_program(GLenum target) {
     return program;
 }
 
+static void blit(struct wlr_gles2_texture_attribs attributes, GLint filter, int width, int height, GLfloat extent_x, GLfloat extent_y, const GLfloat *corners) {
+    struct program *program = pixel_program(attributes.target);
+    glUseProgram(program->id);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(attributes.target, attributes.tex);
+    glTexParameteri(attributes.target, GL_TEXTURE_MIN_FILTER, filter);
+    glTexParameteri(attributes.target, GL_TEXTURE_MAG_FILTER, filter);
+    glUniform2f(program->size, width, height);
+    glUniform2f(program->extent, extent_x, extent_y);
+    draw_quad(program->position, program->coordinate, corners);
+    glBindTexture(attributes.target, 0);
+}
+
 static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct wlr_texture *game) {
     struct wlr_output *output = active->output;
     if (!wlr_output_configure_primary_swapchain(output, state, &output->swapchain)) return 0;
@@ -708,8 +737,6 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct
         return 0;
     }
     GLuint framebuffer = wlr_gles2_renderer_get_buffer_fbo(renderer, buffer);
-    struct wlr_gles2_texture_attribs attributes = current_attributes(texture);
-    struct program *program = pixel_program(attributes.target);
     struct wlr_box picture = composed ? box : fit(box, texture->width, texture->height);
     GLfloat left = 2.0f * picture.x / output->width - 1, right = 2.0f * (picture.x + picture.width) / output->width - 1;
     GLfloat top = 2.0f * picture.y / output->height - 1, bottom = 2.0f * (picture.y + picture.height) / output->height - 1;
@@ -719,15 +746,8 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct
     glDisable(GL_BLEND);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
-    glUseProgram(program->id);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(attributes.target, attributes.tex);
-    glTexParameteri(attributes.target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(attributes.target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glUniform2f(program->size, texture->width, texture->height);
-    glUniform2f(program->extent, (GLfloat)texture->width / picture.width, (GLfloat)texture->height / picture.height);
-    draw_quad(program->position, program->coordinate, corners);
-    glBindTexture(attributes.target, 0);
+    blit(current_attributes(texture), GL_LINEAR, texture->width, texture->height, (GLfloat)texture->width / picture.width,
+        (GLfloat)texture->height / picture.height, corners);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glFlush();
     wlr_output_state_set_buffer(state, buffer);
@@ -748,55 +768,138 @@ static char *read_text(const char *path) {
     return text;
 }
 
-static struct retro_program *retro_program(GLenum target) {
-    int external = target == GL_TEXTURE_EXTERNAL_OES;
-    struct retro_program *program = &retro_programs[external];
-    if (program->id) return program;
-    char *vertex = read_text(RETRO_SHADER ".vert"), *fragment = read_text(retro_fragments[external]), *name, uniform[TEXT_MAX];
+static void retro_locations(GLuint program, const char *name, GLint *locations) {
+    char uniform[TEXT_MAX];
+    for (int block = 0; block < RETRO_BLOCKS; block++) {
+        snprintf(uniform, sizeof uniform, "%s.%s", retro_blocks[block], name);
+        locations[block] = glGetUniformLocation(program, uniform);
+    }
+}
+
+static void retro_size(const GLint *locations, int width, int height) {
+    for (int block = 0; block < RETRO_BLOCKS; block++) glUniform4f(locations[block], width, height, 1.0f / width, 1.0f / height);
+}
+
+static enum scale_type parse_scale_type(char *name) {
+    enum scale_type type = SOURCE_SCALE;
+    for (size_t i = 0; i < sizeof scale_types / sizeof *scale_types; i++)
+        if (!strcmp(name, scale_types[i])) type = i;
+    free(name);
+    return type;
+}
+
+static GLuint retro_program(int index) {
+    static const GLfloat identity[] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    char path[PATH_MAX], *name;
+    GLint locations[RETRO_BLOCKS];
     float value;
-    program->id = link_shaders(vertex, (const char *[]){fragment}, 1);
+    snprintf(path, sizeof path, RETRO_PASS, index, "vert");
+    char *vertex = read_text(path);
+    snprintf(path, sizeof path, RETRO_PASS, index, "frag");
+    char *fragment = read_text(path);
+    GLuint program = link_shaders(vertex, (const char *[]){fragment}, 1);
     free(vertex);
     free(fragment);
-    glUseProgram(program->id);
-    FILE *parameters = fopen(RETRO_SHADER ".parameters", "r");
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(program, "Source"), 0);
+    glUniform1i(glGetUniformLocation(program, "Original"), RETRO_ORIGINAL_UNIT);
+    retro_locations(program, "MVP", locations);
+    for (int block = 0; block < RETRO_BLOCKS; block++) glUniformMatrix4fv(locations[block], 1, GL_FALSE, identity);
+    snprintf(path, sizeof path, RETRO_PASS, index, "parameters");
+    FILE *parameters = fopen(path, "r");
     while (fscanf(parameters, "%ms %f", &name, &value) == 2) {
-        snprintf(uniform, sizeof uniform, "registers.%s", name);
-        glUniform1f(glGetUniformLocation(program->id, uniform), value);
+        retro_locations(program, name, locations);
+        for (int block = 0; block < RETRO_BLOCKS; block++) glUniform1f(locations[block], value);
         free(name);
     }
     fclose(parameters);
-    program->frame_count = glGetUniformLocation(program->id, "registers.FrameCount");
-    program->mvp = glGetUniformLocation(program->id, "global.MVP");
-    program->output_size = glGetUniformLocation(program->id, "global.OutputSize");
-    program->source_size = glGetUniformLocation(program->id, "global.SourceSize");
     return program;
 }
 
+static void load_retro(void) {
+    char *type_x, *type_y;
+    int linear;
+    struct retro_pass pass = {0};
+    FILE *passes = fopen(RETRO_PASSES, "r");
+    while (fscanf(passes, "%ms %f %ms %f %d %d %u", &type_x, &pass.scale_x, &type_y, &pass.scale_y, &linear, &pass.floating, &pass.frame_count_mod) == 7) {
+        (retro_pass_count ? &retro_passes[retro_pass_count - 1].target : &retro_original)->filter = linear ? GL_LINEAR : GL_NEAREST;
+        pass.type_x = parse_scale_type(type_x);
+        pass.type_y = parse_scale_type(type_y);
+        pass.program = retro_program(retro_pass_count);
+        retro_locations(pass.program, "OutputSize", pass.output_size);
+        retro_locations(pass.program, "SourceSize", pass.source_size);
+        retro_locations(pass.program, "OriginalSize", pass.original_size);
+        retro_locations(pass.program, "FrameCount", pass.frame_count);
+        retro_passes = realloc(retro_passes, (retro_pass_count + 1) * sizeof *retro_passes);
+        retro_passes[retro_pass_count++] = pass;
+    }
+    fclose(passes);
+}
+
+static void bind_target(struct retro_target *target, int width, int height, int floating) {
+    if (target->width == width && target->height == height) {
+        glBindFramebuffer(GL_FRAMEBUFFER, target->framebuffer);
+        return;
+    }
+    if (!target->texture) {
+        glGenTextures(1, &target->texture);
+        glGenFramebuffers(1, &target->framebuffer);
+    }
+    target->width = width;
+    target->height = height;
+    attach_texture(target->texture, target->framebuffer, width, height, floating ? GL_RGBA16F : GL_RGBA8, floating ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE,
+        target->filter, GL_CLAMP_TO_BORDER);
+}
+
+static int pass_size(enum scale_type type, float scale, int source, int viewport) {
+    switch (type) {
+    case VIEWPORT_SCALE: return viewport * scale;
+    case ABSOLUTE_SCALE: return scale;
+    default: return source * scale;
+    }
+}
+
 static struct wlr_texture *retro_picture(struct wlr_texture *game, struct wlr_buffer **held) {
-    static const GLfloat identity[] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     static const GLfloat corners[] = {-1, -1, 1, -1, -1, 1, 1, 1};
     struct wlr_box picture = fit(area(), game->width, game->height);
-    *held = acquire(&retro_chain, picture.width, picture.height);
-    if (!*held) return game;
     struct wlr_gles2_texture_attribs attributes = current_attributes(game);
-    struct retro_program *program = retro_program(attributes.target);
-    glBindFramebuffer(GL_FRAMEBUFFER, wlr_gles2_renderer_get_buffer_fbo(renderer, *held));
-    glViewport(0, 0, picture.width, picture.height);
+    if (!retro_passes) load_retro();
     glDisable(GL_BLEND);
-    glUseProgram(program->id);
+    bind_target(&retro_original, game->width, game->height, 0);
+    glViewport(0, 0, game->width, game->height);
+    blit(attributes, GL_NEAREST, game->width, game->height, 1, 1, corners);
+    glActiveTexture(GL_TEXTURE0 + RETRO_ORIGINAL_UNIT);
+    glBindTexture(GL_TEXTURE_2D, retro_original.texture);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(attributes.target, attributes.tex);
-    glTexParameteri(attributes.target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(attributes.target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glUniform1ui(program->frame_count, retro_frames++);
-    glUniformMatrix4fv(program->mvp, 1, GL_FALSE, identity);
-    glUniform4f(program->output_size, picture.width, picture.height, 1.0f / picture.width, 1.0f / picture.height);
-    glUniform4f(program->source_size, game->width, game->height, 1.0f / game->width, 1.0f / game->height);
-    draw_quad(RETRO_POSITION, RETRO_COORDINATE, corners);
-    glBindTexture(attributes.target, 0);
+    struct retro_target *source = &retro_original;
+    for (int i = 0; i < retro_pass_count; i++) {
+        struct retro_pass *pass = &retro_passes[i];
+        int width = pass_size(pass->type_x, pass->scale_x, source->width, picture.width), height = pass_size(pass->type_y, pass->scale_y, source->height, picture.height);
+        GLuint frame = pass->frame_count_mod ? retro_frames % pass->frame_count_mod : retro_frames;
+        if (i < retro_pass_count - 1) bind_target(&pass->target, width, height, pass->floating);
+        else {
+            *held = acquire(&retro_chain, width, height);
+            if (!*held) break;
+            glBindFramebuffer(GL_FRAMEBUFFER, wlr_gles2_renderer_get_buffer_fbo(renderer, *held));
+        }
+        glViewport(0, 0, width, height);
+        glUseProgram(pass->program);
+        glBindTexture(GL_TEXTURE_2D, source->texture);
+        for (int block = 0; block < RETRO_BLOCKS; block++) glUniform1ui(pass->frame_count[block], frame);
+        retro_size(pass->output_size, width, height);
+        retro_size(pass->source_size, source->width, source->height);
+        retro_size(pass->original_size, game->width, game->height);
+        draw_quad(RETRO_POSITION, RETRO_COORDINATE, corners);
+        source = &pass->target;
+    }
+    retro_frames++;
+    glActiveTexture(GL_TEXTURE0 + RETRO_ORIGINAL_UNIT);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glFlush();
-    return wlr_texture_from_buffer(renderer, *held);
+    return *held ? wlr_texture_from_buffer(renderer, *held) : game;
 }
 
 static void paint(struct wlr_output_state *state) {

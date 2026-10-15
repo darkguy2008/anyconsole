@@ -21,6 +21,7 @@ PROTOCOLS=$(pkg-config --variable=pkgdatadir wayland-protocols)
 BACKGROUND_EFFECT=$PROTOCOLS/staging/ext-background-effect/ext-background-effect-v1.xml
 CFLAGS="-O2 -Wall -Wextra -Werror -I/tmp"
 GLES_SHADER="--es --version 300 --glsl-emit-ubo-as-plain-uniforms"
+RETRO_PRESET=/src/guest/shaders/retro.slangp
 
 make_skeleton() {
   mkdir -p $ROOTFS/etc $ROOTFS/proc $ROOTFS/sys $ROOTFS/dev $ROOTFS/run $ROOTFS/tmp \
@@ -194,24 +195,85 @@ install_skin_assets() {
   for list in /src/app/skins/*/assets; do install_assets "$list" "$ROOTFS$SKINS_DIR/$(basename "$(dirname "$list")")"; done
 }
 
-slang_stage() { awk -v wanted="$2" '/^#pragma stage /{stage = $3; next} stage == "" || stage == wanted' "$1"; }
+slang_expand() {
+  awk 'function expand(path,  folder, line, included, status) {
+    folder = path
+    sub(/[^\/]*$/, "", folder)
+    while ((status = (getline line < path)) > 0) {
+      if (line ~ /^#include "[^"]*"$/) {
+        included = line
+        gsub(/^#include "|"$/, "", included)
+        expand(folder included)
+      } else if (line ~ /^#pragma / && line !~ /^#pragma (stage|parameter) /) {
+        print "unsupported in " path ": " line > "/dev/stderr"
+        exit 1
+      } else print line
+    }
+    if (status < 0) {
+      print "cannot read " path > "/dev/stderr"
+      exit 1
+    }
+    close(path)
+  }
+  BEGIN { expand(ARGV[1]); exit }' "$1"
+}
+
+slang_stage() { awk -v wanted="$1" '/^#pragma stage /{stage = $3; next} stage == "" || stage == wanted' "$2"; }
 
 slang_parameters() { awk -F '"' '/^#pragma parameter /{split($1, words, " "); split($3, numbers, " "); print words[3], numbers[1]}' "$1"; }
+
+preset_pairs() { awk -F ' *= *' '/^[^#]/ && NF == 2 { gsub(/"/, "", $2); print $1, $2 }' "$1"; }
+
+preset_values() { awk 'NR == FNR { value[$1] = $2; next } { print $1, ($1 in value) ? value[$1] : $2 }' "$1" -; }
+
+preset_passes() {
+  awk -v unread="$2" '
+  function pick(key, fallback) { asked[key]; return (key in value) ? value[key] : fallback }
+  function checked(type) {
+    if (type != "source" && type != "viewport" && type != "absolute") {
+      print "unsupported scale_type " type > "/dev/stderr"
+      exit 1
+    }
+    return type
+  }
+  { value[$1] = $2 }
+  END {
+    shaders = pick("shaders", 0)
+    for (pass = 0; pass < shaders; pass++) {
+      type = pick("scale_type" pass, pass == shaders - 1 ? "viewport" : "source")
+      scale = pick("scale" pass, 1)
+      print pick("shader" pass, ""), checked(pick("scale_type_x" pass, type)), pick("scale_x" pass, scale), checked(pick("scale_type_y" pass, type)),
+        pick("scale_y" pass, scale), (pick("filter_linear" pass, "false") == "true"), (pick("float_framebuffer" pass, "false") == "true"),
+        pick("frame_count_mod" pass, 0)
+    }
+    for (key in value) if (!(key in asked)) print key > unread
+  }' "$1"
+}
+
+reject_unread() {
+  awk 'FILENAME == ARGV[1] { unread[$1]; next } { delete unread[$1] }
+  END { for (key in unread) { print "unsupported preset key " key > "/dev/stderr"; failed = 1 }; exit failed }' "$@"
+}
 
 build_shaders() {
   install_assets /src/guest/shaders/assets /tmp/shaders
   mkdir -p $ROOTFS$SHADERS_DIR
-  for source in /tmp/shaders/*.slang; do
-    name=$(basename "$source" .slang)
-    output=$ROOTFS$SHADERS_DIR/$name
-    slang_stage "$source" vertex | glslang --stdin -V -S vert -o "/tmp/$name.vert.spv"
-    slang_stage "$source" fragment | glslang --stdin -V -S frag -o "/tmp/$name.frag.spv"
-    spirv-cross "/tmp/$name.vert.spv" $GLES_SHADER --output "$output.vert"
-    spirv-cross "/tmp/$name.frag.spv" $GLES_SHADER --output "$output.frag"
-    spirv-cross "/tmp/$name.frag.spv" $GLES_SHADER --remap-variable-type Source samplerExternalOES --extension GL_OES_EGL_image_external_essl3 \
-      --output "$output.external.frag"
-    { slang_parameters "$source"; cat "/src/guest/shaders/$name.parameters"; } > "$output.parameters"
+  preset_pairs $RETRO_PRESET > /tmp/preset
+  : > /tmp/preset.unread
+  preset_passes /tmp/preset /tmp/preset.unread > /tmp/passes
+  cut -d ' ' -f 2- /tmp/passes > $ROOTFS$SHADERS_DIR/passes
+  pass=0
+  for shader in $(cut -d ' ' -f 1 /tmp/passes); do
+    output=$ROOTFS$SHADERS_DIR/$pass
+    slang_expand "/tmp/shaders/$shader" > "/tmp/$pass.slang"
+    slang_stage vertex "/tmp/$pass.slang" | glslang --stdin -V -S vert -o "/tmp/$pass.vert.spv"
+    slang_stage fragment "/tmp/$pass.slang" | glslang --stdin -V -S frag -o "/tmp/$pass.frag.spv"
+    spirv-cross "/tmp/$pass.vert.spv" $GLES_SHADER --output "$output.vert"
+    spirv-cross "/tmp/$pass.frag.spv" $GLES_SHADER --output "$output.frag"
+    slang_parameters "/tmp/$pass.slang" | preset_values /tmp/preset > "$output.parameters"
+    pass=$((pass + 1))
   done
+  reject_unread /tmp/preset.unread $ROOTFS$SHADERS_DIR/*.parameters
 }
 
 finalize() {

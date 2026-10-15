@@ -421,8 +421,21 @@ kiosk_log_lacks() { guest "! grep '$1' $LOG_DIR/kiosk.log" || { log FAIL "$2" >&
 retroarch_size() { guest "grep -o 'Set video size to: [0-9a-z]*' $(game_log "$1") | tail -1 | cut -d' ' -f5"; }
 retroarch_windowed() { [ "$(retroarch_size "$1")" != fullscreen ]; }
 
+retroarch_size_changes() { guest "grep -c 'Set video size to:' $(game_log "$1")"; }
+
 retro_picture() {
+  changes=$(retroarch_size_changes "$1")
   tap guide
+  highlight "Display Mode"
+  adjust_to "Display Mode" Retro
+  tap dpleft
+  expect '.settings.picture == "original"'
+  tap guide
+  expect "$(closed_and_running "$1")"
+  tap guide
+  expect "$(status_of "$1" paused)"
+  [ "$(retroarch_size_changes "$1")" = "$changes" ] || { log FAIL "RetroArch changed size after Display Mode went to Retro and back in one guide visit" >&2; exit 1; }
+  log ok "Display Mode going to Retro and back in one guide visit leaves RetroArch as it was"
   highlight "Display Mode"
   adjust_to "Display Mode" Retro
   expect '.settings.picture == "retro"'
