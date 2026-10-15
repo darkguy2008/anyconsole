@@ -1265,14 +1265,8 @@ static void prepare_blur_targets(void) {
         glGenFramebuffers(BLUR_LEVELS + 1, blur_framebuffers);
     }
     for (int level = 0; level <= BLUR_LEVELS; level++) {
-        glBindTexture(GL_TEXTURE_2D, blur_textures[level]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, surface_width >> level, surface_height >> level, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindFramebuffer(GL_FRAMEBUFFER, blur_framebuffers[level]);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, blur_textures[level], 0);
+        attach_texture(blur_textures[level], blur_framebuffers[level], surface_width >> level, surface_height >> level, GL_RGBA8, GL_UNSIGNED_BYTE, GL_LINEAR,
+            GL_CLAMP_TO_EDGE);
     }
     blur_width = surface_width;
     blur_height = surface_height;
@@ -1597,12 +1591,7 @@ void scene_crossfade(double now) {
         glGenTextures(1, &snapshot_texture);
         glGenFramebuffers(1, &snapshot_framebuffer);
     }
-    glBindTexture(GL_TEXTURE_2D, snapshot_texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, surface_width, surface_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glBindFramebuffer(GL_FRAMEBUFFER, snapshot_framebuffer);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, snapshot_texture, 0);
+    attach_texture(snapshot_texture, snapshot_framebuffer, surface_width, surface_height, GL_RGBA8, GL_UNSIGNED_BYTE, GL_LINEAR, GL_CLAMP_TO_EDGE);
     render(now);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     crossfade_started = now;

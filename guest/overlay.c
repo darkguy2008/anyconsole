@@ -1396,7 +1396,7 @@ static void apply_pictures(void) {
     enum picture picture = chosen_picture();
     for (int i = 0; i < game_count; i++) {
         struct game *game = &games[i];
-        if (!game->pid || !*game->picture_command || game->picture == picture) continue;
+        if (!game->pid || game->paused || game->freezer || !*game->picture_command || game->picture == picture) continue;
         send_command(i, game->picture_command);
         game->picture = picture;
     }
@@ -2561,6 +2561,7 @@ static void reap(void) {
             if (games[i].freezer == pid) {
                 games[i].freezer = 0;
                 if (failed) games[i].paused = !games[i].paused;
+                apply_pictures();
                 if (games[i].closing && games[i].pid) finish_close(i);
             }
             changed = 1;
