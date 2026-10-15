@@ -3,17 +3,46 @@ import os
 import socket
 import struct
 import sys
+import time
 
 OPCODES = {"save": 0x9, "load": 0xA}
+STATUS_OPCODE = 0xF
 SOCKET_NAME = "pcsx2.sock"
+STATUS = struct.Struct("<IB")
 PACKET = struct.Struct("<IBB")
+STATUS_REPLY = struct.Struct("<IBI")
 REPLY_SIZE = 5
 STATUS_OK = 0
+GAME_LOADED = {0, 1}
+NTSC_FIELD_SECONDS = 1001 / 60000
+GAME_START_DEADLINE_SECONDS = 10
+PATH = os.path.join(os.environ["XDG_RUNTIME_DIR"], SOCKET_NAME)
+
+
+def request(packet, reply_size):
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.connect(PATH)
+        connection.sendall(packet)
+        return connection.recv(reply_size, socket.MSG_WAITALL)
+
+
+def game_loaded():
+    try:
+        reply = request(STATUS.pack(STATUS.size, STATUS_OPCODE), STATUS_REPLY.size)
+    except (FileNotFoundError, ConnectionRefusedError):
+        return False
+    if len(reply) != STATUS_REPLY.size:
+        return False
+    _, result, status = STATUS_REPLY.unpack(reply)
+    return result == STATUS_OK and status in GAME_LOADED
+
 
 command, slot = sys.argv[1], int(sys.argv[2])
-with socket.socket(socket.AF_UNIX) as connection:
-    connection.connect(os.path.join(os.environ["XDG_RUNTIME_DIR"], SOCKET_NAME))
-    connection.sendall(PACKET.pack(PACKET.size, OPCODES[command], slot))
-    reply = connection.recv(REPLY_SIZE, socket.MSG_WAITALL)
+deadline = time.monotonic() + GAME_START_DEADLINE_SECONDS
+while not game_loaded():
+    if time.monotonic() > deadline:
+        sys.exit(f"PINE {command} slot {slot}: PCSX2 had no game running after {GAME_START_DEADLINE_SECONDS}s")
+    time.sleep(NTSC_FIELD_SECONDS)
+reply = request(PACKET.pack(PACKET.size, OPCODES[command], slot), REPLY_SIZE)
 if len(reply) != REPLY_SIZE or reply[REPLY_SIZE - 1] != STATUS_OK:
     sys.exit(f"PINE {command} slot {slot} failed: reply {reply.hex()}")

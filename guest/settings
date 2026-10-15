@@ -5,9 +5,9 @@ case "${1:-} ${2:-}" in
   "display "*|"mode "*) ;;
   "resolution "*) case " 0 $RESOLUTIONS " in *" $2 "*) ;; *) echo "resolution must be 0 (Auto) or one of: $RESOLUTIONS" >&2; exit 1 ;; esac ;;
   "sleep "*) case " $SLEEP_MINUTES " in *" $2 "*) ;; *) echo "sleep must be one of (minutes, 0 = never): $SLEEP_MINUTES" >&2; exit 1 ;; esac ;;
-  "picture "*) case "$2" in original|retro) ;; *) echo "picture must be original or retro" >&2; exit 1 ;; esac ;;
+  "picture "*) case "$2" in original|retro|enhanced) ;; *) echo "picture must be original, retro or enhanced" >&2; exit 1 ;; esac ;;
   "skin "*) case "$2" in ""|.*|*/*) false ;; *) [ -f "$USER_SKINS_DIR/$2/skin.js" ] || [ -f "$SKINS_DIR/$2/skin.js" ] ;; esac || { echo "no skin named $2 in $USER_SKINS_DIR or $SKINS_DIR" >&2; exit 1; } ;;
-  *) echo "usage: settings display [label] | settings mode [mode] | settings resolution <height> | settings sleep <minutes> | settings picture original|retro | settings skin <name>" >&2; exit 1 ;;
+  *) echo "usage: settings display [label] | settings mode [mode] | settings resolution <height> | settings sleep <minutes> | settings picture original|retro|enhanced | settings skin <name>" >&2; exit 1 ;;
 esac
 exec 9>"$SETTINGS_FILE.lock"
 flock 9

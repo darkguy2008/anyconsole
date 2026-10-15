@@ -10,6 +10,8 @@ SAVE_SLOT=01
 LOAD_SLOT=02
 PICTURE_WIDTH=4
 PICTURE_HEIGHT=3
+WIDESCREEN_ASPECT_RATIO="Auto 4:3/3:2"
+NATIVE_SCALE=1
 
 pad() {
   printf '[Pad%s]\nType = DualShock2\n' "$1"
@@ -19,6 +21,8 @@ pad() {
 pads() {
   for port in $(seq $PAD_PORTS); do pad "$port"; done
 }
+
+enhanced() { printf '%s' "$ENHANCED" | jq -r --arg key "$1" --arg default "$2" '.[$key] // $default'; }
 
 settings() {
   cat <<SETTINGS
@@ -31,6 +35,7 @@ Savestates = /states
 [EmuCore]
 EnablePINE = true
 BackupSavestate = false
+EnableWideScreenPatches = $widescreen
 [MemoryCards]
 Slot1_Filename = ${game%.*}.ps2
 Slot2_Enable = false
@@ -39,7 +44,9 @@ Renderer = $renderer
 VsyncEnable = true
 SyncToHostRefreshRate = true
 UseVSyncForTiming = true
-AspectRatio = $PICTURE_WIDTH:$PICTURE_HEIGHT
+AspectRatio = $aspect_ratio
+FMVAspectRatioSwitch = $PICTURE_WIDTH:$PICTURE_HEIGHT
+upscale_multiplier = $(enhanced scale $NATIVE_SCALE)
 OsdMessagesPos = $OSD_MESSAGES_NONE
 [EmuCore/Speedhacks]
 vuThread = true
@@ -56,8 +63,13 @@ if [ "${1:-}" = --vulkan ]; then
   shift
 fi
 game=${1##*/}
-mkdir -p "$PCSX2/inis" "$PCSX2/bios"
+widescreen=$(enhanced widescreen false)
+aspect_ratio=$PICTURE_WIDTH:$PICTURE_HEIGHT
+[ "$widescreen" = false ] || aspect_ratio=$WIDESCREEN_ASPECT_RATIO
+rm -rf "$PCSX2/patches"
+mkdir -p "$PCSX2/inis" "$PCSX2/bios" "$PCSX2/patches"
 ln -sf /bios/* "$PCSX2/bios/"
+find "${1%/*}" -maxdepth 1 -iname '*.pnach' -exec ln -s -t "$PCSX2/patches" {} +
 settings > "$PCSX2/inis/PCSX2.ini"
 exec 3<&0
 rewind /opt/pcsx2/pine $SAVE_SLOT $LOAD_SLOT .p2s <&3 &

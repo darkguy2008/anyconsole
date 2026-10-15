@@ -376,10 +376,11 @@ rewind_to_older_state() {
   states=$(state | jq .rewind.states)
   tap a
   expect "(.guide | not) and .rewind.states == $((states - 1)) and .rewind.back == 0 and ($(status_of "$1" running))"
-  wait_for $STEP_SECONDS guest "grep -q 'Loading state' $(game_log "$1") && ! grep -q 'Failed to load state' $(game_log "$1")"
+  wait_for $STEP_SECONDS retroarch_loaded_a_state "$1"
   log ok "rewound $1 to an older state"
 }
 
+retroarch_loaded_a_state() { guest "grep -q 'Loading state' $(game_log "$1") && ! grep -q 'Failed to load state' $(game_log "$1")"; }
 retroarch_loaded_saved_state() { guest "grep -q 'Loading state \".*\\.state\",' $(game_log "$1") && ! grep -q 'Failed to load state' $(game_log "$1")"; }
 
 save_states() {
@@ -509,6 +510,20 @@ core_options_hold() {
     guest "docker exec $(game_container "$1") cat /tmp/$file.opt" |
       jq -nRe --argjson options "$2" '[inputs] as $lines | $options | to_entries | all("\(.key) = \"\(.value)\"" as $line | $lines | any(. == $line))' || return
   done
+}
+
+container_env() { guest "docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $(game_container "$1") | sed -n 's/^$2=//p'"; }
+
+container_of() { guest "echo $(game_container "$1")"; }
+
+restarted_with_state() { [ "$(container_of "$1")" != "$2" ] && retroarch_loaded_a_state "$1"; }
+
+restart_into() {
+  restarting=$1 container=$(container_of "$1") states=$(state | jq .rewind.states)
+  shift
+  "$@" >/dev/null
+  wait_for $STEP_SECONDS restarted_with_state "$restarting" "$container"
+  expect "$(closed_and_running "$restarting") and .rewind.states > $states"
 }
 
 play_every_other_game() {
@@ -920,6 +935,8 @@ test_display() {
   expect '.settings.picture == "retro" and .display.retro == null'
   log ok "Retro leaves the dashboard unfiltered"
   expect_reply $STEP_SECONDS 200 .ok --arg action picture --arg step 1
+  expect '.settings.picture == "enhanced" and .display.retro == null'
+  expect_reply $STEP_SECONDS 200 .ok --arg action picture --arg step 1
   expect '.settings.picture == "original"'
   log ok "Settings switches Display Mode through the API"
   tap b
@@ -1197,6 +1214,28 @@ test_stores() {
   expect '.stores[0].online and all(.games[]; (.stores | length) == 1)'
 }
 
+test_enhanced() {
+  key=mini-mine-rt/psp
+  install_and_play $key "Mini Mine RT"
+  expect '.rewind.states >= 1'
+  restart_into $key expect_reply $STEP_SECONDS 200 '.ok and .state.settings.picture == "enhanced"' --arg action picture --arg step -1
+  [ "$(container_env $key ENHANCED)" = '{"scale":2}' ] || { log FAIL "$key did not get its enhanced options" >&2; exit 1; }
+  wait_for $STEP_SECONDS core_options_hold $key '{"ppsspp_internal_resolution": "960x544"}'
+  log ok "Enhanced restarts $key at twice its resolution and loads the state it left"
+  restart_into $key api POST settings "picture original"
+  [ "$(container_env $key ENHANCED)" = '{}' ] && guest "! docker exec $(game_container $key) grep -q ppsspp_internal_resolution /tmp/core.opt" ||
+    { log FAIL "$key kept its enhanced options in Original" >&2; exit 1; }
+  log ok "Original restarts $key at its native resolution and loads the state it left"
+  container=$(container_of $key)
+  api POST settings "picture retro" >/dev/null
+  expect ".settings.picture == \"retro\" and .display.retro != null"
+  [ "$(container_of $key)" = "$container" ] || { log FAIL "Retro restarted $key" >&2; exit 1; }
+  log ok "switching between Original and Retro keeps $key running"
+  api POST settings "picture original" >/dev/null
+  expect '.settings.picture == "original"'
+  close_game $key "Mini Mine RT"
+}
+
 test_gpu() {
   install_and_play alter-ego/nes "Alter Ego"
   switch_gpu_after_games alter-ego/nes
@@ -1260,7 +1299,7 @@ test_thumbnails() {
   log ok "one fetch downloads every boxart it asks for"
 }
 
-TESTS="capture symlinks display audio controllers nes genesis snes actions dreamcast msdos stores gpu logout reboot skins engines thumbnails"
+TESTS="capture symlinks display audio controllers nes genesis snes actions dreamcast msdos stores gpu logout reboot skins engines thumbnails enhanced"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in

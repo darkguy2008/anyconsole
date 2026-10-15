@@ -58,7 +58,7 @@ FROM gpu AS retroarch
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y alsa-lib pipewire-jack-audio-connection-kit-libs fontconfig dbus-libs libXi libXrandr libXinerama libXxf86vm libXScrnSaver libXext libXrender libXcursor libXfixes libv4l systemd-libs libxkbcommon libwayland-egl libwayland-cursor sdl2-compat libusb1 jq
 COPY --from=retroarch-download /retroarch /retroarch
 RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib64/${bundled##*/}" ] || rm "$bundled"; done
-COPY retroarch.cfg vulkan.cfg /retroarch/
+COPY retroarch.cfg vulkan.cfg enhanced.jq /retroarch/
 COPY retroarch-launch /retroarch/launch
 COPY --from=retroarch-frame-size /frame-size.so /retroarch/
 RUN touch /retroarch/core.opt /retroarch/vulkan.opt
@@ -141,6 +141,7 @@ FROM retroarch AS psp
 LABEL anyconsole.launch="iso cso pbp" anyconsole.thumbnails="Sony - PlayStation Portable"
 COPY --from=cores /cores/ppsspp_libretro.so /retroarch/core.so
 COPY --from=ppsspp /system /system
+COPY psp-enhanced.jq /retroarch/enhanced.jq
 
 # n3ds Nintendo 3DS
 FROM retroarch AS n3ds
@@ -213,7 +214,7 @@ RUN appimage /pcsx2
 
 # ps2 PlayStation 2
 FROM x11-rewind AS ps2
-RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y fontconfig freetype harfbuzz libcom_err libSM libICE matchbox-window-manager
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y fontconfig freetype harfbuzz libcom_err libSM libICE matchbox-window-manager jq
 LABEL anyconsole.launch="chd iso cso" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true" anyconsole.thumbnails="Sony - PlayStation 2"
 COPY --from=pcsx2-download /pcsx2 /opt/pcsx2
 COPY pcsx2/ /opt/pcsx2/

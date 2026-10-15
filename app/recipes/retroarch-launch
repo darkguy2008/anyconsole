@@ -7,7 +7,7 @@ merge() {
     [inputs | capture("^(?<key>[^ ]+) = \"(?<value>.*)\"$")] | from_entries + $extra
     | to_entries[] | "\(.key) = \"\(.value)\""' "$@"
 }
-options=$(printf '%s' "$GAME_CONFIG" | jq -c '.options // {}')
+options=$(printf '%s' "$ENHANCED" | jq -c -f /retroarch/enhanced.jq | jq -c --argjson game "$GAME_CONFIG" '($game.options // {}) + .')
 merge "$options" /retroarch/core.opt > /tmp/core.opt
 merge "$options" /retroarch/core.opt /retroarch/vulkan.opt > /tmp/vulkan.opt
 LIBRETRO_CORE=/retroarch/core.so exec /retroarch/retroarch --verbose --config /retroarch/retroarch.cfg --libretro /retroarch/frame-size.so "$@"

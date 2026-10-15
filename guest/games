@@ -11,6 +11,7 @@ PREPARE_LABEL=anyconsole.prepare
 DEVICES_LABEL=anyconsole.devices
 TOUCHPAD_LABEL=anyconsole.touchpad
 SHARED_LABEL=anyconsole.shared
+ENHANCED_PICTURE=enhanced
 SANDBOX="--init --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp --tmpfs /dev/shm"
 ENGINE_SOURCE=rsync://$OTA_HOST/$ENGINES_MODULE
 ENGINE_RUN=/run/engines
@@ -230,6 +231,10 @@ launch_file() {
   return 1
 }
 
+enhanced() {
+  { cat "$SETTINGS_FILE" 2>/dev/null || echo '{}'; } | jq -c --arg picture "$ENHANCED_PICTURE" --argjson config "$1" 'if .picture == $picture then $config[$picture] // {} else {} end'
+}
+
 hold_idle_latency() {
   latency=$(cat $IDLE_LATENCIES 2>/dev/null | sort -n | grep -vxm1 0) || return 0
   exec 3>/dev/cpu_dma_latency
@@ -238,6 +243,7 @@ hold_idle_latency() {
 
 run() {
   rom=$GAMES_DIR/$1/$2/rom saves=$PROFILES_DIR/$5/saves/$1-$2
+  config=$(jq -c --arg platform "$2" '.[$platform] // {}' "$GAMES_DIR/$1/manifest.json")
   image=$(image_config "$2")
   file=$(launch_file "$rom")
   mkdir -p "$saves"
@@ -252,7 +258,7 @@ run() {
     --device /dev/dri --device-cgroup-rule 'c 13:* rw' -v "$PAD_NODES:/dev/input:ro" \
     -v "$3:/run/wayland" -v "$4:/states" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
     -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PADS="$PADS" -e PAD_NAME="$PAD_NAME" -e MOTION_NAME="$MOTION_NAME" -e MICROPHONE="$MICROPHONE_NODE" -e SCREEN="$(screen_state "$1" "$2")" \
-    -e GAME_CONFIG="$(jq -c --arg platform "$2" '.[$platform] // {}' "$GAMES_DIR/$1/manifest.json")" \
+    -e GAME_CONFIG="$config" -e ENHANCED="$(enhanced "$config")" \
     -e REFRESH="$(jq -r --arg platform "$2" --argjson display "$display" --argjson mhz "$MHZ_PER_HZ" '.[$platform].refresh // ($display.refresh / $mhz)' "$GAMES_DIR/$1/manifest.json")" \
     -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
     -v "$rom:/game:ro" -v "$saves:/saves" "$GAME_IMAGE/$2" $video "/game/$file"

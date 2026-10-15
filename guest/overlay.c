@@ -130,8 +130,9 @@ static const char *const actions[] = {
 static const char *const criteria[] = {"action", "label", "value", "arg"};
 enum tab { GAME_TAB, DEVICES_TAB, SYSTEM_TAB };
 static const char *const tabs[] = {[GAME_TAB] = "Game", [DEVICES_TAB] = "I/O", [SYSTEM_TAB] = "System"};
-enum picture { ORIGINAL, RETRO };
-static const struct { const char *name, *label; } pictures[] = {[ORIGINAL] = {"original", "Original"}, [RETRO] = {"retro", "Retro"}};
+enum picture { ORIGINAL, RETRO, ENHANCED };
+static const struct { const char *name, *label; } pictures[] = {[ORIGINAL] = {"original", "Original"}, [RETRO] = {"retro", "Retro"}, [ENHANCED] = {"enhanced", "Enhanced"}};
+enum restart { PLAYING, SAVING, CLOSING, LOADING };
 enum command { NONE, UP, DOWN, PAGE_UP, PAGE_DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON, X_BUTTON, Y_BUTTON };
 static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [PAGE_UP] = "page-up", [PAGE_DOWN] = "page-down",
                                        [LEFT] = "left", [RIGHT] = "right", [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide",
@@ -146,9 +147,10 @@ struct game {
     json_object *emulate;
     double thumbnail_aspect;
     time_t thumbnail_time;
-    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown, error_output;
+    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown, error_output, enhanced, restart_slot;
     size_t job_length, error_length;
     enum task task;
+    enum restart restart;
     unsigned stores;
     pid_t pid, job, freezer, probe;
 };
@@ -913,7 +915,12 @@ static void cycle_skin(int step) {
     if (count) start((char *[]){"settings", "skin", names[(current + step + count) % count], NULL});
 }
 
-static enum picture chosen_picture(void) { return strcmp(string_at(settings, "picture", NULL), pictures[RETRO].name) ? ORIGINAL : RETRO; }
+static enum picture chosen_picture(void) {
+    const char *chosen = string_at(settings, "picture", NULL);
+    for (unsigned picture = 0; picture < sizeof pictures / sizeof *pictures; picture++)
+        if (!strcmp(chosen, pictures[picture].name)) return picture;
+    return ORIGINAL;
+}
 
 static void cycle_picture(int step) {
     int count = sizeof pictures / sizeof *pictures;
@@ -1414,12 +1421,14 @@ static void ended(int index, int status) {
     snprintf(path, sizeof path, "%s/" WAYLAND_SOCKET, directory);
     unlink(path);
     rmdir(directory);
+    game->pid = 0;
+    if (game->restart == CLOSING) return;
+    game->restart = PLAYING;
     if (!game->closing && status) {
         fail(index, "%s stopped", game->title);
         inotify_rm_watch(watcher, game->states_watch);
         keep_rewinds(name(index));
     } else remove_rewinds(index);
-    game->pid = 0;
     if (saving.game == index) saving.game = -1;
     if (active == index) active = -1;
     refresh_rewinds();
@@ -1428,7 +1437,7 @@ static void ended(int index, int status) {
 
 static void prepare_rewinds(int index, char *states) {
     char path[PATH_MAX];
-    remove_rewinds(index);
+    if (games[index].restart == PLAYING) remove_rewinds(index);
     mkdir(rewind_path(path, index, ""), S_IRWXU);
     mkdir(rewind_path(states, index, "/" STATES), S_IRWXU);
     games[index].states_watch = inotify_add_watch(watcher, states, IN_CLOSE_WRITE | IN_MOVED_TO);
@@ -1582,12 +1591,16 @@ static void sample_screen(void) {
     capture.save = start_capture(active);
 }
 
-static void load_rewind(void) {
+static void load_slot(int index, int number) {
     char command[TEXT_MAX];
+    snprintf(command, sizeof command, "LOAD_STATE_SLOT %d", number);
+    send_command(index, command);
+}
+
+static void load_rewind(void) {
     int chosen = rewind_count - rewind_back;
     if (!rewind_back) return;
-    snprintf(command, sizeof command, "LOAD_STATE_SLOT %d", slot(rewinds[chosen]));
-    send_command(active, command);
+    load_slot(active, slot(rewinds[chosen]));
     for (int i = chosen + 1; i < rewind_count; i++) remove_state(rewinds[i]);
     rewind_back = 0;
     resume(active);
@@ -1614,6 +1627,14 @@ static void load_saved(void) {
     if (link(from, to) < 0) perror(to);
     send_command(active, "LOAD_STATE_SLOT " STRINGIFY(UNNUMBERED_SLOT));
     rewind_back = 0;
+    resume(active);
+}
+
+static void restart_enhanced(void) {
+    if (!rewindable() || !games[active].enhanced || games[active].restart || games[active].closing) return;
+    games[active].restart = SAVING;
+    games[active].restart_slot = newest_slot();
+    send_command(active, "SAVE_STATE");
     resume(active);
 }
 
@@ -1654,9 +1675,14 @@ static void read_probe(int index) {
     if (json_object_object_get_ex(manifest, game->platform, &platform) && json_object_object_get_ex(platform, "emulate", &overrides)) {
         json_object_object_foreach(overrides, kind, mode) json_object_object_add(game->emulate, kind, json_object_get(mode));
     }
+    game->enhanced = json_object_object_get_ex(platform, pictures[ENHANCED].name, NULL);
     json_object_put(manifest);
     close(game->probe_output);
     game->probe = 0;
+    if (game->restart == LOADING && game->rewinds) {
+        load_slot(index, newest_slot());
+        game->restart = PLAYING;
+    }
     if (index == active) apply_modes();
     changed = 1;
 }
@@ -2553,6 +2579,10 @@ static void reap(void) {
         }
         for (int i = 0; i < game_count; i++) {
             if (games[i].pid == pid) ended(i, failed);
+            if (!games[i].pid && games[i].restart == CLOSING) {
+                games[i].restart = LOADING;
+                play(i);
+            }
             if (games[i].job == pid) job_done(i, failed);
             if (games[i].probe == pid) read_probe(i);
             if (games[i].freezer == pid) {
@@ -2568,7 +2598,12 @@ static void reap(void) {
 static int read_game_change(struct inotify_event *event) {
     for (int i = 0; i < game_count; i++) {
         if (event->wd == games[i].states_watch) {
-            if (i == active) refresh_rewinds();
+            if (i != active) return 1;
+            refresh_rewinds();
+            if (games[i].restart == SAVING && newest_slot() > games[i].restart_slot) {
+                games[i].restart = CLOSING;
+                close_game(i);
+            }
             return 1;
         }
     }
@@ -2588,7 +2623,9 @@ static void read_changes(int runtime_watch, int display_watch, int controllers_w
         } else if (event->wd == controllers_watch && !strcmp(event->name, basename(CONTROLLERS_FILE))) {
             read_controllers();
         } else if (event->wd != runtime_watch && !strcmp(event->name, basename(SETTINGS_FILE))) {
+            int was_enhanced = chosen_picture() == ENHANCED;
             read_settings();
+            if ((chosen_picture() == ENHANCED) != was_enhanced) restart_enhanced();
         } else if (event->wd != runtime_watch && !strcmp(event->name, basename(STORES_FILE))) {
             read_stores();
             refresh();
