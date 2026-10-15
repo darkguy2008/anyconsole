@@ -2,10 +2,28 @@
 set -eu
 CONFIG=$XDG_CONFIG_HOME/rpcs3
 USER_HOME=$CONFIG/dev_hdd0/home/00000001
+BASE_CONFIG=$CONFIG/anyconsole-base.yml
+PERCENT=100
 
 pad_config() {
   printf 'Player 1 Input:\n  Handler: Evdev\n  Device: "%s"\n  Buddy Device: "%s"\n  Config:\n' "$PAD_NAME" "$MOTION_NAME"
   sed 's/^/    /' /opt/rpcs3/pad.yml
+}
+
+write_config() {
+  height=$(jq -r '.canvas | split("x")[1]' "$DISPLAY_STATE")
+  scale=$((height * PERCENT / ${OUTPUT#*x}))
+  [ "$scale" != "${written:-}" ] || return 0
+  yq ".Video.\"Resolution Scale\" = $scale" "$BASE_CONFIG" > "$RPCS3_CONFIG.partial"
+  mv "$RPCS3_CONFIG.partial" "$RPCS3_CONFIG"
+  written=$scale
+}
+
+follow_display() {
+  inotifywait -m -e moved_to "${DISPLAY_STATE%/*}" 2>&1 | while read -r event; do
+    echo "$event" >&2
+    write_config
+  done
 }
 
 mkdir -p "$CONFIG/input_configs/global" "$CONFIG/GuiConfigs" "$USER_HOME/exdata"
@@ -13,5 +31,9 @@ ln -sfn /saves "$USER_HOME/savedata"
 find /game -maxdepth 1 \( -iname '*.edat' -o -iname '*.rap' \) -exec ln -sf {} "$USER_HOME/exdata/" \;
 cp --update=none /opt/rpcs3/gui.ini "$CONFIG/GuiConfigs/CurrentSettings.ini"
 pad_config > "$CONFIG/input_configs/global/Default.yml"
-{ cat /opt/rpcs3/config.yml; system-settings; } > "$CONFIG/anyconsole.yml"
-exec xwayland-run -fullscreen -geometry "$CANVAS" -- /opt/rpcs3/AppRun --no-gui --fullscreen --config "$CONFIG/anyconsole.yml" "${1%/*}"
+{ cat /opt/rpcs3/config.yml; system-settings; } > "$BASE_CONFIG"
+OUTPUT=$(yq .Video.Resolution "$BASE_CONFIG")
+write_config
+follow_display &
+awk -v output="$OUTPUT" 'BEGIN { split(output, size, "x"); print "Setting aspect ratio to " size[1] / size[2] }' >&2
+exec xwayland-run -geometry "$CANVAS" -- with-window-manager /opt/rpcs3/AppRun --no-gui --fullscreen --config "$RPCS3_CONFIG" "${1%/*}"

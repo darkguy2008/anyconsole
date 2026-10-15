@@ -80,4 +80,4 @@ set -- -- "$1"
 [ -z "$RESUME_SLOT" ] || set -- -statefile /states/*.state"$RESUME_SLOT" "$@"
 height=${CANVAS#*x}
 width=$((height * PICTURE_WIDTH / PICTURE_HEIGHT))
-exec xwayland-run -geometry "${width}x$height" -- sh -c 'matchbox-window-manager -use_titlebar no -use_cursor no & exec "$@"' sh /opt/pcsx2/AppRun -nogui -fullscreen "$@"
+exec xwayland-run -geometry "${width}x$height" -- with-window-manager /opt/pcsx2/AppRun -nogui -fullscreen "$@"

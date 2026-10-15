@@ -1,0 +1,16 @@
+#!/usr/bin/python3
+import sys
+
+from elftools.elf.elffile import ELFFile
+
+SYMBOLS = {"G_CFG": "g_cfg", "FROM_STRING": "_ZN3cfg4node11from_stringESt17basic_string_viewIcSt11char_traitsIcEEb"}
+
+with open(sys.argv[1], "rb") as binary:
+    symbols = ELFFile(binary).get_section_by_name(".symtab")
+    if not symbols:
+        sys.exit(f"{sys.argv[1]}: no .symtab")
+    for macro, name in SYMBOLS.items():
+        found = symbols.get_symbol_by_name(name) or []
+        if len(found) != 1:
+            sys.exit(f"{sys.argv[1]}: {name} not uniquely identified")
+        print(f"-D{macro}={found[0]['st_value']:#x}")

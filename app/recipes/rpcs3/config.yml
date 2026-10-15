@@ -1,5 +1,6 @@
 Video:
   Renderer: Vulkan
+  Resolution: 1280x720
   Shader Mode: Async Recompiler (multi-threaded)
 Audio:
   Renderer: Cubeb

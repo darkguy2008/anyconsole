@@ -219,14 +219,24 @@ FROM fetch AS rpcs3-download
 ADD --checksum=sha256:21aa550a312b449ad1f1a2868ccd2100c3ae52f5a03e6fcb46774df0632195cb https://github.com/RPCS3/rpcs3-binaries-linux/releases/download/build-2ba2f75bcea7ef6bdd687046c7fcfb790faf9853/rpcs3-v0.0.43-20284-2ba2f75b_linux64.AppImage /app.AppImage
 RUN appimage /rpcs3
 
+FROM fedora AS rpcs3-config-reload
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gcc python3-pyelftools patchelf
+COPY --from=rpcs3-download /rpcs3 /rpcs3
+COPY rpcs3/addresses rpcs3/config-reload.c /
+RUN patchelf --add-needed /opt/rpcs3/config-reload.so /rpcs3/usr/bin/rpcs3 \
+ && /addresses /rpcs3/usr/bin/rpcs3 > /addresses.flags \
+ && gcc -O2 -Wall -Wextra -Werror -shared -fPIC $(cat /addresses.flags) -o /rpcs3/config-reload.so /config-reload.c
+
 # ps3 PlayStation 3
 FROM x11 AS ps3
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y matchbox-window-manager yq inotify-tools
+COPY with-window-manager /usr/local/bin/
 LABEL anyconsole.launch="sfo" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.install="/opt/rpcs3/install" anyconsole.thumbnails="Sony - PlayStation 3"
-COPY --from=rpcs3-download /rpcs3 /opt/rpcs3
+COPY --from=rpcs3-config-reload /rpcs3 /opt/rpcs3
 RUN ln -s /opt/rpcs3/usr/share/rpcs3 /usr/share/rpcs3
 COPY rpcs3/ /opt/rpcs3/
 COPY ps3-system.jq /usr/lib/jq/system.jq
-ENV XDG_CONFIG_HOME=/engine/config XDG_CACHE_HOME=/engine/cache QT_QPA_PLATFORM=xcb
+ENV XDG_CONFIG_HOME=/engine/config XDG_CACHE_HOME=/engine/cache QT_QPA_PLATFORM=xcb RPCS3_CONFIG=/tmp/config.yml
 ENTRYPOINT ["/opt/rpcs3/launch"]
 
 FROM fetch AS pcsx2-download
@@ -236,6 +246,7 @@ RUN appimage /pcsx2
 # ps2 PlayStation 2
 FROM x11-rewind AS ps2
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y fontconfig freetype harfbuzz libcom_err libSM libICE matchbox-window-manager gawk
+COPY with-window-manager /usr/local/bin/
 LABEL anyconsole.launch="chd iso cso" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"button\":\"guide\"}}" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true" anyconsole.thumbnails="Sony - PlayStation 2"
 COPY --from=pcsx2-download /pcsx2 /opt/pcsx2
 COPY pcsx2/ analog-state.awk analog-log /opt/pcsx2/

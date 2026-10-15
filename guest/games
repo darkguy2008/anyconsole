@@ -256,7 +256,7 @@ run() {
   hold_idle_latency
   exec docker run --rm -i --label "$GAME_LABEL=$1/$2" $SANDBOX $(platform_access "$2") $shared \
     --device /dev/dri --device-cgroup-rule 'c 13:* rw' -v "$PAD_NODES:/dev/input:ro" \
-    -v "$3:/run/wayland" -v "$4:/states" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
+    -v "$3:/run/wayland" -v "$4:/states" -v "${DISPLAY_FILE%/*}:/display:ro" -e DISPLAY_STATE="/display/${DISPLAY_FILE##*/}" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
     -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PADS="$PADS" -e PAD_NAME="$PAD_NAME" -e MOTION_NAME="$MOTION_NAME" -e MICROPHONE="$MICROPHONE_NODE" -e SCREEN="$(screen_state "$1" "$2")" \
     -e GAME_CONFIG="$config" -e ANALOG_STATE="/states/$ANALOG_FILE" -e ENHANCED="$(enhanced "$config")" -e RESUME_SLOT="$6" -e GAME_LANGUAGE="$7" \
     -e REFRESH="$(printf '%s' "$config" | jq -r --argjson display "$display" --argjson mhz "$MHZ_PER_HZ" '.refresh // ($display.refresh / $mhz)')" \
