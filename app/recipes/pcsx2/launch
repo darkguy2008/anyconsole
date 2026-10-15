@@ -37,6 +37,8 @@ Slot2_Enable = false
 [EmuCore/GS]
 Renderer = $renderer
 VsyncEnable = true
+SyncToHostRefreshRate = true
+UseVSyncForTiming = true
 AspectRatio = $PICTURE_WIDTH:$PICTURE_HEIGHT
 OsdMessagesPos = $OSD_MESSAGES_NONE
 [EmuCore/Speedhacks]

@@ -460,6 +460,7 @@ static void write_state(void) {
         json_object_object_add(state, "modes", modes);
         name_mode(active->output->current_mode, name);
         json_object_object_add(state, "mode", json_object_new_string(name));
+        json_object_object_add(state, "refresh", json_object_new_int(active->output->current_mode->refresh));
     }
     json_object_object_add(state, "displays", list);
     json_object_object_add(state, "display", active ? json_object_new_string(label(active->output)) : NULL);

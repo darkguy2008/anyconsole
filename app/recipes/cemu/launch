@@ -5,8 +5,10 @@ PRO_HOME_BUTTON=11
 GAMEPAD="Wii U GamePad"
 PRO_CONTROLLER="Wii U Pro Controller"
 FULL_VOLUME=100
+MAILBOX_VSYNC=2
 CEMU=$XDG_CONFIG_HOME/Cemu
 MLC=/saves/mlc01
+TV_PACING_PACK=$CEMU/graphicPacks/anyconsole-tv-pacing
 
 controller_profile() {
   type=$1 pad=$2 guid=$3
@@ -26,7 +28,7 @@ settings() {
 <content>
 	<Graphic>
 		<api>1</api>
-		<VSync>1</VSync>
+		<VSync>$MAILBOX_VSYNC</VSync>
 	</Graphic>
 	<Audio>
 		<api>3</api>
@@ -45,9 +47,20 @@ controller_profiles() {
   for pad in $(seq 1 $((PADS - 1))); do controller_profile "$PRO_CONTROLLER" "$pad" "$guid" > "$CEMU/controllerProfiles/controller$pad.xml"; done
 }
 
-mkdir -p "$CEMU/controllerProfiles"
+mkdir -p "$CEMU/controllerProfiles" "$TV_PACING_PACK"
 [ -d "$MLC" ] || if [ -d /bios/mlc01 ]; then cp -R /bios/mlc01 "$MLC"; else mkdir -p "$MLC"; fi
 ln -sf /bios/keys.txt "$CEMU/keys.txt"
 settings > "$CEMU/settings.xml"
+cat > "$TV_PACING_PACK/rules.txt" <<EOF
+[Definition]
+titleIds = *
+name = TV pacing
+path = "anyconsole/TV pacing"
+version = 7
+default = true
+
+[Control]
+vsyncFrequency = $(jq -n --argjson hz "$REFRESH" '$hz | round')
+EOF
 controller_profiles
 exec xwayland-run -fullscreen -geometry "$CANVAS" -- sh -c '/opt/cemu/screen environment && exec "$@"' sh /opt/cemu/AppRun -f -g "$1" -m "$MLC"
