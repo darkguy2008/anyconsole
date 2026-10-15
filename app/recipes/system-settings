@@ -1,0 +1,2 @@
+#!/bin/sh
+exec jq -n -r --arg language "$GAME_LANGUAGE" --argjson game "$GAME_CONFIG" 'include "system"; system($language; $game.region // "")'

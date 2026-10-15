@@ -1,4 +1,4 @@
-import { fill, hints, html, mount, planes, rewindCells, saveCells, time, useClock, useConsole, useLatest } from 'anyconsole';
+import { fill, hints, html, mount, planes, rewindCells, saveCells, time, translate, useClock, useConsole, useLatest } from 'anyconsole';
 
 const white = '#ffffff';
 const black = '#000000';
@@ -74,7 +74,7 @@ function Attract({ state }) {
     <view style=${{ ...fill, backgroundColor: black }}>
       <image src=${state.splash} style=${fill} />
       <text style=${{ position: 'absolute', left: 0, right: 0, top: 790, fontSize: 40, textAlign: 'center' }} from=${{ opacity: 0 }}
-        transition=${{ opacity: 1000 }}>Press any button</text>
+        transition=${{ opacity: 1000 }}>${translate('Press any button')}</text>
     </view>`;
 }
 

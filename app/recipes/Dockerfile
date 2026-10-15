@@ -59,6 +59,7 @@ RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y a
 COPY --from=retroarch-download /retroarch /retroarch
 RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib64/${bundled##*/}" ] || rm "$bundled"; done
 COPY retroarch.cfg vulkan.cfg enhanced.jq refresh.jq /retroarch/
+COPY option.jq system.jq /usr/lib/jq/
 COPY retroarch-launch /retroarch/launch
 COPY --from=retroarch-frame-size /frame-size.so /retroarch/
 RUN touch /retroarch/core.opt /retroarch/vulkan.opt
@@ -70,6 +71,7 @@ ENTRYPOINT ["/retroarch/launch"]
 FROM retroarch AS nes
 LABEL anyconsole.launch="nes fds unf unif" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Nintendo - Nintendo Entertainment System"
 COPY --from=cores /cores/fceumm_libretro.so /retroarch/core.so
+COPY nes-system.jq /usr/lib/jq/system.jq
 
 # msdos MS-DOS
 FROM retroarch AS msdos
@@ -82,6 +84,7 @@ COPY msdos-refresh.jq /retroarch/refresh.jq
 FROM retroarch AS snes
 LABEL anyconsole.launch="sfc smc fig swc bs" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Nintendo - Super Nintendo Entertainment System"
 COPY --from=cores /cores/snes9x_libretro.so /retroarch/core.so
+COPY snes-system.jq /usr/lib/jq/system.jq
 
 # n64 Nintendo 64
 FROM retroarch AS n64
@@ -94,6 +97,7 @@ COPY n64-vulkan.opt /retroarch/vulkan.opt
 FROM retroarch AS genesis
 LABEL anyconsole.launch="md gen smd bin mdx" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Sega - Mega Drive - Genesis"
 COPY --from=cores /cores/genesis_plus_gx_libretro.so /retroarch/core.so
+COPY genesis-system.jq /usr/lib/jq/system.jq
 
 # gba Game Boy Advance
 FROM retroarch AS gba
@@ -109,6 +113,7 @@ COPY --from=cores /cores/gambatte_libretro.so /retroarch/core.so
 FROM retroarch AS wsc
 LABEL anyconsole.launch="wsc ws pc2" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Bandai - WonderSwan Color"
 COPY --from=cores /cores/mednafen_wswan_libretro.so /retroarch/core.so
+COPY wsc-system.jq /usr/lib/jq/system.jq
 
 # msx2 MSX2
 FROM retroarch AS msx2
@@ -132,6 +137,7 @@ RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y g
 LABEL anyconsole.launch="m3u chd cue pbp" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"forced\":[\"swanstation_Controller1_ForceAnalog\",\"swanstation_Controller2_ForceAnalog\",\"swanstation_Controller3_ForceAnalog\",\"swanstation_Controller4_ForceAnalog\"]}}" anyconsole.bios="/system" anyconsole.thumbnails="Sony - PlayStation"
 COPY --from=cores /cores/swanstation_libretro.so /retroarch/core.so
 COPY ps1.opt /retroarch/core.opt
+COPY ps1-system.jq /usr/lib/jq/system.jq
 COPY analog-state.awk ps1-analog.awk analog-log /retroarch/
 ARG RETRO_DEVICE_ANALOG=5 RETRO_DEVICE_TYPE_SHIFT=8 SWANSTATION_DUALSHOCK_SUBCLASS=0 SWANSTATION_LIBRARY_NAME=SwanStation
 RUN mkdir -p "/retroarch/remaps/$SWANSTATION_LIBRARY_NAME" \
@@ -143,6 +149,7 @@ FROM retroarch AS gamecube
 LABEL anyconsole.launch="m3u rvz gcm iso ciso gcz wia tgc dol elf" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Nintendo - GameCube"
 COPY --from=cores /cores/dolphin_libretro.so /retroarch/core.so
 COPY --from=dolphin /system /system
+COPY gamecube-system.jq /usr/lib/jq/system.jq
 
 # psp PlayStation Portable
 FROM retroarch AS psp
@@ -150,16 +157,19 @@ LABEL anyconsole.launch="iso cso pbp" anyconsole.analog="{\"sticks\":true}" anyc
 COPY --from=cores /cores/ppsspp_libretro.so /retroarch/core.so
 COPY --from=ppsspp /system /system
 COPY psp-enhanced.jq /retroarch/enhanced.jq
+COPY psp-system.jq /usr/lib/jq/system.jq
 
 # n3ds Nintendo 3DS
 FROM retroarch AS n3ds
 LABEL anyconsole.launch="3ds cci cxi 3dsx zcci" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/saves/Azahar/sysdata" anyconsole.thumbnails="Nintendo - Nintendo 3DS"
 COPY --from=azahar /cores/azahar_libretro.so /retroarch/core.so
+COPY n3ds-system.jq /usr/lib/jq/system.jq
 
 FROM gpu AS x11
-RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y xorg-x11-server-Xwayland xwayland-run xorg-x11-xauth libglvnd-opengl alsa-plugins-pulseaudio python3-pysdl2 libgpg-error
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y xorg-x11-server-Xwayland xwayland-run xorg-x11-xauth libglvnd-opengl alsa-plugins-pulseaudio python3-pysdl2 libgpg-error jq
 COPY asound.conf /etc/asound.conf
-COPY joystick-guid /usr/local/bin/
+COPY option.jq /usr/lib/jq/
+COPY joystick-guid system-settings /usr/local/bin/
 VOLUME /engine
 
 FROM x11 AS x11-rewind
@@ -187,6 +197,7 @@ LABEL anyconsole.launch="m3u gdi chd cdi cue" anyconsole.analog="{\"sticks\":tru
 COPY --from=redream-download /redream/redream /opt/redream/redream
 COPY --from=redream-commands /commands.so /opt/redream/
 COPY redream/ /opt/redream/
+COPY dreamcast-system.jq /usr/lib/jq/system.jq
 ENV REDREAM_COMMANDS=/tmp/redream-commands
 ENTRYPOINT ["/opt/redream/launch"]
 
@@ -200,6 +211,7 @@ RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y x
 LABEL anyconsole.launch="wux wud iso rpx wua" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.screen="/opt/cemu/screen" anyconsole.thumbnails="Nintendo - Wii U"
 COPY --from=cemu-download /cemu /opt/cemu
 COPY cemu/ /opt/cemu/
+COPY wiiu-system.jq /usr/lib/jq/system.jq
 ENV XDG_CONFIG_HOME=/engine XDG_DATA_HOME=/engine XDG_CACHE_HOME=/engine GDK_BACKEND=x11
 ENTRYPOINT ["/opt/cemu/launch"]
 
@@ -213,6 +225,7 @@ LABEL anyconsole.launch="sfo" anyconsole.analog="{\"sticks\":true}" anyconsole.b
 COPY --from=rpcs3-download /rpcs3 /opt/rpcs3
 RUN ln -s /opt/rpcs3/usr/share/rpcs3 /usr/share/rpcs3
 COPY rpcs3/ /opt/rpcs3/
+COPY ps3-system.jq /usr/lib/jq/system.jq
 ENV XDG_CONFIG_HOME=/engine/config XDG_CACHE_HOME=/engine/cache QT_QPA_PLATFORM=xcb
 ENTRYPOINT ["/opt/rpcs3/launch"]
 
@@ -222,7 +235,7 @@ RUN appimage /pcsx2
 
 # ps2 PlayStation 2
 FROM x11-rewind AS ps2
-RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y fontconfig freetype harfbuzz libcom_err libSM libICE matchbox-window-manager jq gawk
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y fontconfig freetype harfbuzz libcom_err libSM libICE matchbox-window-manager gawk
 LABEL anyconsole.launch="chd iso cso" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"button\":\"guide\"}}" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true" anyconsole.thumbnails="Sony - PlayStation 2"
 COPY --from=pcsx2-download /pcsx2 /opt/pcsx2
 COPY pcsx2/ analog-state.awk analog-log /opt/pcsx2/

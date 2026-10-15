@@ -9,7 +9,9 @@
 #include <gbm.h>
 #include <glob.h>
 #include <json-c/json.h>
+#include <libintl.h>
 #include <limits.h>
+#include <locale.h>
 #include <math.h>
 #include <pixman.h>
 #include <poll.h>
@@ -69,14 +71,12 @@
 #define WINDOWS_MAX (GAMES_MAX + 1)
 #define RESOLUTIONS_MAX 8
 #define SLEEP_CHOICES_MAX 8
-#define AUTO "Auto"
+#define AUTO N_("Auto (%s)")
 #define BOOST_GOVERNOR "performance"
 #define REFRESH_PRECISION 100
 #define REWIND_STATES 20
 #define SAVE_SLOTS 10
 #define UNNUMBERED_SLOT 0
-#define SLOT_TIME_FORMAT "%b %d %H:%M"
-#define SLOT_TIME_SAMPLE "Sep 30 23:59"
 #define KEPT_SESSIONS 4
 #define SAVE_SECONDS 5
 #define SAVE_CHANGE_PERCENT 1
@@ -92,7 +92,6 @@
 #define NOTIFY_PREFIX "notify "
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
-#define PROFILE_NAME "Player %d"
 #define EMULATE_FILE "emulate.json"
 #define ANALOG_CHOICES_FILE "analog.json"
 #define DEFAULT_SKIN "classic"
@@ -103,21 +102,27 @@
 #define BLUR_BOXES_MAX 16
 #define SKINS_MAX 64
 #define DIRECTORY_MODE (S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH)
+#define LANGUAGES_MAX 32
+#define CATALOG "/LC_MESSAGES/" TEXT_DOMAIN ".mo"
+#define _(text) gettext(text)
+#define N_(text) text
+
+extern int _nl_msg_cat_cntr;
 
 enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, MICROPHONES, CONTROLLERS, CONTROLLER, SETTINGS, WHOIS, LOG_OUT, ATTRACT, DELETE_DIALOG, OVERWRITE_DIALOG };
 enum plane { DASHBOARD_PLANE, GUIDE_PLANE, PICKER_PLANE, DIALOG_PLANE };
 static const char *const planes[] = {[DASHBOARD_PLANE] = "dashboard", [GUIDE_PLANE] = "guide", [PICKER_PLANE] = "picker", [DIALOG_PLANE] = "dialog"};
 static const struct { const char *name, *title; enum plane plane; } screens[] = {
-    [HOME] = {"home", "Home"}, [STORE] = {"store", "Store"}, [GAME] = {"game", ""},
-    [GUIDE] = {"guide", "Guide", GUIDE_PLANE}, [OUTPUTS] = {"outputs", "Output", GUIDE_PLANE}, [MICROPHONES] = {"microphones", "Microphone", GUIDE_PLANE},
-    [CONTROLLERS] = {"controllers", "Controllers", GUIDE_PLANE}, [CONTROLLER] = {"controller", "", GUIDE_PLANE}, [SETTINGS] = {"settings", "Settings"},
+    [HOME] = {"home", N_("Home")}, [STORE] = {"store", N_("Store")}, [GAME] = {"game", ""},
+    [GUIDE] = {"guide", N_("Guide"), GUIDE_PLANE}, [OUTPUTS] = {"outputs", N_("Output"), GUIDE_PLANE}, [MICROPHONES] = {"microphones", N_("Microphone"), GUIDE_PLANE},
+    [CONTROLLERS] = {"controllers", N_("Controllers"), GUIDE_PLANE}, [CONTROLLER] = {"controller", "", GUIDE_PLANE}, [SETTINGS] = {"settings", N_("Settings")},
     [WHOIS] = {"whois", "", PICKER_PLANE}, [LOG_OUT] = {"logout", "", GUIDE_PLANE}, [ATTRACT] = {"attract", ""},
     [DELETE_DIALOG] = {"delete-state", "", DIALOG_PLANE}, [OVERWRITE_DIALOG] = {"overwrite-state", "", DIALOG_PLANE},
 };
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
               CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, ANALOG, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN, CLEAR_THUMBNAILS,
-              SAVE_STATES, DELETE_STATE, OVERWRITE_STATE, CHOOSE_PICTURE };
+              SAVE_STATES, DELETE_STATE, OVERWRITE_STATE, CHOOSE_PICTURE, CHOOSE_LANGUAGE, CHOOSE_GAME_LANGUAGE };
 static const char *const actions[] = {
     [NOTHING] = "nothing", [OPEN_STORE] = "open-store", [OPEN_SETTINGS] = "open-settings", [OPEN_GAME] = "open-game", [PLAY] = "play", [RESUME] = "resume",
     [CLOSE] = "close", [UNINSTALL] = "uninstall", [INSTALL] = "install", [SHOW_DASHBOARD] = "dashboard", [VOLUME] = "volume", [OPEN_OUTPUTS] = "open-outputs",
@@ -127,21 +132,21 @@ static const char *const actions[] = {
     [CHOOSE_SLEEP] = "sleep", [REWIND] = "rewind", [LOGIN] = "login", [EMULATE] = "emulate", [ANALOG] = "analog", [LOG_OUT_PLAYER] = "log-out",
     [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen", [CHOOSE_SKIN] = "skin",
     [CLEAR_THUMBNAILS] = "clear-thumbnails", [SAVE_STATES] = "save-states", [DELETE_STATE] = "delete-state", [OVERWRITE_STATE] = "overwrite-state",
-    [CHOOSE_PICTURE] = "picture"};
+    [CHOOSE_PICTURE] = "picture", [CHOOSE_LANGUAGE] = "language", [CHOOSE_GAME_LANGUAGE] = "game-language"};
 static const char *const criteria[] = {"action", "label", "value", "arg"};
 enum tab { GAME_TAB, DEVICES_TAB, SYSTEM_TAB };
-static const char *const tabs[] = {[GAME_TAB] = "Game", [DEVICES_TAB] = "I/O", [SYSTEM_TAB] = "System"};
+static const char *const tabs[] = {[GAME_TAB] = N_("Game"), [DEVICES_TAB] = N_("I/O"), [SYSTEM_TAB] = N_("System")};
 enum picture { ORIGINAL, RETRO, ENHANCED, PICTURES };
-static const struct { const char *name, *label; } pictures[PICTURES] = {[ORIGINAL] = {"original", "Original"}, [RETRO] = {"retro", "Retro"}, [ENHANCED] = {"enhanced", "Enhanced"}};
+static const struct { const char *name, *label; } pictures[PICTURES] = {[ORIGINAL] = {"original", N_("Original")}, [RETRO] = {"retro", N_("Retro")}, [ENHANCED] = {"enhanced", N_("Enhanced")}};
 enum restart { PLAYING, SAVING, CLOSING };
 enum command { NONE, UP, DOWN, PAGE_UP, PAGE_DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON, X_BUTTON, Y_BUTTON };
 static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [PAGE_UP] = "page-up", [PAGE_DOWN] = "page-down",
                                        [LEFT] = "left", [RIGHT] = "right", [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide",
                                        [X_BUTTON] = "x", [Y_BUTTON] = "y"};
 static const struct { const char *name, *label; } mode_labels[] = {
-    {"analog", "Analog pad"}, {"digital", "Digital pad"}, {"keyboard", "Keyboard"}, {"mouse", "Mouse"}, {"keyboard-mouse", "Keyboard & mouse"}};
+    {"analog", N_("Analog pad")}, {"digital", N_("Digital pad")}, {"keyboard", N_("Keyboard")}, {"mouse", N_("Mouse")}, {"keyboard-mouse", N_("Keyboard & mouse")}};
 enum task { INSTALLING, UNINSTALLING, LAUNCHING };
-static const char *const tasks[] = {[INSTALLING] = "installing", [UNINSTALLING] = "uninstalling", [LAUNCHING] = "launching"};
+static const char *const tasks[] = {[INSTALLING] = N_("installing"), [UNINSTALLING] = N_("uninstalling"), [LAUNCHING] = N_("launching")};
 
 struct port { int analog, locked, pending, forced; };
 
@@ -242,6 +247,8 @@ static struct box blurred[BLUR_BOXES_MAX];
 static int blurred_count;
 static double reload_due = -1;
 static char wanted_skin[NAME_MAX + 1], loaded_skin[NAME_MAX + 1];
+static char languages[LANGUAGES_MAX][NAME_MAX + 1], language_names[LANGUAGES_MAX][TEXT_MAX];
+static int language_count;
 
 static pid_t spawn(char *const argv[], int input, int output, int errors) {
     posix_spawn_file_actions_t actions;
@@ -454,8 +461,8 @@ static int slot_filled(int profile, int slot) {
 }
 
 static const char *saved_time(time_t saved) {
-    static char text[sizeof SLOT_TIME_SAMPLE];
-    strftime(text, sizeof text, SLOT_TIME_FORMAT, localtime(&saved));
+    static char text[TEXT_MAX];
+    if (!strftime(text, sizeof text, _("%b %d %H:%M"), localtime(&saved))) *text = '\0';
     return text;
 }
 
@@ -464,7 +471,7 @@ static const char *save_slot_value(void) {
     char state[NAME_MAX + 1];
     time_t saved;
     int filled = saved_state(guide_profile, save_slot, state, &saved);
-    snprintf(text, sizeof text, "Slot %d  \u00b7  %s", save_slot + 1, filled ? saved_time(saved) : "Empty");
+    snprintf(text, sizeof text, _("Slot %d  \u00b7  %s"), save_slot + 1, filled ? saved_time(saved) : _("Empty"));
     return text;
 }
 
@@ -488,7 +495,7 @@ static void keep_saved(const char *state) {
         snprintf(to, sizeof to, "%s/%s" SCREEN_EXTENSION, directory, state);
         if (link(from, to) < 0) perror(to);
     }
-    notify("Saved state %d", saving.slot + 1);
+    notify(_("Saved state %d"), saving.slot + 1);
     cairo_surface_destroy(saving.screen);
     saving.screen = NULL;
     saving.game = -1;
@@ -548,10 +555,10 @@ static const char *rewind_age(void) {
     char path[PATH_MAX];
     struct stat status;
     struct timespec now;
-    if (!rewind_back) return "Now";
+    if (!rewind_back) return _("Now");
     clock_gettime(CLOCK_REALTIME, &now);
     long seconds = stat(rewind_path(path, active, "/" STATES "/%s", rewinds[rewind_count - rewind_back]), &status) ? 0 : now.tv_sec - status.st_mtime;
-    snprintf(text, sizeof text, "%ld:%02ld ago", seconds / SECONDS_PER_MINUTE, seconds % SECONDS_PER_MINUTE);
+    snprintf(text, sizeof text, _("%ld:%02ld ago"), seconds / SECONDS_PER_MINUTE, seconds % SECONDS_PER_MINUTE);
     return text;
 }
 
@@ -575,6 +582,21 @@ static const char *string_at(json_object *object, const char *first, const char 
     return text ? text : "";
 }
 
+static const char *ui_language(void) {
+    const char *chosen = string_at(settings, "language", NULL);
+    return *chosen ? chosen : SOURCE_LANGUAGE;
+}
+
+static const char *localized_title(json_object *manifest) {
+    char tag[NAME_MAX + 1];
+    snprintf(tag, sizeof tag, "%s", ui_language());
+    for (char *underscore = tag; (underscore = strchr(underscore, '_'));) *underscore = '-';
+    const char *title = string_at(manifest, "titles", tag);
+    tag[strcspn(tag, "-")] = '\0';
+    if (!*title) title = string_at(manifest, "titles", tag);
+    return *title ? title : string_at(manifest, "title", NULL);
+}
+
 static void scan(const char *directory, int store) {
     DIR *slugs = opendir(directory);
     for (struct dirent *slug; slugs && (slug = readdir(slugs));) {
@@ -582,7 +604,7 @@ static void scan(const char *directory, int store) {
         if (slug->d_name[0] == '.' || slug->d_type != DT_DIR) continue;
         snprintf(path, sizeof path, "%s/%s/" MANIFEST, directory, slug->d_name);
         json_object *manifest = json_object_from_file(path);
-        const char *title = string_at(manifest, "title", NULL);
+        const char *title = localized_title(manifest);
         snprintf(path, sizeof path, "%s/%s", directory, slug->d_name);
         DIR *platforms = opendir(path);
         for (struct dirent *platform; platforms && (platform = readdir(platforms));) {
@@ -813,7 +835,7 @@ static int chosen_resolution(void) { return resolution_staged ? staged_resolutio
 static const char *display_value(void) {
     static char value[TEXT_MAX];
     const char *pinned = string_at(settings, "display", NULL);
-    snprintf(value, sizeof value, AUTO " (%s)", string_at(display_state, "display", NULL));
+    snprintf(value, sizeof value, _(AUTO), string_at(display_state, "display", NULL));
     return *pinned ? pinned : value;
 }
 
@@ -829,14 +851,14 @@ static const char *chosen_mode(void) { return mode_staged ? staged_mode : string
 
 static const char *display_mode_value(void) {
     static char value[TEXT_MAX];
-    snprintf(value, sizeof value, AUTO " (%s)", mode_text(string_at(display_state, "mode", NULL)));
+    snprintf(value, sizeof value, _(AUTO), mode_text(string_at(display_state, "mode", NULL)));
     return *chosen_mode() ? mode_text(chosen_mode()) : value;
 }
 
 static const char *resolution_value(void) {
     static char value[TEXT_MAX];
     if (chosen_resolution()) snprintf(value, sizeof value, "%dp", chosen_resolution());
-    else snprintf(value, sizeof value, AUTO " (%s)", string_at(display_state, "canvas", NULL));
+    else snprintf(value, sizeof value, _(AUTO), string_at(display_state, "canvas", NULL));
     return value;
 }
 
@@ -886,8 +908,8 @@ static int chosen_sleep(void) {
 
 static const char *sleep_value(void) {
     static char value[TEXT_MAX];
-    if (!chosen_sleep()) return "Never";
-    snprintf(value, sizeof value, "%d min", chosen_sleep());
+    if (!chosen_sleep()) return _("Never");
+    snprintf(value, sizeof value, _("%d min"), chosen_sleep());
     return value;
 }
 
@@ -936,6 +958,57 @@ static void cycle_skin(int step) {
     if (count) start((char *[]){"settings", "skin", names[(current + step + count) % count], NULL});
 }
 
+static int language_index(const char *language) {
+    for (int i = 0; i < language_count; i++)
+        if (!strcmp(languages[i], language)) return i;
+    return 0;
+}
+
+static const char *game_language(void) { return string_at(settings, "game-language", NULL); }
+
+static const char *effective_game_language(void) { return *game_language() ? game_language() : ui_language(); }
+
+static const char *game_language_value(void) { return *game_language() ? language_names[language_index(game_language())] : _("Same as UI"); }
+
+static void cycle_language(int step) {
+    start((char *[]){"settings", "language", languages[cycle(language_index(ui_language()), language_count - 1, step)], NULL});
+}
+
+static void cycle_game_language(int step) {
+    int next = cycle(*game_language() ? language_index(game_language()) + 1 : 0, language_count, step);
+    start((char *[]){"settings", "game-language", next ? languages[next - 1] : "", NULL});
+}
+
+static void use_language(const char *language) {
+    setenv("LANGUAGE", language, 1);
+    ++_nl_msg_cat_cntr;
+}
+
+static int has_catalog(const struct dirent *entry) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof path, LOCALE_DIR "/%s" CATALOG, entry->d_name);
+    return is_visible(entry) && !access(path, R_OK);
+}
+
+static void find_languages(void) {
+    struct dirent **entries = NULL;
+    int count = scandir(LOCALE_DIR, &entries, has_catalog, alphasort);
+    if (!setlocale(LC_MESSAGES, MESSAGES_LOCALE)) fprintf(stderr, "overlay: no %s locale, so the UI stays in English\n", MESSAGES_LOCALE);
+    bindtextdomain(TEXT_DOMAIN, LOCALE_DIR);
+    bind_textdomain_codeset(TEXT_DOMAIN, "UTF-8");
+    textdomain(TEXT_DOMAIN);
+    snprintf(languages[language_count++], sizeof languages[0], "%s", SOURCE_LANGUAGE);
+    for (int i = 0; i < count; i++) {
+        if (language_count < LANGUAGES_MAX) snprintf(languages[language_count++], sizeof languages[0], "%s", entries[i]->d_name);
+        free(entries[i]);
+    }
+    free(entries);
+    for (int i = 0; i < language_count; i++) {
+        use_language(languages[i]);
+        snprintf(language_names[i], sizeof language_names[0], "%s", _("English"));
+    }
+}
+
 static enum picture chosen_picture(void) {
     const char *chosen = string_at(settings, "picture", NULL);
     for (unsigned picture = 0; picture < PICTURES; picture++)
@@ -973,6 +1046,7 @@ static void read_settings(void) {
     json_object_put(settings);
     settings = json_object_from_file(SETTINGS_FILE);
     if (strcmp(skin_name(), wanted_skin)) load_skin();
+    use_language(ui_language());
     changed = 1;
 }
 
@@ -982,7 +1056,7 @@ static void read_display(void) {
     json_object_put(display_state);
     display_state = json_object_from_file(DISPLAY_FILE);
     const char *pending = string_at(display_state, "pending", NULL);
-    if (*pending && strcmp(pending, previous)) notify("Close and restart your games to render on %s", pending);
+    if (*pending && strcmp(pending, previous)) notify(_("Close and restart your games to render on %s"), pending);
     changed = 1;
 }
 
@@ -1021,16 +1095,16 @@ static const char *controller_status(json_object *controller) {
     static char text[TEXT_MAX];
     json_object *battery;
     const char *link = string_at(controller, "connection", NULL);
-    int length = snprintf(text, sizeof text, "%s", !strcmp(link, "bluetooth") ? "Bluetooth" : !strcmp(link, "wired") ? "Wired" : "Not connected");
+    int length = snprintf(text, sizeof text, "%s", !strcmp(link, "bluetooth") ? _("Bluetooth") : !strcmp(link, "wired") ? _("Wired") : _("Not connected"));
     if (json_object_object_get_ex(controller, "battery", &battery) && battery)
         length += snprintf(text + length, sizeof text - length, "  %d%%", json_object_get_int(battery));
-    if (int_at(controller, "charging")) snprintf(text + length, sizeof text - length, " charging");
+    if (int_at(controller, "charging")) snprintf(text + length, sizeof text - length, _(" charging"));
     return text;
 }
 
 static const char *profile_name(int profile) {
     static char text[TEXT_MAX];
-    snprintf(text, sizeof text, PROFILE_NAME, profile);
+    snprintf(text, sizeof text, _("Player %d"), profile);
     return text;
 }
 
@@ -1059,7 +1133,7 @@ static int mode_index(json_object *device, const char *mode) {
 
 static const char *mode_label(const char *mode) {
     for (unsigned i = 0; i < sizeof mode_labels / sizeof *mode_labels; i++)
-        if (!strcmp(mode_labels[i].name, mode)) return mode_labels[i].label;
+        if (!strcmp(mode_labels[i].name, mode)) return _(mode_labels[i].label);
     return mode;
 }
 
@@ -1098,14 +1172,14 @@ static struct window *game_window(int index) {
 static const char *status(int index) {
     static char text[TEXT_MAX];
     struct game *game = &games[index];
-    if (game->job && game->percent < 0) return game->job_text;
+    if (game->job && game->percent < 0) return _(game->job_text);
     if (game->job) {
-        snprintf(text, sizeof text, "%s %d%%", game->job_text, game->percent);
+        snprintf(text, sizeof text, "%s %d%%", _(game->job_text), game->percent);
         return text;
     }
-    if (game->pid && !game_window(index)) return tasks[LAUNCHING];
-    if (game->pid) return game->paused ? "paused" : "running";
-    return game->installed ? "installed" : "";
+    if (game->pid && !game_window(index)) return _(tasks[LAUNCHING]);
+    if (game->pid) return game->paused ? _("paused") : _("running");
+    return game->installed ? _("installed") : "";
 }
 
 static int in_game(void) { return active >= 0 && !dashboard_open; }
@@ -1183,8 +1257,8 @@ static int analog_wanted(int profile, int game) {
 static const char *analog_value(void) {
     static char value[TEXT_MAX];
     const char *chosen = analog_override(guide_profile, active);
-    if (*chosen) return !strcmp(chosen, "on") ? "On" : "Off";
-    snprintf(value, sizeof value, "Auto (%s)", analog_auto(guide_profile, active) ? "On" : "Off");
+    if (*chosen) return !strcmp(chosen, "on") ? _("On") : _("Off");
+    snprintf(value, sizeof value, _(AUTO), analog_auto(guide_profile, active) ? _("On") : _("Off"));
     return value;
 }
 
@@ -1211,7 +1285,7 @@ static const char *emulate_value(void) {
     json_object *device = device_of(focus);
     const char *chosen = string_at(emulate_of(guide_profile), key(active), kind_of(focus));
     if (mode_index(device, chosen) >= 0) return mode_label(chosen);
-    snprintf(value, sizeof value, "Default (%s)", mode_label(default_mode(active, device)));
+    snprintf(value, sizeof value, _("Default (%s)"), mode_label(default_mode(active, device)));
     return value;
 }
 
@@ -1337,12 +1411,12 @@ static int owned_games(int profile) {
 
 static int rewindable(void) { return in_game() && games[active].rewinds; }
 
-static int add_picture_row(int count) { return add_row(count, CHOOSE_PICTURE, 0, "Display Mode", "%s", pictures[chosen_picture()].label); }
+static int add_picture_row(int count) { return add_row(count, CHOOSE_PICTURE, 0, _("Display Mode"), "%s", _(pictures[chosen_picture()].label)); }
 
 static int add_resolution_rows(int count) {
-    count = add_row(count, CHOOSE_DISPLAY_MODE, 0, "Display resolution", "%s", display_mode_value());
-    count = add_row(count, CHOOSE_RESOLUTION, 0, "Game resolution", "%s", resolution_value());
-    return mode_staged || resolution_staged ? add_row(count, APPLY_RESOLUTIONS, 0, "Apply", "") : count;
+    count = add_row(count, CHOOSE_DISPLAY_MODE, 0, _("Display resolution"), "%s", display_mode_value());
+    count = add_row(count, CHOOSE_RESOLUTION, 0, _("Game resolution"), "%s", resolution_value());
+    return mode_staged || resolution_staged ? add_row(count, APPLY_RESOLUTIONS, 0, _("Apply"), "") : count;
 }
 
 static int build(struct view *view) {
@@ -1355,94 +1429,96 @@ static int build(struct view *view) {
         for (int i = 0, total = sorted(order, view->screen == STORE); i < total; i++)
             count = add_row(count, OPEN_GAME, order[i], games[order[i]].title, "%s  %s", games[order[i]].platform, status(order[i]));
         if (view->screen == HOME) {
-            count = add_row(count, OPEN_STORE, 0, "Store", "");
-            count = add_row(count, OPEN_SETTINGS, 0, "Settings", "");
+            count = add_row(count, OPEN_STORE, 0, _("Store"), "");
+            count = add_row(count, OPEN_SETTINGS, 0, _("Settings"), "");
         }
         break;
     case GAME:
         if (game->pid) {
-            count = add_row(count, RESUME, 0, "Resume", "");
-            count = add_row(count, CLOSE, 0, "Close", "");
+            count = add_row(count, RESUME, 0, _("Resume"), "");
+            count = add_row(count, CLOSE, 0, _("Close"), "");
         } else if (game->job) {
             count = add_row(count, NOTHING, 0, status(view->game), "");
         } else if (game->installed) {
-            count = add_row(count, PLAY, 0, "Play", "");
-            count = add_row(count, UNINSTALL, 0, "Uninstall", "");
+            count = add_row(count, PLAY, 0, _("Play"), "");
+            count = add_row(count, UNINSTALL, 0, _("Uninstall"), "");
         } else {
             for (int store = 0; store < store_count; store++)
-                if (game->stores & (1u << store)) count = add_row(count, INSTALL, store, "Install from", "%s", store_label(store));
+                if (game->stores & (1u << store)) count = add_row(count, INSTALL, store, _("Install from"), "%s", store_label(store));
         }
         break;
     case GUIDE:
         if (tab_of(view) == GAME_TAB) {
-            count = add_row(count, SHOW_DASHBOARD, 0, "Dashboard", "");
-            if (rewindable()) count = add_row(count, REWIND, 0, "Rewind", "%s", rewind_age());
-            if (rewindable() && guide_profile) count = add_row(count, SAVE_STATES, 0, "Save States", "%s", save_slot_value());
-            if (guide_profile && analog_row(active)) count = add_row(count, ANALOG, 0, "Analog", "%s", analog_value());
-            else if (guide_profile && !games[active].analog) count = add_row(count, EMULATE, 0, "Emulate", "%s", emulate_value());
-            if (games[active].second_screen) count = add_row(count, SECOND_SCREEN, 0, "Second screen", "%s", games[active].screen_shown ? "Inset" : "Off");
+            count = add_row(count, SHOW_DASHBOARD, 0, _("Dashboard"), "");
+            if (rewindable()) count = add_row(count, REWIND, 0, _("Rewind"), "%s", rewind_age());
+            if (rewindable() && guide_profile) count = add_row(count, SAVE_STATES, 0, _("Save States"), "%s", save_slot_value());
+            if (guide_profile && analog_row(active)) count = add_row(count, ANALOG, 0, _("Analog"), "%s", analog_value());
+            else if (guide_profile && !games[active].analog) count = add_row(count, EMULATE, 0, _("Emulate"), "%s", emulate_value());
+            if (games[active].second_screen) count = add_row(count, SECOND_SCREEN, 0, _("Second screen"), "%s", games[active].screen_shown ? _("Inset") : _("Off"));
             count = add_picture_row(count);
             break;
         }
         if (tab_of(view) == SYSTEM_TAB) {
             count = add_resolution_rows(count);
-            count = add_row(count, RELOAD, 0, "Reload", "");
-            count = add_row(count, RESTART, 0, "Restart", "");
-            count = add_row(count, POWER_OFF, 0, "Power off", "");
-            count = add_row(count, LOG_OUT_PLAYER, 0, "Log out", "");
+            count = add_row(count, RELOAD, 0, _("Reload"), "");
+            count = add_row(count, RESTART, 0, _("Restart"), "");
+            count = add_row(count, POWER_OFF, 0, _("Power off"), "");
+            count = add_row(count, LOG_OUT_PLAYER, 0, _("Log out"), "");
             break;
         }
         if (volume >= 0) snprintf(level, sizeof level, "%d%%", volume);
-        count = add_row(count, VOLUME, 0, "Volume", "%s", level);
-        count = add_row(count, OPEN_OUTPUTS, 0, "Output", "%s", chosen(outputs, output_count, default_output));
-        count = add_row(count, OPEN_MICROPHONES, 0, "Microphone", "%s", chosen(microphones, microphone_count, default_microphone));
-        if (microphone_is_muted()) snprintf(microphone_level, sizeof microphone_level, "Muted");
+        count = add_row(count, VOLUME, 0, _("Volume"), "%s", level);
+        count = add_row(count, OPEN_OUTPUTS, 0, _("Output"), "%s", chosen(outputs, output_count, default_output));
+        count = add_row(count, OPEN_MICROPHONES, 0, _("Microphone"), "%s", chosen(microphones, microphone_count, default_microphone));
+        if (microphone_is_muted()) snprintf(microphone_level, sizeof microphone_level, "%s", _("Muted"));
         else if (microphone_volume >= 0) snprintf(microphone_level, sizeof microphone_level, "%d%%", microphone_volume);
-        count = add_row(count, MICROPHONE_VOLUME, 0, "Microphone volume", "%s", microphone_level);
-        count = add_row(count, OPEN_CONTROLLERS, 0, "Controllers", "");
+        count = add_row(count, MICROPHONE_VOLUME, 0, _("Microphone volume"), "%s", microphone_level);
+        count = add_row(count, OPEN_CONTROLLERS, 0, _("Controllers"), "");
         break;
     case WHOIS:
         for (int profile = 1; profile <= PROFILES; profile++) {
             if (seat_of(profile) < 0) count = add_row(count, LOGIN, profile, profile_name(profile), "");
-            else count = add_row(count, LOGIN, profile, profile_name(profile), "Pad %d", seat_of(profile) + 1);
+            else count = add_row(count, LOGIN, profile, profile_name(profile), _("Pad %d"), seat_of(profile) + 1);
         }
         break;
     case LOG_OUT:
-        count = add_row(count, CONFIRM_LOG_OUT, 0, "Log out", "Closes %d games", owned_games(guide_profile));
+        count = add_row(count, CONFIRM_LOG_OUT, 0, _("Log out"), ngettext("Closes %d game", "Closes %d games", owned_games(guide_profile)), owned_games(guide_profile));
         break;
     case ATTRACT:
         break;
     case DELETE_DIALOG:
-        if (rewindable()) count = add_row(count, DELETE_STATE, 0, "Delete", "");
+        if (rewindable()) count = add_row(count, DELETE_STATE, 0, _("Delete"), "");
         break;
     case OVERWRITE_DIALOG:
-        if (rewindable()) count = add_row(count, OVERWRITE_STATE, 0, "Overwrite", "");
+        if (rewindable()) count = add_row(count, OVERWRITE_STATE, 0, _("Overwrite"), "");
         break;
     case OUTPUTS:
     case MICROPHONES:
         for (int i = 0, total = view->screen == OUTPUTS ? output_count : microphone_count; i < total; i++) {
             struct device *device = view->screen == OUTPUTS ? &outputs[i] : &microphones[i];
             const char *current = view->screen == OUTPUTS ? default_output : default_microphone;
-            count = add_row(count, SET_DEVICE, device->id, device->name, !strcmp(device->node, current) ? "selected" : "");
+            count = add_row(count, SET_DEVICE, device->id, device->name, !strcmp(device->node, current) ? _("selected") : "");
         }
         break;
     case CONTROLLERS:
         if (int_at(controllers_state, "bluetooth"))
-            count = add_row(count, PAIR, 0, "Pair new controller", "%s", int_at(controllers_state, "pairing") ? "Searching" : "");
+            count = add_row(count, PAIR, 0, _("Pair new controller"), "%s", int_at(controllers_state, "pairing") ? _("Searching") : "");
         for (int i = 0; i < controller_count(); i++)
             count = add_row(count, int_at(controller_at(i), "paired") ? OPEN_CONTROLLER : NOTHING, i, string_at(controller_at(i), "name", NULL),
                             "%s", controller_status(controller_at(i)));
         break;
     case CONTROLLER:
-        count = add_row(count, FORGET, 0, "Forget", "");
+        count = add_row(count, FORGET, 0, _("Forget"), "");
         break;
     case SETTINGS:
-        count = add_row(count, CHOOSE_DISPLAY, 0, "Display", "%s", display_value());
+        count = add_row(count, CHOOSE_DISPLAY, 0, _("Display"), "%s", display_value());
         count = add_resolution_rows(count);
         count = add_picture_row(count);
-        count = add_row(count, CHOOSE_SLEEP, 0, "Controller sleep", "%s", sleep_value());
-        count = add_row(count, CHOOSE_SKIN, 0, "Skin", "%s", skin_name());
-        count = add_row(count, CLEAR_THUMBNAILS, 0, "Clear thumbnails", "");
+        count = add_row(count, CHOOSE_SLEEP, 0, _("Controller sleep"), "%s", sleep_value());
+        count = add_row(count, CHOOSE_SKIN, 0, _("Skin"), "%s", skin_name());
+        count = add_row(count, CHOOSE_LANGUAGE, 0, _("Language"), "%s", language_names[language_index(ui_language())]);
+        count = add_row(count, CHOOSE_GAME_LANGUAGE, 0, _("Game language"), "%s", game_language_value());
+        count = add_row(count, CLEAR_THUMBNAILS, 0, _("Clear thumbnails"), "");
         break;
     }
     for (int i = 0; i < count; i++)
@@ -1455,12 +1531,12 @@ static const char *title(struct view *view) {
     static char text[2 * TEXT_MAX];
     if (view->screen == GAME) return games[view->game].title;
     if (view->screen == CONTROLLER) return controller_name();
-    if (view->screen == WHOIS) return player_count ? "Who is using this controller?" : "Who's playing?";
-    if (view->screen == LOG_OUT) snprintf(text, sizeof text, "Log out %s", profile_name(guide_profile));
-    else if (view->screen == DELETE_DIALOG) snprintf(text, sizeof text, "Delete save state %d?", save_slot + 1);
-    else if (view->screen == OVERWRITE_DIALOG) snprintf(text, sizeof text, "Overwrite save state %d?", save_slot + 1);
-    else if (view->screen == GUIDE && guide_profile) snprintf(text, sizeof text, "%s  \u00b7  Pad %d", profile_name(guide_profile), seat_of(guide_profile) + 1);
-    else return screens[view->screen].title;
+    if (view->screen == WHOIS) return player_count ? _("Who is using this controller?") : _("Who's playing?");
+    if (view->screen == LOG_OUT) snprintf(text, sizeof text, _("Log out %s"), profile_name(guide_profile));
+    else if (view->screen == DELETE_DIALOG) snprintf(text, sizeof text, _("Delete save state %d?"), save_slot + 1);
+    else if (view->screen == OVERWRITE_DIALOG) snprintf(text, sizeof text, _("Overwrite save state %d?"), save_slot + 1);
+    else if (view->screen == GUIDE && guide_profile) snprintf(text, sizeof text, _("%s  \u00b7  Pad %d"), profile_name(guide_profile), seat_of(guide_profile) + 1);
+    else return *screens[view->screen].title ? _(screens[view->screen].title) : "";
     return text;
 }
 
@@ -1566,7 +1642,7 @@ static void ended(int index, int status) {
     if (game->restart == CLOSING) return;
     game->restart = PLAYING;
     if (!game->closing && status) {
-        fail(index, "%s stopped", game->title);
+        fail(index, _("%s stopped"), game->title);
         inotify_rm_watch(watcher, game->states_watch);
         keep_rewinds(name(index));
     } else remove_rewinds(index);
@@ -1782,10 +1858,22 @@ static void restart_enhanced(void) {
     resume(active);
 }
 
+static int running_games(void) {
+    int count = 0;
+    for (int i = 0; i < game_count; i++) count += games[i].pid != 0;
+    return count;
+}
+
 static void apply_settings(void) {
     int was_enhanced = chosen_picture() == ENHANCED;
+    char was_language[NAME_MAX + 1], was_game_language[NAME_MAX + 1];
+    snprintf(was_language, sizeof was_language, "%s", ui_language());
+    snprintf(was_game_language, sizeof was_game_language, "%s", effective_game_language());
     read_settings();
     if ((chosen_picture() == ENHANCED) != was_enhanced) restart_enhanced();
+    if (strcmp(ui_language(), was_language)) rescan();
+    if (strcmp(effective_game_language(), was_game_language) && running_games())
+        notify(_("Restart your games to play them in %s"), language_names[language_index(effective_game_language())]);
 }
 
 static void press_save_states(enum command command) {
@@ -1847,8 +1935,8 @@ static void play(int index) {
     char directory[PATH_MAX], states[PATH_MAX], owner[TEXT_MAX], resume_slot[TEXT_MAX] = "";
     int commands[2];
     struct game *game = &games[index];
-    if (!listen_socket(index, directory, sizeof directory)) { fail(index, "Could not start %s", game->title); return; }
-    if (pipe2(commands, O_CLOEXEC) < 0) { perror("pipe"); close(game->context); fail(index, "Could not start %s", game->title); return; }
+    if (!listen_socket(index, directory, sizeof directory)) { fail(index, _("Could not start %s"), game->title); return; }
+    if (pipe2(commands, O_CLOEXEC) < 0) { perror("pipe"); close(game->context); fail(index, _("Could not start %s"), game->title); return; }
     int output = game_log(index);
     prepare_rewinds(index, states);
     if (game->restart == CLOSING) snprintf(resume_slot, sizeof resume_slot, "%d", newest_slot());
@@ -1860,7 +1948,7 @@ static void play(int index) {
     for (int seat = 0; seat < PADS; seat++) game->ports[seat] = (struct port){.analog = -1, .forced = 1};
     show_game(index);
     snprintf(owner, sizeof owner, "%d", game->owner);
-    game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, states, owner, resume_slot, NULL}, commands[0], output, output);
+    game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, states, owner, resume_slot, (char *)effective_game_language(), NULL}, commands[0], output, output);
     close(output);
     close(commands[0]);
     game->commands = commands[1];
@@ -1881,10 +1969,10 @@ static void close_game(int index) {
 static void start_job(int index, enum task task, char *const argv[]) {
     struct game *game = &games[index];
     int errors[2];
-    if (pipe2(errors, O_CLOEXEC | O_NONBLOCK) < 0) { perror(argv[0]); fail(index, "Could not start %s", game->title); return; }
+    if (pipe2(errors, O_CLOEXEC | O_NONBLOCK) < 0) { perror(argv[0]); fail(index, _("Could not start %s"), game->title); return; }
     game->job = spawn_reading(argv, &game->job_output, errors[1]);
     close(errors[1]);
-    if (game->job < 0) { game->job = 0; close(errors[0]); fail(index, "Could not start %s", game->title); return; }
+    if (game->job < 0) { game->job = 0; close(errors[0]); fail(index, _("Could not start %s"), game->title); return; }
     game->error_output = errors[0];
     game->error_length = 0;
     *game->job_error = '\0';
@@ -1896,7 +1984,7 @@ static void start_job(int index, enum task task, char *const argv[]) {
 
 static int owner_seated(int index) {
     if (seat_of(games[index].owner) >= 0) return 1;
-    fail(index, "Could not start %s: log in a player first", games[index].title);
+    fail(index, _("Could not start %s: log in a player first"), games[index].title);
     return 0;
 }
 
@@ -1926,7 +2014,7 @@ static void read_step(char *line, void *context) {
     game->percent = -1;
     sscanf(line, "%*s %d", &game->percent);
     line[strcspn(line, " ")] = '\0';
-    if (strcmp(line, game->job_text) && game->task != LAUNCHING) notify("%s: %s", game->title, line);
+    if (strcmp(line, game->job_text) && game->task != LAUNCHING) notify("%s: %s", game->title, _(line));
     memmove(game->job_text, line, strlen(line) + 1);
     changed = 1;
 }
@@ -1957,13 +2045,13 @@ static void job_done(int index, int status) {
     if (status && *game->job_error) snprintf(detail, sizeof detail, ": %s", game->job_error);
     if (game->task == LAUNCHING) {
         if (game->cancelled) game->cancelled = 0;
-        else if (status) fail(index, "Could not start %s%s", game->title, detail);
+        else if (status) fail(index, _("Could not start %s%s"), game->title, detail);
         else if (owner_seated(index)) play(index);
         return;
     }
     rescan_installed();
-    if (!status) notify(game->task == INSTALLING ? "Installed %s" : "Uninstalled %s", game->title);
-    else fail(index, game->task == INSTALLING ? "Install failed: %s%s" : "Uninstall failed: %s%s", game->title, detail);
+    if (!status) notify(game->task == INSTALLING ? _("Installed %s") : _("Uninstalled %s"), game->title);
+    else fail(index, game->task == INSTALLING ? _("Install failed: %s%s") : _("Uninstall failed: %s%s"), game->title, detail);
 }
 
 static void save_session(void) {
@@ -2010,7 +2098,7 @@ static int seat_for(int profile) {
 
 static void login(int profile, int device) {
     if (profile < 1 || profile > PROFILES) return;
-    if (seat_for(profile) < 0) { notify("Every pad is taken"); return; }
+    if (seat_for(profile) < 0) { notify("%s", _("Every pad is taken")); return; }
     if (!player_count) {
         dashboard_open = 1;
         dashboard_depth = 1;
@@ -2044,7 +2132,8 @@ static void logout(int profile, int device) {
 
 static int inert(enum action action) {
     return action == NOTHING || action == VOLUME || action == MICROPHONE_VOLUME || action == SECOND_SCREEN || action == CHOOSE_DISPLAY ||
-           action == CHOOSE_DISPLAY_MODE || action == CHOOSE_RESOLUTION || action == CHOOSE_SLEEP || action == CHOOSE_SKIN || action == EMULATE || action == ANALOG || action == CHOOSE_PICTURE;
+           action == CHOOSE_DISPLAY_MODE || action == CHOOSE_RESOLUTION || action == CHOOSE_SLEEP || action == CHOOSE_SKIN || action == EMULATE || action == ANALOG || action == CHOOSE_PICTURE ||
+           action == CHOOSE_LANGUAGE || action == CHOOSE_GAME_LANGUAGE;
 }
 
 static void act(struct row *row, int profile) {
@@ -2135,6 +2224,8 @@ static void adjust(enum action action, int step) {
     if (action == CHOOSE_SLEEP) cycle_sleep(step);
     if (action == CHOOSE_SKIN) cycle_skin(step);
     if (action == CHOOSE_PICTURE) cycle_picture(step);
+    if (action == CHOOSE_LANGUAGE) cycle_language(step);
+    if (action == CHOOSE_GAME_LANGUAGE) cycle_game_language(step);
     if (action == REWIND && rewind_back - step >= 0 && rewind_back - step <= rewind_count) rewind_back -= step;
     if (action == SAVE_STATES && save_slot + step >= 0 && save_slot + step < SAVE_SLOTS) save_slot += step;
     if (action == EMULATE) cycle_mode(step);
@@ -2402,7 +2493,7 @@ static json_object *view_object(enum plane plane, struct view *view, int *count)
     json_object_object_add(object, "selected", json_object_new_int(view->selected));
     if (view->screen != GUIDE) return object;
     list = json_object_new_array();
-    for (enum tab tab = first_tab(); tab <= SYSTEM_TAB; tab++) json_object_array_add(list, json_object_new_string(tabs[tab]));
+    for (enum tab tab = first_tab(); tab <= SYSTEM_TAB; tab++) json_object_array_add(list, json_object_new_string(_(tabs[tab])));
     json_object_object_add(object, "tabs", list);
     json_object_object_add(object, "tab", json_object_new_int(tab_of(view) - first_tab()));
     return object;
@@ -2460,24 +2551,24 @@ static void hint(json_object *hints, enum command command, const char *label) {
 }
 
 static const char *back_hint(struct view *view) {
-    if (picker != NO_DEVICE) return "Back";
-    if (screens[view->screen].plane == DIALOG_PLANE) return "Cancel";
-    if (guide_shown) return guide_depths[guide_profile] > 1 ? "Back" : "Close";
-    return dashboard_depth > 1 ? "Back" : NULL;
+    if (picker != NO_DEVICE) return _("Back");
+    if (screens[view->screen].plane == DIALOG_PLANE) return _("Cancel");
+    if (guide_shown) return guide_depths[guide_profile] > 1 ? _("Back") : _("Close");
+    return dashboard_depth > 1 ? _("Back") : NULL;
 }
 
 static json_object *hints_object(struct view *view, int count) {
     json_object *hints = json_object_new_object();
-    if (launching() && games[active].job) hint(hints, BACK, "Cancel");
+    if (launching() && games[active].job) hint(hints, BACK, _("Cancel"));
     if (launching() || attract() || !interactive()) return hints;
     struct row *row = view->selected < count ? &rows[view->selected] : NULL;
     int saves = row && row->action == SAVE_STATES, filled = saves && slot_filled(guide_profile, save_slot);
-    const char *confirm = row && !inert(row->action) ? "OK" : NULL;
+    const char *confirm = row && !inert(row->action) ? _("OK") : NULL;
     if (row && screens[view->screen].plane == DIALOG_PLANE) confirm = row->label;
-    else if (saves || (row && row->action == REWIND)) confirm = (saves ? filled : rewind_back) ? "Load" : NULL;
+    else if (saves || (row && row->action == REWIND)) confirm = (saves ? filled : rewind_back) ? _("Load") : NULL;
     hint(hints, CONFIRM, confirm);
-    hint(hints, X_BUTTON, saves ? "Save" : NULL);
-    hint(hints, Y_BUTTON, filled ? "Delete" : NULL);
+    hint(hints, X_BUTTON, saves ? _("Save") : NULL);
+    hint(hints, Y_BUTTON, filled ? _("Delete") : NULL);
     hint(hints, BACK, back_hint(view));
     return hints;
 }
@@ -2726,7 +2817,7 @@ static void reap(void) {
         }
         if (pid == thumbnail_clearer) {
             thumbnail_clearer = 0;
-            notify("Thumbnails cleared");
+            notify("%s", _("Thumbnails cleared"));
             forget_thumbnails();
             paint_needed = changed = 1;
         }
@@ -3022,11 +3113,17 @@ static void accept_requests(int listener) {
     }
 }
 
+static void notify_from(char *line) {
+    char *argument = strstr(line, NOTIFY_SEPARATOR);
+    if (argument) *argument = '\0';
+    notify(_(line), argument ? argument + strlen(NOTIFY_SEPARATOR) : "");
+}
+
 static void handle_message(char *line, void *context) {
     char name[WORD_MAX + 1];
     int first, value;
     (void)context;
-    if (!strncmp(line, NOTIFY_PREFIX, strlen(NOTIFY_PREFIX))) notify("%s", line + strlen(NOTIFY_PREFIX));
+    if (!strncmp(line, NOTIFY_PREFIX, strlen(NOTIFY_PREFIX))) notify_from(line + strlen(NOTIFY_PREFIX));
     else if (!strcmp(line, "reset")) reset_devices();
     else if (sscanf(line, "connect %d", &first) == 1) connected(first);
     else if (sscanf(line, "dial %" STRINGIFY(WORD_MAX) "s", name) == 1) turn_dial(name);
@@ -3104,6 +3201,7 @@ int main(void) {
     watched[DECODED] = (struct pollfd){.fd = scene_start_decoder(), .events = POLLIN};
     watched[LISTENER] = (struct pollfd){.fd = bind_socket(OVERLAY_SOCKET, SOCK_NONBLOCK), .events = POLLIN};
     keep_interrupted_rewinds();
+    find_languages();
     read_stores();
     read_settings();
     read_display();

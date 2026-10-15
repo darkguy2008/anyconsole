@@ -1,4 +1,4 @@
-import { faces, fill, hints, html, planes, play, rewindCells, saveCells, select, time, useClock, useCommand, useConsole, useLatest } from 'anyconsole';
+import { faces, fill, hints, html, planes, play, rewindCells, saveCells, select, time, translate, useClock, useCommand, useConsole, useLatest } from 'anyconsole';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
 const font = '../switch/Nunito.ttf';
@@ -201,7 +201,7 @@ function Settings({ state, view, theme }) {
       <view style=${{ width: 640, marginBottom: 2 * edge + barHeight, backgroundColor: theme.sidebar, paddingTop: 72, paddingHorizontal: 40, gap: 8 }}>
         <view style=${{ flexDirection: 'row', alignItems: 'center', gap: 16, paddingBottom: 40 }}>
           <${Icon} name="settings" size=${52} />
-          <text style=${{ fontSize: 44, fontWeight: 800 }}>System Settings</text>
+          <text style=${{ fontSize: 44, fontWeight: 800 }}>${translate('System Settings')}</text>
         </view>
         <view style=${{ gap: 4 }} plane=${view.plane}>
           <view style=${{ position: 'absolute', backgroundColor: theme.surface, borderRadius: 12, borderWidth: 0 }} track=${view.selected}
@@ -221,11 +221,11 @@ function Settings({ state, view, theme }) {
             <text style=${{ flexGrow: 1, flexShrink: 1, fontSize: 40, fontWeight: 700, textAlign: 'center' }}>${chosen.value || chosen.label}</text>
             <${Icon} name="chevron_right" size=${56} color=${accent} />
           </view>
-          ${chosen.value ? html`<text style=${{ fontSize: 28, color: theme.muted }}>Press left or right to change</text>` : html`
+          ${chosen.value ? html`<text style=${{ fontSize: 28, color: theme.muted }}>${translate('Press left or right to change')}</text>` : html`
             <view style=${{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <text style=${{ fontSize: 28, color: theme.muted }}>Press</text>
+              <text style=${{ fontSize: 28, color: theme.muted }}>${translate('Press')}</text>
               <${Face} face=${faces(state).confirm} theme=${theme} />
-              <text style=${{ fontSize: 28, color: theme.muted }}>${`to ${chosen.label.toLowerCase()}`}</text>
+              <text style=${{ fontSize: 28, color: theme.muted }}>${translate('to %s').replace('%s', chosen.label.toLowerCase())}</text>
             </view>`}
         </view>`}
     </view>`;
@@ -355,7 +355,7 @@ function Attract({ state, theme }) {
     <view style=${{ ...fill, backgroundColor: '#000000' }} from=${{ opacity: 0 }} transition=${{ opacity: 400 }}>
       <image src=${state.splash} style=${fill} />
       <text style=${{ position: 'absolute', left: 0, right: 0, top: 800, fontSize: 40, fontWeight: 800, textAlign: 'center', color: '#ffffff',
-        opacity: bright ? 1 : 0.4 }} transition=${{ opacity: pulseMilliseconds }}>Press any button</text>
+        opacity: bright ? 1 : 0.4 }} transition=${{ opacity: pulseMilliseconds }}>${translate('Press any button')}</text>
     </view>`;
 }
 

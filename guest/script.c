@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <libgen.h>
+#include <libintl.h>
 #include <limits.h>
 #include <quickjs/quickjs-libc.h>
 #include <quickjs/quickjs.h>
@@ -231,6 +232,14 @@ static JSValue native_select(JSContext *ctx, JSValueConst self, int count, JSVal
     return JS_UNDEFINED;
 }
 
+static JSValue native_translate(JSContext *ctx, JSValueConst self, int count, JSValueConst *arguments) {
+    (void)self, (void)count;
+    const char *text = JS_ToCString(ctx, arguments[0]);
+    JSValue translated = JS_NewString(ctx, text ? gettext(text) : "");
+    JS_FreeCString(ctx, text);
+    return translated;
+}
+
 static JSValue native_page(JSContext *ctx, JSValueConst self, int count, JSValueConst *arguments) {
     (void)self, (void)count;
     int selected = 0, direction = 0;
@@ -253,7 +262,7 @@ static const JSCFunctionListEntry natives[] = {
     JS_CFUNC_DEF("remove", 1, native_remove), JS_CFUNC_DEF("text", 2, native_text),       JS_CFUNC_DEF("set", 3, native_set),
     JS_CFUNC_DEF("timer", 2, native_timer),   JS_CFUNC_DEF("cancel", 1, native_cancel),   JS_CFUNC_DEF("listen", 2, native_listen),
     JS_CFUNC_DEF("select", 1, native_select), JS_CFUNC_DEF("play", 1, native_play),       JS_CFUNC_DEF("transition", 2, native_transition),
-    JS_CFUNC_DEF("from", 2, native_from),     JS_CFUNC_DEF("page", 3, native_page),
+    JS_CFUNC_DEF("from", 2, native_from),     JS_CFUNC_DEF("page", 3, native_page),       JS_CFUNC_DEF("translate", 1, native_translate),
 };
 
 static int init_native(JSContext *ctx, JSModuleDef *module) { return JS_SetModuleExportList(ctx, module, natives, sizeof natives / sizeof *natives); }

@@ -26,6 +26,8 @@ platforms() {
   ls "$PUBLISHED_ENGINES" | sed -n 's/\.json$//p'
 }
 
+step() { echo "$@"; }
+
 progress() { awk -v RS='\r' -v step="$1" '$2 != shown { shown = $2; print step, $2 + 0; fflush() }'; }
 
 image_config() { docker image inspect -f '{{json .Config}}' "$GAME_IMAGE/$1" 2>/dev/null || echo '{}'; }
@@ -56,14 +58,14 @@ download() (
   rm -rf "$staged"
   mkdir -p "$staged" "$LOADED"
   cp "$PUBLISHED_ENGINES/$1.json" "$staged/index.json"
-  echo "downloading 0"
+  step downloading 0
   blobs=$(blobs_of "$STORE" "$staged/index.json")
   printf 'oci-layout\n%s\n' "$blobs" | fetch_blobs --no-inc-recursive --info=progress2 | progress downloading
   for blob in oci-layout $blobs; do
     mkdir -p "$staged/$(dirname "$blob")"
     ln "$STORE/$blob" "$staged/$blob"
   done
-  echo unpacking
+  step unpacking
   tar -c -C "$staged" . | docker load -q >/dev/null
   [ "$(image_id "$1")" = "$(published_digest "$staged/index.json")" ] || { echo "the downloaded $1 engine is not the published one" >&2; exit 1; }
   mv "$staged/index.json" "$LOADED/$1.json"
@@ -82,7 +84,7 @@ prepare_engine() {
   [ "$(cat "$PREPARED/$1" 2>/dev/null)" != "$2" ] || return 0
   hook=$(label_of "$image" "$PREPARE_LABEL")
   [ -z "$hook" ] || {
-    echo building | tee -a "$ENGINE_RUN/$1.progress"
+    step building | tee -a "$ENGINE_RUN/$1.progress"
     docker run --rm $SANDBOX $(platform_access "$1") --entrypoint "$hook" "$GAME_IMAGE/$1" >&2
   }
   mkdir -p "$PREPARED"
@@ -210,7 +212,7 @@ install() {
   cp "$STORE_MOUNTS/$1/$2/manifest.json" "$GAMES_DIR/$2/"
   copy "$STORE_MOUNTS/$1/$2/$3/rom/" "$GAMES_DIR/$2/.$3/rom/"
   hook=$(label_of "$image" "$INSTALL_LABEL")
-  [ -z "$hook" ] || { echo "installing"; docker run --rm $SANDBOX $(platform_access "$3") -v "$GAMES_DIR/$2/.$3/rom:/game" --entrypoint "$hook" "$GAME_IMAGE/$3" >&2; }
+  [ -z "$hook" ] || { step installing; docker run --rm $SANDBOX $(platform_access "$3") -v "$GAMES_DIR/$2/.$3/rom:/game" --entrypoint "$hook" "$GAME_IMAGE/$3" >&2; }
   mv "$GAMES_DIR/$2/.$3" "$GAMES_DIR/$2/$3"
 }
 
@@ -256,7 +258,7 @@ run() {
     --device /dev/dri --device-cgroup-rule 'c 13:* rw' -v "$PAD_NODES:/dev/input:ro" \
     -v "$3:/run/wayland" -v "$4:/states" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
     -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PADS="$PADS" -e PAD_NAME="$PAD_NAME" -e MOTION_NAME="$MOTION_NAME" -e MICROPHONE="$MICROPHONE_NODE" -e SCREEN="$(screen_state "$1" "$2")" \
-    -e GAME_CONFIG="$config" -e ANALOG_STATE="/states/$ANALOG_FILE" -e ENHANCED="$(enhanced "$config")" -e RESUME_SLOT="$6" \
+    -e GAME_CONFIG="$config" -e ANALOG_STATE="/states/$ANALOG_FILE" -e ENHANCED="$(enhanced "$config")" -e RESUME_SLOT="$6" -e GAME_LANGUAGE="$7" \
     -e REFRESH="$(printf '%s' "$config" | jq -r --argjson display "$display" --argjson mhz "$MHZ_PER_HZ" '.refresh // ($display.refresh / $mhz)')" \
     -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
     -v "$rom:/game:ro" -v "$saves:/saves" "$GAME_IMAGE/$2" $video "/game/$file"
@@ -286,7 +288,7 @@ usage: games <command>
   prepare <platform>              download the platform's published engine unless it is current, printing "<step> [percent]"
   install <store> <slug> <platform>  prepare the platform's engine and copy the game from a store, printing "<step> [percent]"
   uninstall <slug> <platform>     delete an installed game, keeping every profile's saves, and the engine with the platform's last game
-  run <slug> <platform> <wayland dir> <states dir> <profile> <slot>  play an installed game in its sandbox with the profile's saves, starting from the states dir's state in that slot unless it is empty
+  run <slug> <platform> <wayland dir> <states dir> <profile> <slot> <language>  play an installed game in its sandbox with the profile's saves and that system language, starting from the states dir's state in that slot unless it is empty
   pause <slug> <platform>         freeze a running game
   resume <slug> <platform>        unfreeze a running game and show its second screen if chosen
   close <slug> <platform>         stop a running game, killing it if it hasn't quit by docker's stop timeout

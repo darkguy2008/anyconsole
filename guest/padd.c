@@ -127,7 +127,8 @@
 #define CONTROLLERS_PARTIAL CONTROLLERS_FILE ".partial"
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
-#define notify(...) tell_overlay("notify " __VA_ARGS__)
+#define N_(text) text
+#define notify(format, argument) tell_overlay("notify %s" NOTIFY_SEPARATOR "%s", format, argument)
 
 struct control {
     const char *name;
@@ -1115,7 +1116,7 @@ static int read_battery(struct pad *controller_pad) {
 static void read_level(struct pad *controller_pad, SDL_JoystickPowerLevel level) {
     int low = level == SDL_JOYSTICK_POWER_LOW || level == SDL_JOYSTICK_POWER_EMPTY;
     if (low && controller_pad->level != SDL_JOYSTICK_POWER_LOW && controller_pad->level != SDL_JOYSTICK_POWER_EMPTY)
-        notify("%s battery low", SDL_GameControllerName(controller_pad->controller));
+        notify(N_("%s battery low"), SDL_GameControllerName(controller_pad->controller));
     controller_pad->level = level;
     if (read_battery(controller_pad)) write_controllers();
 }
@@ -1189,13 +1190,14 @@ static int on_paired(sd_bus_message *reply, void *data, sd_bus_error *error) {
     (void)data, (void)error;
     struct bluetooth_device *device = known_address(target);
     if (!device || sd_bus_message_is_method_error(reply, NULL)) {
-        notify("Could not pair %s", device ? device->name : "the controller");
+        if (device) notify(N_("Could not pair %s"), device->name);
+        else notify(N_("Could not pair the controller"), "");
         stop_pairing();
         return 0;
     }
     trust(device);
     call(device->path, DEVICE_INTERFACE, "Connect", NULL, NULL, "");
-    notify("Paired %s", device->name);
+    notify(N_("Paired %s"), device->name);
     stop_pairing();
     return 0;
 }
@@ -1209,7 +1211,7 @@ static void consider(struct bluetooth_device *device) {
 }
 
 static void start_pairing(void) {
-    if (!*adapter) { notify("No Bluetooth adapter"); return; }
+    if (!*adapter) { notify(N_("No Bluetooth adapter"), ""); return; }
     pairing = SEARCHING;
     for (int i = 0; i < known_count; i++) known[i].seen = 0;
     call(adapter, ADAPTER_INTERFACE, "StartDiscovery", NULL, NULL, "");
@@ -1238,7 +1240,7 @@ static void adopt(struct pad *controller_pad) {
     if (controller_pad->bus != BUS_USB || !*adapter || (device && device->trusted) || offered_index(controller_pad->address) < 0) return;
     snprintf(armed, sizeof armed, "%s", controller_pad->address);
     reannounce(controller_pad);
-    notify("Pairing %s", SDL_GameControllerName(controller_pad->controller));
+    notify(N_("Pairing %s"), SDL_GameControllerName(controller_pad->controller));
 }
 
 static int reject(sd_bus_message *message, void *data, sd_bus_error *error) {
@@ -1282,7 +1284,7 @@ static int authorize(sd_bus_message *message, void *data, sd_bus_error *error) {
     if (device) trust(device);
     if (same(address, armed)) {
         controller_pad = pad_with_address(address);
-        notify("Paired %s", controller_pad ? SDL_GameControllerName(controller_pad->controller) : address);
+        notify(N_("Paired %s"), controller_pad ? SDL_GameControllerName(controller_pad->controller) : address);
         *armed = '\0';
         withdraw(address);
         write_controllers();
@@ -1700,7 +1702,7 @@ static void capture(const char *node_name) {
     libevdev_grab(evdev, LIBEVDEV_GRAB);
     input->evdev = evdev;
     captured->input = input;
-    notify("Connected %s", libevdev_get_name(evdev));
+    notify(N_("Connected %s"), libevdev_get_name(evdev));
     announce(input);
 }
 
@@ -1714,7 +1716,7 @@ static void pass_through(int index) {
             while (libevdev_next_event(input->evdev, LIBEVDEV_READ_FLAG_SYNC, &event) == LIBEVDEV_READ_STATUS_SYNC) key_input(input, &event);
     }
     if (status == -EAGAIN) return;
-    notify("Disconnected %s", libevdev_get_name(input->evdev));
+    notify(N_("Disconnected %s"), libevdev_get_name(input->evdev));
     free_device(input);
     libevdev_free(input->evdev);
     unwatch(index);
@@ -1917,7 +1919,7 @@ static void attach(int index) {
     identify(controller_pad, path);
     read_battery(controller_pad);
     touched(controller_pad);
-    notify("Connected %s", SDL_GameControllerName(game_controller));
+    notify(N_("Connected %s"), SDL_GameControllerName(game_controller));
     controller_pad->hidraw = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     struct watch *physical = watch(controller_pad->hidraw, PHYSICAL_PAD);
     if (physical) physical->pad = controller_pad->instance;
@@ -1929,7 +1931,7 @@ static void attach(int index) {
 static void detach(SDL_JoystickID instance) {
     struct pad *controller_pad = pad_of(instance);
     if (!controller_pad) return;
-    notify("Disconnected %s", SDL_GameControllerName(controller_pad->controller));
+    notify(N_("Disconnected %s"), SDL_GameControllerName(controller_pad->controller));
     unwatch_pad(PHYSICAL_PAD, instance);
     withdraw(controller_pad->address);
     stop_microphone(controller_pad);
@@ -2054,7 +2056,7 @@ int main(void) {
             case SETTINGS: read_settings_change(watched[i].fd); break;
             case PAIRING:
                 if (!expired(watched[i].fd)) break;
-                notify("No controller found");
+                notify(N_("No controller found"), "");
                 stop_pairing();
                 break;
             case SLEEP: if (expired(watched[i].fd)) schedule_sleep(); break;

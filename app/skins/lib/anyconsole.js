@@ -115,6 +115,7 @@ native.listen(
 export const html = htm.bind(h);
 export const select = native.select;
 export const play = native.play;
+export const translate = native.translate;
 export const fill = { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0 };
 
 export function time(date) {
@@ -126,11 +127,11 @@ export function planes(state) {
 }
 
 export function rewindCells(rewind) {
-  return [{ source: rewind.current, label: 'Now' }, ...rewind.screens.map(source => ({ source }))];
+  return [{ source: rewind.current, label: translate('Now') }, ...rewind.screens.map(source => ({ source }))];
 }
 
 export function saveCells(saves) {
-  return saves.slots.map((slot, index) => ({ source: slot?.screen, label: `${index + 1}  \u00b7  ${slot ? slot.time : 'Empty'}` }));
+  return saves.slots.map((slot, index) => ({ source: slot?.screen, label: `${index + 1}  \u00b7  ${slot ? slot.time : translate('Empty')}` }));
 }
 
 const letters = { confirm: 'A', back: 'B', x: 'X', y: 'Y' };

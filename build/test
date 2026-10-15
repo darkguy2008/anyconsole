@@ -110,7 +110,8 @@ game_log() { echo "$LOG_DIR/$(game_name "$1").log"; }
 saves_of() { echo "$PROFILES_DIR/1/saves/$(game_name "$1")"; }
 states_of() { echo "$PROFILES_DIR/1/states/$(game_name "$1")"; }
 closed_and_running() { echo "(.guide | not) and ($(status_of "$1" running))"; }
-status_of() { echo "(.games[] | select(.key == \"$1\") | .status == \"$2\")"; }
+game_has() { echo "(.games[] | select(.key == \"$1\") | .$2 == \"$3\")"; }
+status_of() { game_has "$1" status "$2"; }
 close_by_action() { expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of "$1" installed))" --arg action close --arg game "$1"; }
 row_value() { echo ".rows[] | select(.label == \"$1\") | .value"; }
 send() { api POST input "$(printf '%s\n' "$@")" >/dev/null; }
@@ -309,8 +310,10 @@ MODES
   expect '.screen == "home"'
 }
 
+other_display() { state | jq -r '.display as $display | $display.displays[] | select(.label != $display.display) | .label'; }
+
 switch_gpu_after_games() {
-  second=$(state | jq -r '.display as $display | $display.displays[] | select(.label != $display.display) | .label')
+  second=$(other_display)
   api POST settings "display $second" >/dev/null
   expect ".display.pending == \"$second\" and any(.notifications[]; startswith(\"Close and restart your games\")) and .display.shown == \"$1\""
   guest games stop
@@ -937,7 +940,7 @@ test_logout() {
   tap guide
   expect '.guide'
   choose "Log out"
-  expect '.screen == "logout" and .rows[0].value == "Closes 1 games"'
+  expect '.screen == "logout" and .rows[0].value == "Closes 1 game"'
   choose "Log out"
   expect ".screen == \"whois\" and (.session.players | length) == 0 and ($(status_of alter-ego/nes installed))"
   tap b
@@ -1277,6 +1280,8 @@ test_snes() {
   for button in $CRAB_PRIDE_FLAG_PRESSES; do press_until_redrawn $button; done
   expect ".display.frame != \"$startup\""
   core_picture snes-pride/snes
+  wait_for $STEP_SECONDS core_options_hold snes-pride/snes '{"snes9x_region": "ntsc"}'
+  log ok "the manifest's region reaches snes-pride/snes as its console region"
   close_game snes-pride/snes SNESPride
 }
 
@@ -1350,6 +1355,39 @@ test_enhanced() {
   close_game $key "Mini Mine RT"
 }
 
+test_language() {
+  key=mini-mine-rt/psp
+  api POST settings "language es_ES" >/dev/null
+  expect '.settings.language == "es_ES" and ([.rows[].label] | index("Ajustes") != null) and '"$(game_has $key title "Mini Mina RT")"
+  expect_reply $STEP_SECONDS 200 .ok --arg action open-settings
+  expect ".screen == \"settings\" and .views[0].title == \"Ajustes\" and ($(row_value Idioma)) == \"Español (España)\" and ($(row_value "Idioma de los juegos")) == \"Igual que la interfaz\""
+  wait_for $STEP_SECONDS capture_settled language-settings-es
+  api POST settings "skin switch-black" >/dev/null
+  expect '.skin == "switch-black"'
+  wait_for $STEP_SECONDS capture_differs language-settings-es language-settings-es-switch
+  wait_for $STEP_SECONDS capture_settled language-settings-es-switch
+  api POST settings "skin classic" >/dev/null
+  expect '.skin == "classic"'
+  log ok "Spanish (Spain) translates the menus, names each language in itself and picks the manifest's Spanish title"
+  expect_reply $STEP_SECONDS 200 '.ok and .state.settings["game-language"] == "en"' --arg action game-language --arg step 1
+  api POST settings "language es_419" >/dev/null
+  expect ".settings.language == \"es_419\" and ($(row_value Idioma)) == \"Español (Latinoamérica)\" and ($(row_value "Idioma de los juegos")) == \"English\" and $(game_has $key title "Mini Mina RT")"
+  log ok "Spanish (Latin America) has its own words, and Game language cycles independently of the UI"
+  api POST settings "game-language es_ES" >/dev/null
+  api POST settings "language en" >/dev/null
+  expect ".settings.language == \"en\" and .views[0].title == \"Settings\" and ($(row_value Language)) == \"English\" and $(game_has $key title "Mini Mine RT")"
+  tap b
+  expect '.screen == "home"'
+  install_and_play $key "Mini Mine RT"
+  [ "$(container_env $key GAME_LANGUAGE)" = es_ES ] || { log FAIL "$key did not get Game language es_ES" >&2; exit 1; }
+  wait_for $STEP_SECONDS core_options_hold $key '{"ppsspp_language": "spanish"}'
+  log ok "Game language reaches $key as its PPSSPP system language"
+  api POST settings "game-language" >/dev/null
+  expect 'any(.notifications[]; . == "Restart your games to play them in English")'
+  log ok "changing Game language while a game runs asks to restart it"
+  close_game $key "Mini Mine RT"
+}
+
 picture_frame() { height=$(state | jq ".display.canvas | $SIZE_NUMBERS | .[1]"); echo "$((height * $1 / $2))x$height"; }
 
 test_ps2() {
@@ -1375,8 +1413,12 @@ test_gpu() {
   install_and_play alter-ego/nes "Alter Ego"
   switch_gpu_after_games alter-ego/nes
   play_every_other_game
+  first=$(other_display)
+  api POST settings "display $first" >/dev/null
+  expect ".display.display == \"$first\""
+  api POST settings "display" >/dev/null
   api POST settings "resolution 0" >/dev/null
-  expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
+  expect ".settings.display == \"\" and .display.display == \"$first\" and .settings.resolution == 0 and .display.canvas == $AREA_SIZE"
 }
 
 test_reboot() {
@@ -1434,7 +1476,7 @@ test_thumbnails() {
   log ok "one fetch downloads every boxart it asks for"
 }
 
-TESTS="capture symlinks display audio controllers nes atari ps1 genesis snes actions dreamcast msdos msx2 stores gpu logout reboot skins engines thumbnails enhanced ps2"
+TESTS="capture symlinks display audio controllers nes atari ps1 genesis snes actions dreamcast msdos msx2 stores gpu logout reboot skins engines thumbnails enhanced ps2 language"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in

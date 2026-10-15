@@ -14,8 +14,8 @@ TWIN_STICK='{"-lefty": "y", "+lefty": "a", "-leftx": "x", "+leftx": "b", "rightx
 
 add_game() {
   mkdir -p "$TEST_STORE/$1/$3/rom"
-  jq -n --arg title "$2" --arg platform "$3" --argjson config "${5:-null}" \
-    '{title: $title} + if $config then {($platform): $config} else {} end' > "$TEST_STORE/$1/manifest.json"
+  jq -n --arg title "$2" --arg platform "$3" --argjson config "${5:-null}" --argjson titles "${6:-null}" \
+    '{title: $title} + if $titles then {titles: $titles} else {} end + if $config then {($platform): $config} else {} end' > "$TEST_STORE/$1/manifest.json"
   cp "$4" "$TEST_STORE/$1/$3/rom/$2.${4##*.}"
 }
 
@@ -27,7 +27,7 @@ extract() {
 add_download() {
   file=${4##*/}
   fetch "$DOWNLOADS" "$file" "$4"
-  add_game "$1" "$2" "$3" "$DOWNLOADS/$file" "${5:-}"
+  add_game "$1" "$2" "$3" "$DOWNLOADS/$file" "${5:-}" "${6:-}"
 }
 
 add_zipped() {
@@ -72,7 +72,7 @@ add_zipped alter-ego "Alter Ego" nes "$SHIRU/nes/alter_ego.zip" '*.nes'
 add_zipped lan-master "LAN Master" nes "$SHIRU/nes/lan_master.zip" '*.nes'
 add_zipped_without commander-keen "Commander Keen" msdos "$ARCHIVE/keen1-sw/keen1.zip" '{"thumbnail": "Commander Keen 1 - Marooned on Mars (1990)", "refresh": 70}' CATALOG.EXE DEALERS.EXE
 add_zipped christmas-craze "Christmas Craze" snes "$SHIRU/snes/christmas_craze.zip" '*.smc'
-add_download snes-pride "SNESPride" snes "https://codeberg.org/Telinc1/SNESPride/releases/download/v1.0.0/SNESPride.sfc"
+add_download snes-pride "SNESPride" snes "https://codeberg.org/Telinc1/SNESPride/releases/download/v1.0.0/SNESPride.sfc" '{"region": "usa"}'
 add_download gentris "Gentris" genesis "$GITHUB/Stephane-D/SGDK/raw/2eac605a7744a6eb4f61824bb24ccab39b8bd8b8/sample/game/gentris/out/release/rom.bin" '{"options": {"genesis_plus_gx_audio_filter": "low-pass"}}'
 add_download libbet "Libbet and the Magic Floor" gb "$GITHUB/pinobatch/libbet/releases/download/v0.08/libbet.gb"
 add_zipped the-hat-chooses-the-wizard "The Hat Chooses the Wizard" gba "$GITHUB/agbrs/agb/releases/download/v0.25.0/examples.zip" 'the-hat-chooses-the-wizard.gba'
@@ -81,7 +81,7 @@ add_download kumi-daiko-beatoff "Kumi-Daiko Beatoff 64" n64 "$GITHUB/ptimonen/n6
 add_zipped cracky "Cracky" wsc "$INUFUTO/16bit/wsc/cracky_bin.zip" '*.wsc'
 add_zipped cracky-msx "Cracky MSX" msx2 "$INUFUTO/8bit/msx/cracky_rom.zip" '*.rom' '{"hold": {"key": "KEY_LEFTCTRL", "ms": 15000}}'
 add_zipped gc-controller-test "GC Controller Test" gamecube "$GITHUB/corenting/GC-Controller-Test/releases/download/v1.2/gc-1-2.zip" '*.dol'
-add_download mini-mine-rt "Mini Mine RT" psp "$GITHUB/Saymond/PSP-apps/releases/download/v2.0/EBOOT.PBP" '{"enhanced": {"scale": 2}}'
+add_download mini-mine-rt "Mini Mine RT" psp "$GITHUB/Saymond/PSP-apps/releases/download/v2.0/EBOOT.PBP" '{"enhanced": {"scale": 2}}' '{"es": "Mini Mina RT"}'
 [ ! -d "$TEST_BIOS/ps1" ] || add_cue_disc a-small-journey "A Small Journey" ps1 "$ARCHIVE/asj-1.0/asj-1.0.zip"
 [ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo "Cubes Demo" ps2 "$GITHUB/glampert/ps2-homebrew/raw/602441a6877a3136709d6320664340d52e3027a1/source/demos/bin/cubes_demo.elf" '{"enhanced": {"widescreen": true, "scale": 2}}'
 add_download gravity-wave-twin-stick-shooter "Gravity Wave" dreamcast "$GITHUB/richstokes/dreamcast-homebrew/releases/download/continuous/gravity-wave.cdi" "{\"pad\": $TWIN_STICK}"

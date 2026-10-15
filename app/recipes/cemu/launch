@@ -25,6 +25,7 @@ settings() {
   cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <content>
+$(system-settings)
 	<Graphic>
 		<api>1</api>
 		<VSync>1</VSync>

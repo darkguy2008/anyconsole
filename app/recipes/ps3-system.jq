@@ -1,0 +1,2 @@
+include "option";
+def system($language; $region): $language | pick({ja: "Japanese", en: "English (US)", en_GB: "English (UK)", fr: "French", es: "Spanish", de: "German", it: "Italian", nl: "Dutch", pt: "Portuguese (Portugal)", pt_BR: "Portuguese (Brazil)", ru: "Russian", ko: "Korean", zh_TW: "Chinese (Traditional)", zh_CN: "Chinese (Simplified)", fi: "Finnish", sv: "Swedish", da: "Danish", nb: "Norwegian", no: "Norwegian", pl: "Polish", tr: "Turkish"}) // empty | "System:\n  Language: \(.)";

@@ -13,4 +13,5 @@ ln -sfn /saves "$USER_HOME/savedata"
 find /game -maxdepth 1 \( -iname '*.edat' -o -iname '*.rap' \) -exec ln -sf {} "$USER_HOME/exdata/" \;
 cp --update=none /opt/rpcs3/gui.ini "$CONFIG/GuiConfigs/CurrentSettings.ini"
 pad_config > "$CONFIG/input_configs/global/Default.yml"
-exec xwayland-run -fullscreen -geometry "$CANVAS" -- /opt/rpcs3/AppRun --no-gui --fullscreen --config /opt/rpcs3/config.yml "${1%/*}"
+{ cat /opt/rpcs3/config.yml; system-settings; } > "$CONFIG/anyconsole.yml"
+exec xwayland-run -fullscreen -geometry "$CANVAS" -- /opt/rpcs3/AppRun --no-gui --fullscreen --config "$CONFIG/anyconsole.yml" "${1%/*}"

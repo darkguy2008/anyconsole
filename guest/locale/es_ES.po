@@ -1,0 +1,408 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: anyconsole\n"
+"PO-Revision-Date: 2026-10-15 00:00+0000\n"
+"Last-Translator: anyconsole\n"
+"Language-Team: Spanish\n"
+"Language: es_ES\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#, c-format
+msgid "Auto (%s)"
+msgstr "Automático (%s)"
+
+msgid "Home"
+msgstr "Inicio"
+
+msgid "Store"
+msgstr "Tienda"
+
+msgid "Guide"
+msgstr "Guía"
+
+msgid "Output"
+msgstr "Salida"
+
+msgid "Microphone"
+msgstr "Micrófono"
+
+msgid "Controllers"
+msgstr "Mandos"
+
+msgid "Settings"
+msgstr "Ajustes"
+
+msgid "Game"
+msgstr "Juego"
+
+msgid "I/O"
+msgstr "E/S"
+
+msgid "System"
+msgstr "Sistema"
+
+msgid "Original"
+msgstr "Original"
+
+msgid "Retro"
+msgstr "Retro"
+
+msgid "Enhanced"
+msgstr "Mejorado"
+
+msgid "Analog pad"
+msgstr "Mando analógico"
+
+msgid "Digital pad"
+msgstr "Mando digital"
+
+msgid "Keyboard"
+msgstr "Teclado"
+
+msgid "Mouse"
+msgstr "Ratón"
+
+msgid "Keyboard & mouse"
+msgstr "Teclado y ratón"
+
+msgid "installing"
+msgstr "instalando"
+
+msgid "uninstalling"
+msgstr "desinstalando"
+
+msgid "launching"
+msgstr "iniciando"
+
+msgid "%b %d %H:%M"
+msgstr "%d/%m %H:%M"
+
+#, c-format
+msgid "Slot %d  ·  %s"
+msgstr "Ranura %d  ·  %s"
+
+msgid "Empty"
+msgstr "Vacía"
+
+#, c-format
+msgid "Saved state %d"
+msgstr "Estado %d guardado"
+
+msgid "Now"
+msgstr "Ahora"
+
+#, c-format
+msgid "%ld:%02ld ago"
+msgstr "hace %ld:%02ld"
+
+msgid "Never"
+msgstr "Nunca"
+
+#, c-format
+msgid "%d min"
+msgstr "%d min"
+
+msgid "Same as UI"
+msgstr "Igual que la interfaz"
+
+#. The name of this language, written in this language
+msgid "English"
+msgstr "Español (España)"
+
+#, c-format
+msgid "Close and restart your games to render on %s"
+msgstr "Cierra y vuelve a abrir tus juegos para que se muestren en %s"
+
+msgid "Bluetooth"
+msgstr "Bluetooth"
+
+msgid "Wired"
+msgstr "Con cable"
+
+msgid "Not connected"
+msgstr "Desconectado"
+
+#, c-format
+msgid " charging"
+msgstr " cargando"
+
+#, c-format
+msgid "Player %d"
+msgstr "Jugador %d"
+
+msgid "paused"
+msgstr "en pausa"
+
+msgid "running"
+msgstr "en curso"
+
+msgid "installed"
+msgstr "instalado"
+
+msgid "On"
+msgstr "Sí"
+
+msgid "Off"
+msgstr "No"
+
+#, c-format
+msgid "Default (%s)"
+msgstr "Predeterminado (%s)"
+
+msgid "Display Mode"
+msgstr "Modo de imagen"
+
+msgid "Display resolution"
+msgstr "Resolución de pantalla"
+
+msgid "Game resolution"
+msgstr "Resolución del juego"
+
+msgid "Apply"
+msgstr "Aplicar"
+
+msgid "Resume"
+msgstr "Continuar"
+
+msgid "Close"
+msgstr "Cerrar"
+
+msgid "Play"
+msgstr "Jugar"
+
+msgid "Uninstall"
+msgstr "Desinstalar"
+
+msgid "Install from"
+msgstr "Instalar desde"
+
+msgid "Dashboard"
+msgstr "Panel"
+
+msgid "Rewind"
+msgstr "Rebobinar"
+
+msgid "Save States"
+msgstr "Estados guardados"
+
+msgid "Analog"
+msgstr "Analógico"
+
+msgid "Emulate"
+msgstr "Emular"
+
+msgid "Second screen"
+msgstr "Segunda pantalla"
+
+msgid "Inset"
+msgstr "Recuadro"
+
+msgid "Reload"
+msgstr "Recargar"
+
+msgid "Restart"
+msgstr "Reiniciar"
+
+msgid "Power off"
+msgstr "Apagar"
+
+msgid "Log out"
+msgstr "Cerrar sesión"
+
+msgid "Volume"
+msgstr "Volumen"
+
+msgid "Muted"
+msgstr "Silenciado"
+
+msgid "Microphone volume"
+msgstr "Volumen del micrófono"
+
+#, c-format
+msgid "Pad %d"
+msgstr "Mando %d"
+
+#, c-format
+msgid "Closes %d game"
+msgid_plural "Closes %d games"
+msgstr[0] "Cierra %d juego"
+msgstr[1] "Cierra %d juegos"
+
+msgid "Delete"
+msgstr "Borrar"
+
+msgid "Overwrite"
+msgstr "Sobrescribir"
+
+msgid "selected"
+msgstr "seleccionado"
+
+msgid "Pair new controller"
+msgstr "Emparejar mando nuevo"
+
+msgid "Searching"
+msgstr "Buscando"
+
+msgid "Forget"
+msgstr "Olvidar"
+
+msgid "Display"
+msgstr "Pantalla"
+
+msgid "Controller sleep"
+msgstr "Suspensión del mando"
+
+msgid "Skin"
+msgstr "Tema"
+
+msgid "Language"
+msgstr "Idioma"
+
+msgid "Game language"
+msgstr "Idioma de los juegos"
+
+msgid "Clear thumbnails"
+msgstr "Borrar miniaturas"
+
+msgid "Who is using this controller?"
+msgstr "¿Quién usa este mando?"
+
+msgid "Who's playing?"
+msgstr "¿Quién juega?"
+
+#, c-format
+msgid "Log out %s"
+msgstr "Cerrar la sesión de %s"
+
+#, c-format
+msgid "Delete save state %d?"
+msgstr "¿Borrar el estado guardado %d?"
+
+#, c-format
+msgid "Overwrite save state %d?"
+msgstr "¿Sobrescribir el estado guardado %d?"
+
+#, c-format
+msgid "%s  ·  Pad %d"
+msgstr "%s  ·  Mando %d"
+
+#, c-format
+msgid "%s stopped"
+msgstr "%s se detuvo"
+
+#, c-format
+msgid "Restart your games to play them in %s"
+msgstr "Reinicia tus juegos para jugarlos en %s"
+
+#, c-format
+msgid "Could not start %s"
+msgstr "No se pudo iniciar %s"
+
+#, c-format
+msgid "Could not start %s: log in a player first"
+msgstr "No se pudo iniciar %s: primero inicia sesión con un jugador"
+
+#, c-format
+msgid "Could not start %s%s"
+msgstr "No se pudo iniciar %s%s"
+
+#, c-format
+msgid "Installed %s"
+msgstr "Se instaló %s"
+
+#, c-format
+msgid "Uninstalled %s"
+msgstr "Se desinstaló %s"
+
+#, c-format
+msgid "Install failed: %s%s"
+msgstr "Falló la instalación: %s%s"
+
+#, c-format
+msgid "Uninstall failed: %s%s"
+msgstr "Falló la desinstalación: %s%s"
+
+msgid "Every pad is taken"
+msgstr "Todos los mandos están ocupados"
+
+msgid "Back"
+msgstr "Atrás"
+
+msgid "Cancel"
+msgstr "Cancelar"
+
+msgid "OK"
+msgstr "Aceptar"
+
+msgid "Load"
+msgstr "Cargar"
+
+msgid "Save"
+msgstr "Guardar"
+
+msgid "Thumbnails cleared"
+msgstr "Miniaturas borradas"
+
+#, c-format
+msgid "%s battery low"
+msgstr "Batería baja: %s"
+
+#, c-format
+msgid "Could not pair %s"
+msgstr "No se pudo emparejar %s"
+
+msgid "Could not pair the controller"
+msgstr "No se pudo emparejar el mando"
+
+#, c-format
+msgid "Paired %s"
+msgstr "%s emparejado"
+
+msgid "No Bluetooth adapter"
+msgstr "No hay adaptador Bluetooth"
+
+#, c-format
+msgid "Pairing %s"
+msgstr "Emparejando %s"
+
+#, c-format
+msgid "Connected %s"
+msgstr "%s conectado"
+
+#, c-format
+msgid "Disconnected %s"
+msgstr "%s desconectado"
+
+msgid "No controller found"
+msgstr "No se encontró ningún mando"
+
+msgid "downloading"
+msgstr "descargando"
+
+msgid "unpacking"
+msgstr "desempaquetando"
+
+msgid "building"
+msgstr "preparando"
+
+msgid "copying"
+msgstr "copiando"
+
+msgid "Press any button"
+msgstr "Pulsa cualquier botón"
+
+msgid "System Settings"
+msgstr "Ajustes del sistema"
+
+msgid "Press left or right to change"
+msgstr "Pulsa izquierda o derecha para cambiar"
+
+msgid "Press"
+msgstr "Pulsa"
+
+#, javascript-format
+msgid "to %s"
+msgstr "para %s"

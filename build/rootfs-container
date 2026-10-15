@@ -22,6 +22,8 @@ BACKGROUND_EFFECT=$PROTOCOLS/staging/ext-background-effect/ext-background-effect
 CFLAGS="-O2 -Wall -Wextra -Werror -I/tmp"
 GLES_SHADER="--es --version 300 --glsl-emit-ubo-as-plain-uniforms"
 RETRO_PRESET=/src/guest/shaders/retro.slangp
+SYSTEM_LOCALES=/usr/lib/locale
+MESSAGES_TEMPLATE=/tmp/$TEXT_DOMAIN.pot
 
 make_skeleton() {
   mkdir -p $ROOTFS/etc $ROOTFS/proc $ROOTFS/sys $ROOTFS/dev $ROOTFS/run $ROOTFS/tmp \
@@ -152,6 +154,23 @@ configure_users() {
 configure_locale() {
   cp /usr/share/terminfo/l/linux $ROOTFS/usr/share/terminfo/l/
   printf 'export LANG=C.UTF-8\nexport TERM=linux\nexport PATH=/bin:/opt/anyconsole\nexport HOME=/root\nexport XDG_RUNTIME_DIR=/run/user\n' > $ROOTFS/etc/profile
+  cp -a --parents $SYSTEM_LOCALES/$MESSAGES_LOCALE/LC_MESSAGES $ROOTFS/
+}
+
+extract_messages() {
+  xgettext -o $MESSAGES_TEMPLATE --from-code=UTF-8 -L C -k_ -kN_ /src/guest/overlay.c /src/guest/padd.c
+  xgettext -j -o $MESSAGES_TEMPLATE -L Shell -kstep -kprogress /src/guest/games
+  xgettext -j -o $MESSAGES_TEMPLATE --from-code=UTF-8 -L JavaScript -ktranslate /src/app/skins/*/*.js
+}
+
+install_translations() {
+  extract_messages
+  for catalog in /src/guest/locale/*.po; do
+    language=$(basename "$catalog" .po)
+    msgcmp "$catalog" $MESSAGES_TEMPLATE
+    mkdir -p "$ROOTFS$LOCALE_DIR/$language/LC_MESSAGES"
+    msgfmt -c -o "$ROOTFS$LOCALE_DIR/$language/LC_MESSAGES/$TEXT_DOMAIN.mo" "$catalog"
+  done
 }
 
 install_system() {
@@ -295,6 +314,7 @@ install_busybox
 configure_network
 configure_users
 configure_locale
+install_translations
 install_system
 hide_input_from_compositor
 install_app

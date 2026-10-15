@@ -9,7 +9,8 @@ merge() {
 }
 refresh_options=$(printf '%s' "$REFRESH" | jq -c -f /retroarch/refresh.jq)
 options=$(printf '%s' "$ENHANCED" | jq -c -f /retroarch/enhanced.jq |
-  jq -c --argjson game "$GAME_CONFIG" --argjson refresh "$refresh_options" '$refresh + ($game.options // {}) + .')
+  jq -c --argjson game "$GAME_CONFIG" --argjson refresh "$refresh_options" --arg language "$GAME_LANGUAGE" \
+    'include "system"; $refresh + system($language; $game.region // "") + ($game.options // {}) + .')
 merge "$options" /retroarch/core.opt > /tmp/core.opt
 merge "$options" /retroarch/core.opt /retroarch/vulkan.opt > /tmp/vulkan.opt
 LIBRETRO_CORE=/retroarch/core.so exec /retroarch/retroarch --verbose --config /retroarch/retroarch.cfg --libretro /retroarch/frame-size.so ${RESUME_SLOT:+--entryslot="$RESUME_SLOT"} "$@"
