@@ -18,3 +18,4 @@ shader2 = crt-geom.slang
 filter_linear2 = false
 
 lum = 1.0
+interlace_detect = 0.0

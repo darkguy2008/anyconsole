@@ -431,7 +431,7 @@ integer_picture() {
       else \$box.width == \$area.width or \$box.height == \$area.height end"
 }
 
-closed_at_box() { echo "$(closed_and_running "$1") and .display.frame == \"$geometry\" and .display.picture_box == $box and (.moving | not)"; }
+closed_at_box() { echo "$(closed_and_running "$1") and .display.frame == \"$2\" and .display.picture_box == $3 and (.moving | not)"; }
 
 retro_picture() {
   geometry=$(core_geometry "$1")
@@ -446,7 +446,7 @@ retro_picture() {
   expect ".settings.picture == \"retro\" and .display.picture_box == $box"
   log ok "Retro keeps the game's size and place while the guide is open"
   tap guide
-  expect "$(closed_at_box "$1") and .display.retro == \"$geometry\""
+  expect "$(closed_at_box "$1" "$geometry" "$box") and .display.retro == \"$geometry\""
   log ok "Retro keeps the game's size and place after the guide closes and filters its own pixels"
   snapshot "${1%/*}-retro"
   kiosk_log_lacks '^compositor: shader:' "the compositor could not build the Retro shader"
@@ -462,7 +462,7 @@ retro_picture() {
   expect ".settings.picture == \"original\" and .display.picture_box == $box"
   log ok "Original keeps the game's size and place while the guide is open"
   tap guide
-  expect "$(closed_at_box "$1") and .display.retro == null"
+  expect "$(closed_at_box "$1" "$geometry" "$box") and .display.retro == null"
   log ok "Original keeps the game's size and place after the guide closes"
   snapshot "${1%/*}-original"
 }
