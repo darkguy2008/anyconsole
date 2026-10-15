@@ -2,9 +2,19 @@ FROM fedora:44
 ARG DOCKER_REPO=https://download.docker.com/linux/fedora
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked \
     curl -fsSL -o /etc/yum.repos.d/docker-ce.repo "$DOCKER_REPO/docker-ce.repo" \
- && dnf install -y --setopt=keepcache=True --setopt=install_weak_deps=False busybox gcc sdl2-compat-devel 'pkgconfig(libevdev)' 'pkgconfig(libdrm)' 'pkgconfig(libpng)' 'pkgconfig(pixman-1)' 'pkgconfig(cairo)' 'pkgconfig(libturbojpeg)' 'pkgconfig(json-c)' 'pkgconfig(wayland-client)' 'pkgconfig(wayland-server)' 'pkgconfig(wayland-protocols)' librsvg2-tools rsms-inter-fonts fontconfig btop ncurses-base rsync grub2-tools-minimal util-linux e2fsprogs dosfstools python3-pyelftools python-unversioned-command dropbear dhcpcd 'pkgconfig(wlroots-0.19)' 'pkgconfig(gbm)' 'pkgconfig(xkbcommon)' 'pkgconfig(egl)' 'pkgconfig(glesv2)' 'pkgconfig(wayland-egl)' 'pkgconfig(freetype2)' 'pkgconfig(harfbuzz)' 'pkgconfig(opusfile)' 'pkgconfig(libpipewire-0.3)' cmake gcc-c++ 'pkgconfig(vulkan)' mesa-vulkan-drivers mesa-dri-drivers mesa-libEGL wayland-utils grim socat systemd-udev kmod pipewire pipewire-utils pipewire-pulseaudio wireplumber cifs-utils jq docker-ce docker-ce-cli containerd.io dbus-daemon seatd libxml2 glibc-gconv-extra 'pkgconfig(libsystemd)' 'pkgconfig(libudev)' 'pkgconfig(opus)' 'pkgconfig(zlib)' 'pkgconfig(glib-2.0)' 'pkgconfig(dbus-1)' make patch xz glslang \
+ && dnf install -y --setopt=keepcache=True --setopt=install_weak_deps=False busybox gcc sdl2-compat-devel 'pkgconfig(libevdev)' 'pkgconfig(libdrm)' 'pkgconfig(libpng)' 'pkgconfig(pixman-1)' 'pkgconfig(cairo)' 'pkgconfig(libturbojpeg)' 'pkgconfig(json-c)' 'pkgconfig(wayland-client)' 'pkgconfig(wayland-server)' 'pkgconfig(wayland-protocols)' librsvg2-tools rsms-inter-fonts fontconfig btop ncurses-base rsync grub2-tools-minimal util-linux e2fsprogs dosfstools python3-pyelftools python-unversioned-command dropbear dhcpcd 'pkgconfig(gbm)' 'pkgconfig(xkbcommon)' 'pkgconfig(egl)' 'pkgconfig(glesv2)' 'pkgconfig(wayland-egl)' 'pkgconfig(freetype2)' 'pkgconfig(harfbuzz)' 'pkgconfig(opusfile)' 'pkgconfig(libpipewire-0.3)' cmake gcc-c++ 'pkgconfig(vulkan)' mesa-vulkan-drivers mesa-dri-drivers mesa-libEGL wayland-utils grim socat systemd-udev kmod pipewire pipewire-utils pipewire-pulseaudio wireplumber cifs-utils jq docker-ce docker-ce-cli containerd.io dbus-daemon seatd libxml2 glibc-gconv-extra 'pkgconfig(libsystemd)' 'pkgconfig(libudev)' 'pkgconfig(opus)' 'pkgconfig(zlib)' 'pkgconfig(glib-2.0)' 'pkgconfig(dbus-1)' make patch xz glslang \
+ && dnf builddep -y --setopt=keepcache=True --setopt=install_weak_deps=False wlroots0.19 \
  && systemd-hwdb update --usr \
  && ld.so --list-diagnostics | sed -n 's/^path\.system_dirs\[0x[0-9a-f]*\]="\(.*\)"$/\1/p' > /etc/ld.so.conf.d/system-dirs.conf
+ARG WLROOTS_VERSION=0.19.3
+ADD --checksum=sha256:5d02693175e5afd9af5f10e3e4976d6e9249dc39a90eb17d23fa5f54b125ccc5 https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/$WLROOTS_VERSION/downloads/wlroots-$WLROOTS_VERSION.tar.gz /wlroots.tar.gz
+COPY --from=wlroots *.patch /wlroots-patches/
+RUN tar xzf /wlroots.tar.gz \
+ && for fix in /wlroots-patches/*.patch; do patch -d /wlroots-$WLROOTS_VERSION -p1 < "$fix" || exit 1; done \
+ && meson setup /wlroots-build /wlroots-$WLROOTS_VERSION --prefix=/usr --buildtype=release \
+    -Dxwayland=disabled -Dbackends=drm,libinput -Drenderers=gles2 -Dexamples=false \
+ && meson install -C /wlroots-build --strip \
+ && rm -rf /wlroots.tar.gz /wlroots-$WLROOTS_VERSION /wlroots-build /wlroots-patches
 ARG PAX_UTILS_VERSION=1.3.10
 ADD --chmod=755 --checksum=sha256:e6aa8eb2f8aa97cbe66491d82e0c9f99c7cc706c6eb0a64b4a7e06f70e71f7bd https://raw.githubusercontent.com/gentoo/pax-utils/v$PAX_UTILS_VERSION/lddtree.py /usr/local/bin/lddtree
 ARG BLUEZ_VERSION=5.87

@@ -1,0 +1,71 @@
+From 26faf27c4141fc4b3eac8d2d2ddc6c345b76e89d Mon Sep 17 00:00:00 2001
+From: Alemar <6304136+darkguy2008@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 17:17:11 -0600
+Subject: [PATCH] backend/drm: don't disable an already disabled cursor plane
+
+While no cursor is shown, every atomic commit sets FB_ID=0 and CRTC_ID=0
+on the cursor plane, even when the previous commit already disabled it.
+The kernel tracks a plane that has no CRTC in both its old and new state
+through the commit's fake_commit, whose flip_done completes only in the
+commit tail, after the page flip event has been sent. A nonblocking
+commit issued right after that event touches the same unbound plane
+again and fails with EBUSY:
+
+  [PLANE:77:cursor A] busy with a previous commit
+
+Remember whether the last applied commit left the cursor plane enabled,
+and add the disable only when it did or on a modeset.
+
+Link: https://gitlab.freedesktop.org/wlroots/wlroots/-/issues/3507
+Link: https://gitlab.freedesktop.org/drm/i915/kernel/-/issues/13410
+---
+ backend/drm/atomic.c      | 6 +++++-
+ backend/drm/drm.c         | 1 +
+ include/backend/drm/drm.h | 2 ++
+ 3 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/backend/drm/atomic.c b/backend/drm/atomic.c
+index 037c3c2..054a7e0 100644
+--- a/backend/drm/atomic.c
++++ b/backend/drm/atomic.c
+@@ -470,7 +470,11 @@ static void atomic_connector_add(struct atomic *atom,
+ 					atomic_add(atom, crtc->cursor->id,
+ 						crtc->cursor->props.hotspot_y, conn->cursor_hotspot_y);
+ 				}
+-			} else {
++			} else if (modeset || crtc->cursor_enabled) {
++				// Leave an already disabled cursor plane out of the commit:
++				// the kernel tracks every plane in a commit, and touching an
++				// unbound plane again before its previous commit is done
++				// fails a nonblocking commit with EBUSY.
+ 				plane_disable(atom, crtc->cursor);
+ 			}
+ 		}
+diff --git a/backend/drm/drm.c b/backend/drm/drm.c
+index 054c24a..55598a3 100644
+--- a/backend/drm/drm.c
++++ b/backend/drm/drm.c
+@@ -557,6 +557,7 @@ static void drm_connector_apply_commit(const struct wlr_drm_connector_state *sta
+ 	crtc->primary->viewport = state->primary_viewport;
+ 	if (crtc->cursor != NULL) {
+ 		drm_fb_copy(&crtc->cursor->queued_fb, state->cursor_fb);
++		crtc->cursor_enabled = state->active && drm_connector_is_cursor_visible(conn);
+ 	}
+ 	drm_fb_clear(&conn->cursor_pending_fb);
+ 
+diff --git a/include/backend/drm/drm.h b/include/backend/drm/drm.h
+index 9409b7b..18195db 100644
+--- a/include/backend/drm/drm.h
++++ b/include/backend/drm/drm.h
+@@ -80,6 +80,8 @@ struct wlr_drm_crtc {
+ 
+ 	struct wlr_drm_plane *primary;
+ 	struct wlr_drm_plane *cursor;
++	// Whether the last applied commit left the cursor plane enabled
++	bool cursor_enabled;
+ 
+ 	struct wlr_drm_crtc_props props;
+ };
+-- 
+2.54.0 (Apple Git-157)
+

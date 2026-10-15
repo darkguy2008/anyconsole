@@ -34,7 +34,7 @@ stage_modules() {
 }
 
 build_base() {
-  docker build --network host -t "$BASE_IMAGE" -f build/base.Dockerfile build/bluez
+  docker build --network host -t "$BASE_IMAGE" --build-context wlroots=build/wlroots -f build/base.Dockerfile build/bluez
 }
 
 build_userspace() {
