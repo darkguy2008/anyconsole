@@ -1383,7 +1383,7 @@ static int listen_socket(int index, char *directory, size_t size) {
 static int game_log(int index) {
     char path[PATH_MAX];
     snprintf(path, sizeof path, LOG_DIR "/%s.log", name(index));
-    return open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    return open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, S_IRUSR | S_IWUSR);
 }
 
 static void send_command(int index, const char *command) {
