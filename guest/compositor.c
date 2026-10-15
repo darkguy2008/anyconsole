@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
 #include <EGL/egl.h>
-#include <GLES2/gl2.h>
+#include <GLES3/gl3.h>
 #include <GLES2/gl2ext.h>
 #include <drm_fourcc.h>
 #include <json-c/json.h>
@@ -72,6 +72,10 @@
 #define CORNERS 4
 #define BACKGROUND_EFFECT_VERSION 1
 #define GAME_REFRESH_MHZ (60 * MHZ_PER_HZ)
+#define RETRO_SHADER SHADERS_DIR "/crt-geom"
+#define RETRO_PICTURE "retro"
+#define RETRO_POSITION 0
+#define RETRO_COORDINATE 1
 
 enum filter { NEAREST, LINEAR, PIXEL };
 static const char *filters[] = {[NEAREST] = "nearest", [LINEAR] = "linear", [PIXEL] = "pixel"};
@@ -142,6 +146,7 @@ struct window {
 struct keyboard { struct wlr_keyboard *keyboard; struct wl_listener key, modifiers, destroy; };
 struct pointer { struct wl_listener motion, button, axis, frame, destroy; };
 struct program { GLuint id; GLint position, coordinate, size, extent; };
+struct retro_program { GLuint id; GLint frame_count, mvp, output_size, source_size; };
 
 static struct wl_display *display;
 static struct wl_event_source *flip_retry;
@@ -169,6 +174,11 @@ static struct wlr_layer_surface_v1 *overlay;
 static struct wl_listener overlay_commit, overlay_destroy;
 static struct wlr_swapchain *canvas_chain;
 static struct program programs[sizeof sampler_prefixes / sizeof *sampler_prefixes];
+static const char *const retro_fragments[] = {RETRO_SHADER ".frag", RETRO_SHADER ".external.frag"};
+static struct retro_program retro_programs[sizeof retro_fragments / sizeof *retro_fragments];
+static struct wlr_swapchain *retro_chain;
+static GLuint retro_frames;
+static int retro;
 static char pinned[TEXT_MAX], chosen_mode[TEXT_MAX], *written_state;
 static struct wlr_output_mode *applied_mode;
 static int shown_refresh, watcher, manifest_watch = -1;
@@ -486,7 +496,7 @@ static int overlay_visible(void) { return overlay && overlay->surface->mapped; }
 
 static int scan_out(struct wlr_output_state *state) {
     struct wlr_surface *surface = shown ? shown->toplevel->base->surface : NULL;
-    if (!surface || !surface->buffer || overlay_visible()) return 0;
+    if (!surface || !surface->buffer || overlay_visible() || retro) return 0;
     struct wlr_buffer *buffer = &surface->buffer->base;
     struct wlr_box picture = fit(area(), buffer->width, buffer->height);
     if (picture.width != buffer->width || picture.height != buffer->height) return 0;
@@ -598,12 +608,16 @@ static const pixman_region32_t *overlay_blur(void) {
     return NULL;
 }
 
-static struct wlr_texture *scaled_copy(struct wlr_swapchain **chain, struct wlr_texture *source, int width, int height, struct wlr_buffer **held) {
+static struct wlr_buffer *acquire(struct wlr_swapchain **chain, int width, int height) {
     if (!*chain || (*chain)->width != width || (*chain)->height != height) {
         wlr_swapchain_destroy(*chain);
         *chain = wlr_swapchain_create(allocator, width, height, &active->output->swapchain->format);
     }
-    *held = *chain ? wlr_swapchain_acquire(*chain) : NULL;
+    return *chain ? wlr_swapchain_acquire(*chain) : NULL;
+}
+
+static struct wlr_texture *scaled_copy(struct wlr_swapchain **chain, struct wlr_texture *source, int width, int height, struct wlr_buffer **held) {
+    *held = acquire(chain, width, height);
     if (!*held) return NULL;
     struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, *held, NULL);
     wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){
@@ -624,14 +638,9 @@ static struct wlr_texture *blurred(struct wlr_texture *scene, struct wlr_buffer 
     return step;
 }
 
-static struct wlr_texture *compose(struct wlr_buffer **composed) {
-    struct wlr_texture *game = shown ? wlr_surface_get_texture(shown->toplevel->base->surface) : NULL;
+static struct wlr_texture *compose(struct wlr_texture *game, struct wlr_buffer **composed) {
     if (!overlay_visible()) return game;
-    if (!canvas_chain || canvas_chain->width != canvas_width || canvas_chain->height != canvas_height) {
-        wlr_swapchain_destroy(canvas_chain);
-        canvas_chain = wlr_swapchain_create(allocator, canvas_width, canvas_height, &active->output->swapchain->format);
-    }
-    *composed = canvas_chain ? wlr_swapchain_acquire(canvas_chain) : NULL;
+    *composed = acquire(&canvas_chain, canvas_width, canvas_height);
     if (!*composed) return game;
     struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, *composed, NULL);
     struct wlr_box canvas = {0, 0, canvas_width, canvas_height}, box = overlay_box();
@@ -658,13 +667,29 @@ static struct wlr_texture *compose(struct wlr_buffer **composed) {
     return wlr_texture_from_buffer(renderer, *composed);
 }
 
+static struct wlr_gles2_texture_attribs current_attributes(struct wlr_texture *texture) {
+    struct wlr_gles2_texture_attribs attributes;
+    struct wlr_egl *egl = wlr_gles2_renderer_get_egl(renderer);
+    wlr_gles2_texture_get_attribs(texture, &attributes);
+    eglMakeCurrent(wlr_egl_get_display(egl), EGL_NO_SURFACE, EGL_NO_SURFACE, wlr_egl_get_context(egl));
+    return attributes;
+}
+
+static void draw_quad(GLint position, GLint coordinate, const GLfloat *corners) {
+    static const GLfloat coordinates[] = {0, 0, 1, 0, 0, 1, 1, 1};
+    glVertexAttribPointer(position, 2, GL_FLOAT, GL_FALSE, 0, corners);
+    glVertexAttribPointer(coordinate, 2, GL_FLOAT, GL_FALSE, 0, coordinates);
+    glEnableVertexAttribArray(position);
+    glEnableVertexAttribArray(coordinate);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, CORNERS);
+    glDisableVertexAttribArray(position);
+    glDisableVertexAttribArray(coordinate);
+}
+
 static struct program *pixel_program(GLenum target) {
     struct program *program = &programs[target == GL_TEXTURE_EXTERNAL_OES];
     if (program->id) return program;
-    program->id = glCreateProgram();
-    glAttachShader(program->id, compile_shader(GL_VERTEX_SHADER, (const char *[]){vertex_source}, 1));
-    glAttachShader(program->id, compile_shader(GL_FRAGMENT_SHADER, (const char *[]){sampler_prefixes[target == GL_TEXTURE_EXTERNAL_OES], pixel_source}, 2));
-    glLinkProgram(program->id);
+    program->id = link_shaders(vertex_source, (const char *[]){sampler_prefixes[target == GL_TEXTURE_EXTERNAL_OES], pixel_source}, 2);
     program->position = glGetAttribLocation(program->id, "position");
     program->coordinate = glGetAttribLocation(program->id, "coordinate");
     program->size = glGetUniformLocation(program->id, "size");
@@ -672,26 +697,23 @@ static struct program *pixel_program(GLenum target) {
     return program;
 }
 
-static int draw_pixel(struct wlr_output_state *state, struct wlr_box box) {
+static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct wlr_texture *game) {
     struct wlr_output *output = active->output;
     if (!wlr_output_configure_primary_swapchain(output, state, &output->swapchain)) return 0;
     struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain), *composed = NULL;
     if (!buffer) return 0;
-    struct wlr_texture *texture = compose(&composed);
+    struct wlr_texture *texture = compose(game, &composed);
     if (!texture) {
         wlr_buffer_unlock(buffer);
         return 0;
     }
     GLuint framebuffer = wlr_gles2_renderer_get_buffer_fbo(renderer, buffer);
-    struct wlr_gles2_texture_attribs attributes;
-    struct wlr_egl *egl = wlr_gles2_renderer_get_egl(renderer);
-    wlr_gles2_texture_get_attribs(texture, &attributes);
-    eglMakeCurrent(wlr_egl_get_display(egl), EGL_NO_SURFACE, EGL_NO_SURFACE, wlr_egl_get_context(egl));
+    struct wlr_gles2_texture_attribs attributes = current_attributes(texture);
     struct program *program = pixel_program(attributes.target);
     struct wlr_box picture = composed ? box : fit(box, texture->width, texture->height);
     GLfloat left = 2.0f * picture.x / output->width - 1, right = 2.0f * (picture.x + picture.width) / output->width - 1;
     GLfloat top = 2.0f * picture.y / output->height - 1, bottom = 2.0f * (picture.y + picture.height) / output->height - 1;
-    const GLfloat corners[] = {left, top, right, top, left, bottom, right, bottom}, coordinates[] = {0, 0, 1, 0, 0, 1, 1, 1};
+    const GLfloat corners[] = {left, top, right, top, left, bottom, right, bottom};
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     glViewport(0, 0, output->width, output->height);
     glDisable(GL_BLEND);
@@ -704,13 +726,7 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box) {
     glTexParameteri(attributes.target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glUniform2f(program->size, texture->width, texture->height);
     glUniform2f(program->extent, (GLfloat)texture->width / picture.width, (GLfloat)texture->height / picture.height);
-    glVertexAttribPointer(program->position, 2, GL_FLOAT, GL_FALSE, 0, corners);
-    glVertexAttribPointer(program->coordinate, 2, GL_FLOAT, GL_FALSE, 0, coordinates);
-    glEnableVertexAttribArray(program->position);
-    glEnableVertexAttribArray(program->coordinate);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, CORNERS);
-    glDisableVertexAttribArray(program->position);
-    glDisableVertexAttribArray(program->coordinate);
+    draw_quad(program->position, program->coordinate, corners);
     glBindTexture(attributes.target, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glFlush();
@@ -723,18 +739,84 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box) {
     return 1;
 }
 
+static char *read_text(const char *path) {
+    FILE *file = fopen(path, "r");
+    char *text = NULL;
+    size_t length = 0;
+    getdelim(&text, &length, '\0', file);
+    fclose(file);
+    return text;
+}
+
+static struct retro_program *retro_program(GLenum target) {
+    int external = target == GL_TEXTURE_EXTERNAL_OES;
+    struct retro_program *program = &retro_programs[external];
+    if (program->id) return program;
+    char *vertex = read_text(RETRO_SHADER ".vert"), *fragment = read_text(retro_fragments[external]), *name, uniform[TEXT_MAX];
+    float value;
+    program->id = link_shaders(vertex, (const char *[]){fragment}, 1);
+    free(vertex);
+    free(fragment);
+    glUseProgram(program->id);
+    FILE *parameters = fopen(RETRO_SHADER ".parameters", "r");
+    while (fscanf(parameters, "%ms %f", &name, &value) == 2) {
+        snprintf(uniform, sizeof uniform, "registers.%s", name);
+        glUniform1f(glGetUniformLocation(program->id, uniform), value);
+        free(name);
+    }
+    fclose(parameters);
+    program->frame_count = glGetUniformLocation(program->id, "registers.FrameCount");
+    program->mvp = glGetUniformLocation(program->id, "global.MVP");
+    program->output_size = glGetUniformLocation(program->id, "global.OutputSize");
+    program->source_size = glGetUniformLocation(program->id, "global.SourceSize");
+    return program;
+}
+
+static struct wlr_texture *retro_picture(struct wlr_texture *game, struct wlr_buffer **held) {
+    static const GLfloat identity[] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    static const GLfloat corners[] = {-1, -1, 1, -1, -1, 1, 1, 1};
+    struct wlr_box picture = fit(area(), game->width, game->height);
+    *held = acquire(&retro_chain, picture.width, picture.height);
+    if (!*held) return game;
+    struct wlr_gles2_texture_attribs attributes = current_attributes(game);
+    struct retro_program *program = retro_program(attributes.target);
+    glBindFramebuffer(GL_FRAMEBUFFER, wlr_gles2_renderer_get_buffer_fbo(renderer, *held));
+    glViewport(0, 0, picture.width, picture.height);
+    glDisable(GL_BLEND);
+    glUseProgram(program->id);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(attributes.target, attributes.tex);
+    glTexParameteri(attributes.target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(attributes.target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glUniform1ui(program->frame_count, retro_frames++);
+    glUniformMatrix4fv(program->mvp, 1, GL_FALSE, identity);
+    glUniform4f(program->output_size, picture.width, picture.height, 1.0f / picture.width, 1.0f / picture.height);
+    glUniform4f(program->source_size, game->width, game->height, 1.0f / game->width, 1.0f / game->height);
+    draw_quad(RETRO_POSITION, RETRO_COORDINATE, corners);
+    glBindTexture(attributes.target, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glFlush();
+    return wlr_texture_from_buffer(renderer, *held);
+}
+
 static void paint(struct wlr_output_state *state) {
     struct wlr_output *output = active->output;
     struct wlr_box box = area();
-    struct wlr_texture *game = shown ? wlr_surface_get_texture(shown->toplevel->base->surface) : NULL;
+    struct wlr_texture *surface = shown ? wlr_surface_get_texture(shown->toplevel->base->surface) : NULL, *game = surface;
     struct wlr_texture *interface = overlay_visible() ? wlr_surface_get_texture(overlay->surface) : NULL;
+    struct wlr_buffer *held = NULL;
+    if (retro && surface) game = retro_picture(surface, &held);
     enum filter filter = game && !interface ? choose_filter(fit(box, game->width, game->height), game->width, game->height)
                                             : choose_filter(box, canvas_width, canvas_height);
-    if ((filter == PIXEL || overlay_blur()) && (game || interface) && draw_pixel(state, box)) return;
-    enum wlr_scale_filter_mode mode = filter == NEAREST ? WLR_SCALE_FILTER_NEAREST : WLR_SCALE_FILTER_BILINEAR;
-    struct wlr_render_pass *pass = wlr_output_begin_render_pass(output, state, NULL);
-    draw_scene(pass, (struct wlr_box){0, 0, output->width, output->height}, box, game, interface, mode);
-    wlr_render_pass_submit(pass);
+    if (!((filter == PIXEL || overlay_blur()) && (game || interface) && draw_pixel(state, box, game))) {
+        enum wlr_scale_filter_mode mode = filter == NEAREST ? WLR_SCALE_FILTER_NEAREST : WLR_SCALE_FILTER_BILINEAR;
+        struct wlr_render_pass *pass = wlr_output_begin_render_pass(output, state, NULL);
+        draw_scene(pass, (struct wlr_box){0, 0, output->width, output->height}, box, game, interface, mode);
+        wlr_render_pass_submit(pass);
+    }
+    if (!held) return;
+    wlr_texture_destroy(game);
+    wlr_buffer_unlock(held);
 }
 
 static void on_frame(struct wl_listener *listener, void *data) {
@@ -1093,7 +1175,9 @@ static void load_settings(void) {
     snprintf(pinned, sizeof pinned, "%s", json_object_object_get_ex(settings, "display", &field) ? json_object_get_string(field) : "");
     resolution = json_object_object_get_ex(settings, "resolution", &field) ? json_object_get_int(field) : 0;
     snprintf(chosen_mode, sizeof chosen_mode, "%s", json_object_object_get_ex(settings, "mode", &field) ? json_object_get_string(field) : "");
+    retro = json_object_object_get_ex(settings, "picture", &field) && !strcmp(json_object_get_string(field), RETRO_PICTURE);
     json_object_put(settings);
+    redraw();
 }
 
 static int on_watched_change(int fd, uint32_t mask, void *data) {

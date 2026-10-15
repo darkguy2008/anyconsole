@@ -17,3 +17,18 @@ GLuint compile_shader(GLenum type, const char *const *sources, int count) {
     }
     return shader;
 }
+
+GLuint link_shaders(const char *vertex, const char *const *fragments, int count) {
+    GLuint program = glCreateProgram(), shaders[] = {compile_shader(GL_VERTEX_SHADER, &vertex, 1), compile_shader(GL_FRAGMENT_SHADER, fragments, count)};
+    GLint linked;
+    for (unsigned i = 0; i < sizeof shaders / sizeof *shaders; i++) glAttachShader(program, shaders[i]);
+    glLinkProgram(program);
+    for (unsigned i = 0; i < sizeof shaders / sizeof *shaders; i++) glDeleteShader(shaders[i]);
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[BUFSIZ];
+        glGetProgramInfoLog(program, sizeof log, NULL, log);
+        fprintf(stderr, "%s: shader: %s\n", program_invocation_short_name, log);
+    }
+    return program;
+}

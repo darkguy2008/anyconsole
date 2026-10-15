@@ -20,6 +20,7 @@ WLR_PROTOCOLS="wlr-layer-shell-unstable-v1 wlr-foreign-toplevel-management-unsta
 PROTOCOLS=$(pkg-config --variable=pkgdatadir wayland-protocols)
 BACKGROUND_EFFECT=$PROTOCOLS/staging/ext-background-effect/ext-background-effect-v1.xml
 CFLAGS="-O2 -Wall -Wextra -Werror -I/tmp"
+GLES_SHADER="--es --version 300 --glsl-emit-ubo-as-plain-uniforms"
 
 make_skeleton() {
   mkdir -p $ROOTFS/etc $ROOTFS/proc $ROOTFS/sys $ROOTFS/dev $ROOTFS/run $ROOTFS/tmp \
@@ -180,14 +181,36 @@ hide_input_from_compositor() {
 
 install_app() { rsync -a --exclude /recipes /src/app/ $ROOTFS/opt/anyconsole/; }
 
+install_assets() {
+  list=$1 folder=$2
+  while read -r file source checksum; do
+    [ -f "$DOWNLOAD_CACHE/$checksum" ] || fetch "$DOWNLOAD_CACHE" "$checksum" "$source"
+    echo "$checksum  $DOWNLOAD_CACHE/$checksum" | sha256sum -c --quiet
+    install -D -m 644 "$DOWNLOAD_CACHE/$checksum" "$folder/$file"
+  done < "$list"
+}
+
 install_skin_assets() {
-  for list in /src/app/skins/*/assets; do
-    folder=$ROOTFS$SKINS_DIR/$(basename "$(dirname "$list")")
-    while read -r file source checksum; do
-      [ -f "$DOWNLOAD_CACHE/$checksum" ] || fetch "$DOWNLOAD_CACHE" "$checksum" "$source"
-      echo "$checksum  $DOWNLOAD_CACHE/$checksum" | sha256sum -c --quiet
-      install -D -m 644 "$DOWNLOAD_CACHE/$checksum" "$folder/$file"
-    done < "$list"
+  for list in /src/app/skins/*/assets; do install_assets "$list" "$ROOTFS$SKINS_DIR/$(basename "$(dirname "$list")")"; done
+}
+
+slang_stage() { awk -v wanted="$2" '/^#pragma stage /{stage = $3; next} stage == "" || stage == wanted' "$1"; }
+
+slang_parameters() { awk -F '"' '/^#pragma parameter /{split($1, words, " "); split($3, numbers, " "); print words[3], numbers[1]}' "$1"; }
+
+build_shaders() {
+  install_assets /src/guest/shaders/assets /tmp/shaders
+  mkdir -p $ROOTFS$SHADERS_DIR
+  for source in /tmp/shaders/*.slang; do
+    name=$(basename "$source" .slang)
+    output=$ROOTFS$SHADERS_DIR/$name
+    slang_stage "$source" vertex | glslang --stdin -V -S vert -o "/tmp/$name.vert.spv"
+    slang_stage "$source" fragment | glslang --stdin -V -S frag -o "/tmp/$name.frag.spv"
+    spirv-cross "/tmp/$name.vert.spv" $GLES_SHADER --output "$output.vert"
+    spirv-cross "/tmp/$name.frag.spv" $GLES_SHADER --output "$output.frag"
+    spirv-cross "/tmp/$name.frag.spv" $GLES_SHADER --remap-variable-type Source samplerExternalOES --extension GL_OES_EGL_image_external_essl3 \
+      --output "$output.external.frag"
+    { slang_parameters "$source"; cat "/src/guest/shaders/$name.parameters"; } > "$output.parameters"
   done
 }
 
@@ -214,4 +237,5 @@ install_system
 hide_input_from_compositor
 install_app
 install_skin_assets
+build_shaders
 finalize

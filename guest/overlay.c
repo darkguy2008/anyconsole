@@ -116,7 +116,7 @@ static const struct { const char *name, *title; enum plane plane; } screens[] = 
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
               CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN, CLEAR_THUMBNAILS,
-              SAVE_STATES, DELETE_STATE, OVERWRITE_STATE };
+              SAVE_STATES, DELETE_STATE, OVERWRITE_STATE, CHOOSE_PICTURE };
 static const char *const actions[] = {
     [NOTHING] = "nothing", [OPEN_STORE] = "open-store", [OPEN_SETTINGS] = "open-settings", [OPEN_GAME] = "open-game", [PLAY] = "play", [RESUME] = "resume",
     [CLOSE] = "close", [UNINSTALL] = "uninstall", [INSTALL] = "install", [SHOW_DASHBOARD] = "dashboard", [VOLUME] = "volume", [OPEN_OUTPUTS] = "open-outputs",
@@ -125,8 +125,13 @@ static const char *const actions[] = {
     [CHOOSE_DISPLAY] = "display", [CHOOSE_DISPLAY_MODE] = "display-mode", [APPLY_RESOLUTIONS] = "apply-resolutions", [CHOOSE_RESOLUTION] = "resolution",
     [CHOOSE_SLEEP] = "sleep", [REWIND] = "rewind", [LOGIN] = "login", [EMULATE] = "emulate", [LOG_OUT_PLAYER] = "log-out",
     [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen", [CHOOSE_SKIN] = "skin",
-    [CLEAR_THUMBNAILS] = "clear-thumbnails", [SAVE_STATES] = "save-states", [DELETE_STATE] = "delete-state", [OVERWRITE_STATE] = "overwrite-state"};
+    [CLEAR_THUMBNAILS] = "clear-thumbnails", [SAVE_STATES] = "save-states", [DELETE_STATE] = "delete-state", [OVERWRITE_STATE] = "overwrite-state",
+    [CHOOSE_PICTURE] = "picture"};
 static const char *const criteria[] = {"action", "label", "value", "arg"};
+enum tab { GAME_TAB, DEVICES_TAB, SYSTEM_TAB };
+static const char *const tabs[] = {[GAME_TAB] = "Game", [DEVICES_TAB] = "I/O", [SYSTEM_TAB] = "System"};
+enum picture { ORIGINAL, RETRO };
+static const struct { const char *name, *label; } pictures[] = {[ORIGINAL] = {"original", "Original"}, [RETRO] = {"retro", "Retro"}};
 enum command { NONE, UP, DOWN, PAGE_UP, PAGE_DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON, X_BUTTON, Y_BUTTON };
 static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [PAGE_UP] = "page-up", [PAGE_DOWN] = "page-down",
                                        [LEFT] = "left", [RIGHT] = "right", [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide",
@@ -138,6 +143,8 @@ static const char *const tasks[] = {[INSTALLING] = "installing", [UNINSTALLING] 
 
 struct game {
     char slug[NAME_MAX + 1], platform[NAME_MAX + 1], thumbnail[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX], job_error[TEXT_MAX], error_line[TEXT_MAX];
+    char picture_command[TEXT_MAX];
+    enum picture picture;
     json_object *emulate;
     double thumbnail_aspect;
     time_t thumbnail_time;
@@ -148,7 +155,7 @@ struct game {
     pid_t pid, job, freezer, probe;
 };
 
-struct view { enum screen screen; int game, selected; enum action action; int arg; };
+struct view { enum screen screen; int game, selected; enum action action; int arg; enum tab tab; };
 struct row { char label[TEXT_MAX], value[TEXT_MAX]; enum action action; int arg; };
 struct device { int id; char name[TEXT_MAX], node[TEXT_MAX]; };
 struct member { int device, profile; };
@@ -908,6 +915,13 @@ static void cycle_skin(int step) {
     if (count) start((char *[]){"settings", "skin", names[(current + step + count) % count], NULL});
 }
 
+static enum picture chosen_picture(void) { return strcmp(string_at(settings, "picture", NULL), pictures[RETRO].name) ? ORIGINAL : RETRO; }
+
+static void cycle_picture(int step) {
+    int count = sizeof pictures / sizeof *pictures;
+    start((char *[]){"settings", "picture", (char *)pictures[(chosen_picture() + step + count) % count].name, NULL});
+}
+
 static char *skin_folder(const char *name, char folder[PATH_MAX]) {
     char entry[PATH_MAX];
     for (unsigned root = 0; root < sizeof skin_roots / sizeof *skin_roots; root++) {
@@ -1080,6 +1094,10 @@ static const char *status(int index) {
 
 static int in_game(void) { return active >= 0 && !dashboard_open; }
 
+static enum tab first_tab(void) { return in_game() ? GAME_TAB : DEVICES_TAB; }
+
+static enum tab tab_of(struct view *view) { return view->tab < first_tab() ? first_tab() : view->tab; }
+
 static void write_json(const char *path, json_object *object) {
     char partial[PATH_MAX + sizeof PARTIAL];
     snprintf(partial, sizeof partial, "%s" PARTIAL, path);
@@ -1170,6 +1188,8 @@ static int owned_games(int profile) {
 
 static int rewindable(void) { return in_game() && games[active].rewinds; }
 
+static int add_picture_row(int count) { return add_row(count, CHOOSE_PICTURE, 0, "Display Mode", "%s", pictures[chosen_picture()].label); }
+
 static int add_resolution_rows(int count) {
     count = add_row(count, CHOOSE_DISPLAY_MODE, 0, "Display resolution", "%s", display_mode_value());
     count = add_row(count, CHOOSE_RESOLUTION, 0, "Game resolution", "%s", resolution_value());
@@ -1205,12 +1225,23 @@ static int build(struct view *view) {
         }
         break;
     case GUIDE:
-        if (in_game()) count = add_row(count, SHOW_DASHBOARD, 0, "Dashboard", "");
-        if (rewindable()) count = add_row(count, REWIND, 0, "Rewind", "%s", rewind_age());
-        if (rewindable() && guide_profile) count = add_row(count, SAVE_STATES, 0, "Save States", "%s", save_slot_value());
-        if (in_game() && guide_profile) count = add_row(count, EMULATE, 0, "Emulate", "%s", emulate_value());
-        if (in_game() && games[active].second_screen)
-            count = add_row(count, SECOND_SCREEN, 0, "Second screen", "%s", games[active].screen_shown ? "Inset" : "Off");
+        if (tab_of(view) == GAME_TAB) {
+            count = add_row(count, SHOW_DASHBOARD, 0, "Dashboard", "");
+            if (rewindable()) count = add_row(count, REWIND, 0, "Rewind", "%s", rewind_age());
+            if (rewindable() && guide_profile) count = add_row(count, SAVE_STATES, 0, "Save States", "%s", save_slot_value());
+            if (guide_profile) count = add_row(count, EMULATE, 0, "Emulate", "%s", emulate_value());
+            if (games[active].second_screen) count = add_row(count, SECOND_SCREEN, 0, "Second screen", "%s", games[active].screen_shown ? "Inset" : "Off");
+            count = add_picture_row(count);
+            break;
+        }
+        if (tab_of(view) == SYSTEM_TAB) {
+            count = add_resolution_rows(count);
+            count = add_row(count, RELOAD, 0, "Reload", "");
+            count = add_row(count, RESTART, 0, "Restart", "");
+            count = add_row(count, POWER_OFF, 0, "Power off", "");
+            count = add_row(count, LOG_OUT_PLAYER, 0, "Log out", "");
+            break;
+        }
         if (volume >= 0) snprintf(level, sizeof level, "%d%%", volume);
         count = add_row(count, VOLUME, 0, "Volume", "%s", level);
         count = add_row(count, OPEN_OUTPUTS, 0, "Output", "%s", chosen(outputs, output_count, default_output));
@@ -1218,12 +1249,7 @@ static int build(struct view *view) {
         if (microphone_is_muted()) snprintf(microphone_level, sizeof microphone_level, "Muted");
         else if (microphone_volume >= 0) snprintf(microphone_level, sizeof microphone_level, "%d%%", microphone_volume);
         count = add_row(count, MICROPHONE_VOLUME, 0, "Microphone volume", "%s", microphone_level);
-        count = add_resolution_rows(count);
         count = add_row(count, OPEN_CONTROLLERS, 0, "Controllers", "");
-        count = add_row(count, RELOAD, 0, "Reload", "");
-        count = add_row(count, RESTART, 0, "Restart", "");
-        count = add_row(count, POWER_OFF, 0, "Power off", "");
-        count = add_row(count, LOG_OUT_PLAYER, 0, "Log out", "");
         break;
     case WHOIS:
         for (int profile = 1; profile <= PROFILES; profile++) {
@@ -1263,6 +1289,7 @@ static int build(struct view *view) {
     case SETTINGS:
         count = add_row(count, CHOOSE_DISPLAY, 0, "Display", "%s", display_value());
         count = add_resolution_rows(count);
+        count = add_picture_row(count);
         count = add_row(count, CHOOSE_SLEEP, 0, "Controller sleep", "%s", sleep_value());
         count = add_row(count, CHOOSE_SKIN, 0, "Skin", "%s", skin_name());
         count = add_row(count, CLEAR_THUMBNAILS, 0, "Clear thumbnails", "");
@@ -1363,6 +1390,16 @@ static int game_log(int index) {
 
 static void send_command(int index, const char *command) {
     if (dprintf(games[index].commands, "%s\n", command) < 0) perror(command);
+}
+
+static void apply_pictures(void) {
+    enum picture picture = chosen_picture();
+    for (int i = 0; i < game_count; i++) {
+        struct game *game = &games[i];
+        if (!game->pid || !*game->picture_command || game->picture == picture) continue;
+        send_command(i, game->picture_command);
+        game->picture = picture;
+    }
 }
 
 static void resume(int index) {
@@ -1616,6 +1653,7 @@ static void read_probe(int index) {
     json_object *labels = json_object_from_fd(game->probe_output), *manifest, *platform = NULL, *overrides = NULL;
     game->rewinds = *string_at(labels, REWIND_LABEL, NULL);
     game->second_screen = *string_at(labels, SCREEN_LABEL, NULL);
+    snprintf(game->picture_command, sizeof game->picture_command, "%s", string_at(labels, PICTURE_LABEL, NULL));
     screen_path(index, path);
     game->screen_shown = !access(path, F_OK);
     json_object_put(game->emulate);
@@ -1631,6 +1669,7 @@ static void read_probe(int index) {
     close(game->probe_output);
     game->probe = 0;
     if (index == active) apply_modes();
+    apply_pictures();
     changed = 1;
 }
 
@@ -1653,6 +1692,8 @@ static void play(int index) {
     prepare_rewinds(index, states);
     memset(guide_depths, 0, sizeof guide_depths);
     game->rewinds = 0;
+    game->picture_command[0] = 0;
+    game->picture = chosen_picture();
     save_slot = 0;
     game->paused = game->closing = 0;
     show_game(index);
@@ -1841,7 +1882,7 @@ static void logout(int profile, int device) {
 
 static int inert(enum action action) {
     return action == NOTHING || action == VOLUME || action == MICROPHONE_VOLUME || action == SECOND_SCREEN || action == CHOOSE_DISPLAY ||
-           action == CHOOSE_DISPLAY_MODE || action == CHOOSE_RESOLUTION || action == CHOOSE_SLEEP || action == CHOOSE_SKIN || action == EMULATE;
+           action == CHOOSE_DISPLAY_MODE || action == CHOOSE_RESOLUTION || action == CHOOSE_SLEEP || action == CHOOSE_SKIN || action == EMULATE || action == CHOOSE_PICTURE;
 }
 
 static void act(struct row *row, int profile) {
@@ -1931,6 +1972,7 @@ static void adjust(enum action action, int step) {
     if (action == CHOOSE_RESOLUTION) cycle_resolution(step);
     if (action == CHOOSE_SLEEP) cycle_sleep(step);
     if (action == CHOOSE_SKIN) cycle_skin(step);
+    if (action == CHOOSE_PICTURE) cycle_picture(step);
     if (action == REWIND && rewind_back - step >= 0 && rewind_back - step <= rewind_count) rewind_back -= step;
     if (action == SAVE_STATES && save_slot + step >= 0 && save_slot + step < SAVE_SLOTS) save_slot += step;
     if (action == EMULATE) cycle_mode(step);
@@ -1965,6 +2007,13 @@ static void toggle_guide(int device) {
     enter_guide(profile_of(device), device, 0);
 }
 
+static void switch_tab(struct view *view, int step) {
+    int next = tab_of(view) + step;
+    if (next < (int)first_tab() || next > SYSTEM_TAB) return;
+    *view = (struct view){.screen = GUIDE, .game = view->game, .tab = next};
+    changed = 1;
+}
+
 static void navigate(int device, enum command command) {
     paint_needed = 1;
     input_device = device;
@@ -1973,6 +2022,10 @@ static void navigate(int device, enum command command) {
         return;
     }
     struct view *view = top();
+    if (view->screen == GUIDE && (command == PAGE_UP || command == PAGE_DOWN)) {
+        switch_tab(view, command == PAGE_UP ? -1 : 1);
+        return;
+    }
     int count = build(view), selected = view->selected;
     struct row *row = count ? &rows[view->selected] : NULL;
     switch (command) {
@@ -2182,6 +2235,11 @@ static json_object *view_object(enum plane plane, struct view *view, int *count)
     json_object_object_add(object, "game", view->game >= 0 ? json_object_new_string(key(view->game)) : NULL);
     json_object_object_add(object, "rows", list);
     json_object_object_add(object, "selected", json_object_new_int(view->selected));
+    if (view->screen != GUIDE) return object;
+    list = json_object_new_array();
+    for (enum tab tab = first_tab(); tab <= SYSTEM_TAB; tab++) json_object_array_add(list, json_object_new_string(tabs[tab]));
+    json_object_object_add(object, "tabs", list);
+    json_object_object_add(object, "tab", json_object_new_int(tab_of(view) - first_tab()));
     return object;
 }
 
@@ -2534,6 +2592,7 @@ static void read_changes(int runtime_watch, int display_watch, int controllers_w
             read_controllers();
         } else if (event->wd != runtime_watch && !strcmp(event->name, basename(SETTINGS_FILE))) {
             read_settings();
+            apply_pictures();
         } else if (event->wd != runtime_watch && !strcmp(event->name, basename(STORES_FILE))) {
             read_stores();
             refresh();
@@ -2685,7 +2744,7 @@ static int find_row(json_object *wanted, struct view *view) {
     return -1;
 }
 
-static void open_screen(enum screen screen, int game, int profile, int device) {
+static void open_screen(enum screen screen, int game, enum tab tab, int profile, int device) {
     picker = NO_DEVICE;
     switch (screens[screen].plane) {
     case PICKER_PLANE:
@@ -2702,7 +2761,8 @@ static void open_screen(enum screen screen, int game, int profile, int device) {
         for (int i = 0; device == NO_DEVICE && i < member_count; i++)
             if (members[i].profile == profile) device = members[i].device;
         enter_guide(profile, device, 1);
-        if (screen != GUIDE) guides[profile][guide_depths[profile]++] = (struct view){.screen = screen, .game = game};
+        if (screen == GUIDE) guides[profile][0].tab = tab;
+        else guides[profile][guide_depths[profile]++] = (struct view){.screen = screen, .game = game};
         break;
     }
 }
@@ -2724,14 +2784,17 @@ static void run_request(struct request *request, json_object *wanted) {
     index = game >= 0 && view->game >= 0 && view->game != game ? -1 : find_row(wanted, view);
     for (enum screen screen = HOME; index < 0 && screen < sizeof screens / sizeof *screens; screen++) {
         if (screen == GAME && game < 0) continue;
-        candidate = (struct view){.screen = screen, .game = game};
-        index = find_row(wanted, &candidate);
-        if (index < 0) continue;
-        found = screen;
-        open_screen(screen, game, profile, int_at(wanted, "device"));
-        if (capture.current) {
-            request->wanted = json_object_get(wanted);
-            return;
+        enum tab last = screen == GUIDE ? SYSTEM_TAB : first_tab();
+        for (enum tab tab = first_tab(); index < 0 && tab <= last; tab++) {
+            candidate = (struct view){.screen = screen, .game = game, .tab = tab};
+            index = find_row(wanted, &candidate);
+            if (index < 0) continue;
+            found = screen;
+            open_screen(screen, game, tab, profile, int_at(wanted, "device"));
+            if (capture.current) {
+                request->wanted = json_object_get(wanted);
+                return;
+            }
         }
     }
     if (index < 0) { refuse(request, NO_ROW "%s", json_object_to_json_string_ext(wanted, JSON_C_TO_STRING_PLAIN)); return; }

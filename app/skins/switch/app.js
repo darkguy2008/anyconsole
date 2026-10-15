@@ -22,7 +22,7 @@ const actionIcons = {
   'open-store': 'storefront', 'open-settings': 'settings', play: 'play_arrow', resume: 'play_arrow', close: 'close', uninstall: 'delete',
   install: 'download', dashboard: 'home', volume: 'volume_up', 'open-outputs': 'speaker', 'open-microphones': 'mic', 'microphone-volume': 'mic',
   'open-controllers': 'sports_esports', reload: 'refresh', restart: 'restart_alt', 'power-off': 'power_settings_new', 'log-out': 'logout',
-  rewind: 'history', emulate: 'keyboard', 'second-screen': 'picture_in_picture', 'display-mode': 'monitor', resolution: 'aspect_ratio',
+  rewind: 'history', emulate: 'keyboard', picture: 'tv', 'second-screen': 'picture_in_picture', 'display-mode': 'monitor', resolution: 'aspect_ratio',
   pair: 'bluetooth_searching', forget: 'link_off', 'confirm-log-out': 'logout', login: 'person', 'save-states': 'save',
 };
 
@@ -262,6 +262,21 @@ function GuideRows({ view, theme }) {
     </view>`;
 }
 
+function Tabs({ view, theme }) {
+  return html`
+    <view style=${{ flexDirection: 'row', alignItems: 'center', gap: 20, paddingHorizontal: 44, paddingBottom: 20 }}>
+      <${Face} face="L" theme=${theme} />
+      <view style=${{ flexGrow: 1, flexDirection: 'row', justifyContent: 'space-around' }}>
+        ${view.tabs.map((tab, index) => html`
+          <view key=${tab} style=${{ alignItems: 'center', gap: 8 }}>
+            <text style=${{ fontSize: 30, fontWeight: 800, color: index === view.tab ? accent : theme.muted }} transition=${{ color: 150 }}>${tab}</text>
+            <view style=${{ width: 48, height: 5, borderRadius: 3, backgroundColor: accent, opacity: index === view.tab ? 1 : 0 }} transition=${{ opacity: 150 }} />
+          </view>`)}
+      </view>
+      <${Face} face="R" theme=${theme} />
+    </view>`;
+}
+
 function Guide({ state, view, theme }) {
   const kept = useLatest(view);
   const now = useClock();
@@ -274,6 +289,7 @@ function Guide({ state, view, theme }) {
         <text style=${{ flexGrow: 1, flexShrink: 1, fontSize: 38, fontWeight: 800 }}>${kept.title}</text>
         <text style=${{ fontSize: 30, fontWeight: 700, color: theme.muted }}>${time(now)}</text>
       </view>
+      ${kept.tabs && html`<${Tabs} view=${kept} theme=${theme} />`}
       <${GuideRows} view=${kept} theme=${theme} />
     </view>`;
 }
