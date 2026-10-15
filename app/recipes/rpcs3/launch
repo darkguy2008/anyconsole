@@ -14,7 +14,7 @@ write_config() {
   height=$(jq -r '.canvas | split("x")[1]' "$DISPLAY_STATE")
   scale=$((height * PERCENT / ${OUTPUT#*x}))
   [ "$scale" != "${written:-}" ] || return 0
-  yq ".Video.\"Resolution Scale\" = $scale" "$BASE_CONFIG" > "$RPCS3_CONFIG.partial"
+  scale=$scale yq '.Video["Resolution Scale"] = env(scale)' "$BASE_CONFIG" > "$RPCS3_CONFIG.partial"
   mv "$RPCS3_CONFIG.partial" "$RPCS3_CONFIG"
   written=$scale
 }
