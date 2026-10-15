@@ -143,8 +143,6 @@ static const char *const tasks[] = {[INSTALLING] = "installing", [UNINSTALLING] 
 
 struct game {
     char slug[NAME_MAX + 1], platform[NAME_MAX + 1], thumbnail[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX], job_error[TEXT_MAX], error_line[TEXT_MAX];
-    char picture_command[TEXT_MAX];
-    enum picture picture;
     json_object *emulate;
     double thumbnail_aspect;
     time_t thumbnail_time;
@@ -211,7 +209,7 @@ static struct capture capture;
 static struct request requests[REQUESTS_MAX];
 static int request_count;
 static int rewind_count, rewind_back;
-static char *written_state;
+static char *written_state, *skin_state;
 static struct window windows[WINDOWS_MAX];
 static struct gbm_device *gbm;
 static int window_count, resolutions[RESOLUTIONS_MAX], resolution_count, sleep_choices[SLEEP_CHOICES_MAX], sleep_choice_count;
@@ -940,7 +938,7 @@ static void load_skin(void) {
     *loaded_skin = '\0';
     for (unsigned i = 0; i < sizeof choices / sizeof *choices && !*loaded_skin; i++)
         if (script_load(skin_folder(choices[i], folder))) snprintf(loaded_skin, sizeof loaded_skin, "%s", choices[i]);
-    if (written_state) script_state(written_state);
+    if (skin_state) script_state(skin_state);
     paint_needed = changed = 1;
 }
 
@@ -1392,16 +1390,6 @@ static void send_command(int index, const char *command) {
     if (dprintf(games[index].commands, "%s\n", command) < 0) perror(command);
 }
 
-static void apply_pictures(void) {
-    enum picture picture = chosen_picture();
-    for (int i = 0; i < game_count; i++) {
-        struct game *game = &games[i];
-        if (!game->pid || game->paused || game->freezer || !*game->picture_command || game->picture == picture) continue;
-        send_command(i, game->picture_command);
-        game->picture = picture;
-    }
-}
-
 static void resume(int index) {
     if (index != active) {
         cairo_surface_destroy(pending_screen);
@@ -1653,7 +1641,6 @@ static void read_probe(int index) {
     json_object *labels = json_object_from_fd(game->probe_output), *manifest, *platform = NULL, *overrides = NULL;
     game->rewinds = *string_at(labels, REWIND_LABEL, NULL);
     game->second_screen = *string_at(labels, SCREEN_LABEL, NULL);
-    snprintf(game->picture_command, sizeof game->picture_command, "%s", string_at(labels, PICTURE_LABEL, NULL));
     screen_path(index, path);
     game->screen_shown = !access(path, F_OK);
     json_object_put(game->emulate);
@@ -1669,7 +1656,6 @@ static void read_probe(int index) {
     close(game->probe_output);
     game->probe = 0;
     if (index == active) apply_modes();
-    apply_pictures();
     changed = 1;
 }
 
@@ -1692,8 +1678,6 @@ static void play(int index) {
     prepare_rewinds(index, states);
     memset(guide_depths, 0, sizeof guide_depths);
     game->rewinds = 0;
-    game->picture_command[0] = 0;
-    game->picture = chosen_picture();
     save_slot = 0;
     game->paused = game->closing = 0;
     show_game(index);
@@ -2155,7 +2139,9 @@ static void set_blur(void) {
 
 static void paint(void) {
     paint_needed = 0;
-    skin_moving = scene_paint(skin_now());
+    int moving = scene_paint(skin_now());
+    changed |= moving != skin_moving;
+    skin_moving = moving;
     if (!surface_wanted() && !skin_moving) {
         hide();
         return;
@@ -2513,11 +2499,16 @@ static void settle(void) {
         previewed_seat = seat;
     }
     json_object *state = state_object(count);
-    char *serialized = strdup(json_object_to_json_string_ext(state, JSON_C_TO_STRING_PLAIN));
-    if (!written_state || strcmp(serialized, written_state)) {
-        script_state(serialized);
+    char *shown_state = strdup(json_object_to_json_string_ext(state, JSON_C_TO_STRING_PLAIN));
+    if (!skin_state || strcmp(shown_state, skin_state)) {
+        script_state(shown_state);
         paint_needed = 1;
-    }
+        skin_moving = layer != NULL;
+        free(skin_state);
+        skin_state = shown_state;
+    } else free(shown_state);
+    json_object_object_add(state, "moving", json_object_new_boolean(skin_moving));
+    char *serialized = strdup(json_object_to_json_string_ext(state, JSON_C_TO_STRING_PLAIN));
     if (written_state && !strcmp(serialized, written_state)) free(serialized);
     else write_state(serialized);
     send_replies(state);
@@ -2561,7 +2552,6 @@ static void reap(void) {
             if (games[i].freezer == pid) {
                 games[i].freezer = 0;
                 if (failed) games[i].paused = !games[i].paused;
-                apply_pictures();
                 if (games[i].closing && games[i].pid) finish_close(i);
             }
             changed = 1;
@@ -2593,7 +2583,6 @@ static void read_changes(int runtime_watch, int display_watch, int controllers_w
             read_controllers();
         } else if (event->wd != runtime_watch && !strcmp(event->name, basename(SETTINGS_FILE))) {
             read_settings();
-            apply_pictures();
         } else if (event->wd != runtime_watch && !strcmp(event->name, basename(STORES_FILE))) {
             read_stores();
             refresh();
@@ -2973,6 +2962,7 @@ int main(void) {
         }
         settle();
         if (layer && width && paint_needed && !frame_pending) paint();
+        settle();
         fetch_thumbnails();
         arm_skin_timer();
     }

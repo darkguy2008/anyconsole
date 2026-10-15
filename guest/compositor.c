@@ -58,6 +58,7 @@
 #define ASPECT_WIDTH 16
 #define ASPECT_HEIGHT 9
 #define MIN_INTEGER_SCALE 2
+#define ASPECT_FIELD ", Aspect: "
 #define GPUS_MAX 8
 #define TEXT_MAX 256
 #define NO_VULKAN -1
@@ -142,7 +143,9 @@ struct window {
     struct wlr_ext_foreign_toplevel_handle_v1 *listed;
     struct wlr_ext_image_capture_source_v1 source;
     char app_id[TEXT_MAX];
-    int sandboxed;
+    int sandboxed, display_width;
+    long log_read;
+    float aspect;
     struct wl_list link;
     struct wl_listener commit, map, unmap, destroy, activate, request_fullscreen;
 };
@@ -411,7 +414,7 @@ static void write_state(void) {
         json_object_object_add(state, "filter", json_object_new_string(filters[choose_filter(box, canvas_width, canvas_height)]));
         json_object_object_add(state, "area_box", box_json(box));
         if (shown && shown->source.width && shown->source.height)
-            json_object_object_add(state, "picture_box", box_json(place(box, shown->source.width, shown->source.height)));
+            json_object_object_add(state, "picture_box", box_json(place(box, shown->display_width, shown->source.height)));
         json_object *modes = json_object_new_array();
         struct wlr_output_mode *mode;
         char name[TEXT_MAX];
@@ -531,7 +534,7 @@ static int scan_out(struct wlr_output_state *state) {
     struct wlr_surface *surface = shown ? shown->toplevel->base->surface : NULL;
     if (!surface || !surface->buffer || overlay_visible() || retro) return 0;
     struct wlr_buffer *buffer = &surface->buffer->base;
-    struct wlr_box picture = place(area(), buffer->width, buffer->height);
+    struct wlr_box picture = place(area(), shown->display_width, buffer->height);
     if (picture.width != buffer->width || picture.height != buffer->height) return 0;
     wlr_output_state_set_buffer(state, buffer);
     state->buffer_dst_box = picture;
@@ -546,9 +549,9 @@ static struct wlr_box scaled(struct wlr_box inner, struct wlr_box box) {
                             inner.width * box.width / canvas_width, inner.height * box.height / canvas_height};
 }
 
-static void draw_scene(struct wlr_render_pass *pass, struct wlr_box target, struct wlr_box box, struct wlr_texture *game, struct wlr_texture *interface,
+static void draw_scene(struct wlr_render_pass *pass, struct wlr_box target, struct wlr_box box, struct wlr_texture *game, int game_width, struct wlr_texture *interface,
                        enum wlr_scale_filter_mode mode) {
-    struct wlr_box picture = game ? place(box, game->width, game->height) : (struct wlr_box){0};
+    struct wlr_box picture = game ? place(box, game_width, game->height) : (struct wlr_box){0};
     pixman_region32_t bars;
     pixman_region32_init_rect(&bars, picture.x, picture.y, picture.width, picture.height);
     pixman_region32_inverse(&bars, &bars, &(pixman_box32_t){target.x, target.y, target.x + target.width, target.y + target.height});
@@ -671,7 +674,7 @@ static struct wlr_texture *blurred(struct wlr_texture *scene, struct wlr_buffer 
     return step;
 }
 
-static struct wlr_texture *compose(struct wlr_texture *game, struct wlr_buffer **composed) {
+static struct wlr_texture *compose(struct wlr_texture *game, int game_width, struct wlr_buffer **composed) {
     if (!overlay_visible()) return game;
     *composed = acquire(&canvas_chain, canvas_width, canvas_height);
     if (!*composed) return game;
@@ -679,7 +682,7 @@ static struct wlr_texture *compose(struct wlr_texture *game, struct wlr_buffer *
     struct wlr_box canvas = {0, 0, canvas_width, canvas_height}, box = overlay_box();
     struct wlr_texture *interface = wlr_surface_get_texture(overlay->surface);
     const pixman_region32_t *blur = overlay_blur();
-    draw_scene(pass, canvas, canvas, game, blur ? NULL : interface, WLR_SCALE_FILTER_BILINEAR);
+    draw_scene(pass, canvas, canvas, game, game_width, blur ? NULL : interface, WLR_SCALE_FILTER_BILINEAR);
     wlr_render_pass_submit(pass);
     if (!blur) return wlr_texture_from_buffer(renderer, *composed);
     struct wlr_buffer *held[2 * BLUR_LEVELS] = {0};
@@ -743,18 +746,18 @@ static void blit(struct wlr_gles2_texture_attribs attributes, GLint filter, int 
     glBindTexture(attributes.target, 0);
 }
 
-static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct wlr_texture *game) {
+static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct wlr_texture *game, int game_width) {
     struct wlr_output *output = active->output;
     if (!wlr_output_configure_primary_swapchain(output, state, &output->swapchain)) return 0;
     struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain), *composed = NULL;
     if (!buffer) return 0;
-    struct wlr_texture *texture = compose(game, &composed);
+    struct wlr_texture *texture = compose(game, game_width, &composed);
     if (!texture) {
         wlr_buffer_unlock(buffer);
         return 0;
     }
     GLuint framebuffer = wlr_gles2_renderer_get_buffer_fbo(renderer, buffer);
-    struct wlr_box picture = composed ? box : place(box, texture->width, texture->height);
+    struct wlr_box picture = composed ? box : place(box, game_width, texture->height);
     GLfloat left = 2.0f * picture.x / output->width - 1, right = 2.0f * (picture.x + picture.width) / output->width - 1;
     GLfloat top = 2.0f * picture.y / output->height - 1, bottom = 2.0f * (picture.y + picture.height) / output->height - 1;
     const GLfloat corners[] = {left, top, right, top, left, bottom, right, bottom};
@@ -878,7 +881,7 @@ static int pass_size(enum scale_type type, float scale, int source, int viewport
 
 static struct wlr_texture *retro_picture(struct wlr_texture *game, struct wlr_buffer **held) {
     static const GLfloat corners[] = {-1, -1, 1, -1, -1, 1, 1, 1};
-    struct wlr_box screen = area(), picture = place(screen, game->width, game->height);
+    struct wlr_box screen = area(), picture = place(screen, shown->display_width, game->height);
     struct wlr_gles2_texture_attribs attributes = current_attributes(game);
     if (!retro_passes) load_retro();
     glDisable(GL_BLEND);
@@ -931,12 +934,13 @@ static void paint(struct wlr_output_state *state) {
     struct wlr_texture *interface = overlay_visible() ? wlr_surface_get_texture(overlay->surface) : NULL;
     struct wlr_buffer *held = NULL;
     if (retro && surface) game = retro_picture(surface, &held);
-    enum filter filter = game && !interface ? choose_filter(place(box, game->width, game->height), game->width, game->height)
+    int width = held ? (int)game->width : shown ? shown->display_width : 0;
+    enum filter filter = game && !interface ? choose_filter(place(box, width, game->height), game->width, game->height)
                                             : choose_filter(box, canvas_width, canvas_height);
-    if (!((filter == PIXEL || overlay_blur()) && (game || interface) && draw_pixel(state, box, game))) {
+    if (!((filter == PIXEL || overlay_blur()) && (game || interface) && draw_pixel(state, box, game, width))) {
         enum wlr_scale_filter_mode mode = filter == NEAREST ? WLR_SCALE_FILTER_NEAREST : WLR_SCALE_FILTER_BILINEAR;
         struct wlr_render_pass *pass = wlr_output_begin_render_pass(output, state, NULL);
-        draw_scene(pass, (struct wlr_box){0, 0, output->width, output->height}, box, game, interface, mode);
+        draw_scene(pass, (struct wlr_box){0, 0, output->width, output->height}, box, game, width, interface, mode);
         wlr_render_pass_submit(pass);
     }
     if (!held) return;
@@ -1079,6 +1083,24 @@ static void copy_game_frame(struct wlr_ext_image_capture_source_v1 *source, stru
 
 static const struct wlr_ext_image_capture_source_v1_interface game_source = {.schedule_frame = schedule_game_frame, .copy_frame = copy_game_frame};
 
+static int display_width(struct window *window) {
+    const char *platform = strchr(window->app_id, '/');
+    char path[PATH_MAX], *line = NULL, *field;
+    size_t size = 0;
+    float logged;
+    if (!platform) return window->source.width;
+    snprintf(path, sizeof path, LOG_DIR "/%.*s-%s.log", (int)(platform - window->app_id), window->app_id, platform + 1);
+    FILE *log = fopen(path, "r");
+    if (log && !fseek(log, window->log_read, SEEK_SET)) {
+        while (getline(&line, &size, log) > 0)
+            if ((field = strstr(line, ASPECT_FIELD)) && sscanf(field, ASPECT_FIELD "%f", &logged) == 1) window->aspect = logged;
+        window->log_read = ftell(log);
+    }
+    free(line);
+    if (log) fclose(log);
+    return window->aspect > 0 ? (int)lroundf(window->source.height * window->aspect) : (int)window->source.width;
+}
+
 static void on_window_commit(struct wl_listener *listener, void *data) {
     (void)data;
     struct window *window = wl_container_of(listener, window, commit);
@@ -1087,6 +1109,7 @@ static void on_window_commit(struct wl_listener *listener, void *data) {
     if (surface->buffer && ((uint32_t)surface->buffer->base.width != window->source.width || (uint32_t)surface->buffer->base.height != window->source.height)) {
         window->source.width = surface->buffer->base.width;
         window->source.height = surface->buffer->base.height;
+        window->display_width = display_width(window);
         wl_signal_emit_mutable(&window->source.events.constraints_update, NULL);
         write_state();
     }
