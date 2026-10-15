@@ -570,7 +570,7 @@ static int overlay_visible(void) { return overlay && overlay->surface->mapped; }
 
 static int scan_out(struct wlr_output_state *state) {
     struct wlr_surface *surface = shown ? shown->toplevel->base->surface : NULL;
-    if (!surface || !surface->buffer || overlay_visible() || retro_shown()) return 0;
+    if (!surface || !surface->buffer || overlay_visible() || retro_shown() || !wlr_output_is_direct_scanout_allowed(active->output)) return 0;
     struct wlr_buffer *buffer = &surface->buffer->base;
     struct wlr_box picture = place(area(), shown->display_width, buffer->height);
     if (picture.width != buffer->width || picture.height != buffer->height) return 0;
