@@ -29,6 +29,7 @@ SECOND_DISPLAY_HEIGHT=1080
 FAKEPAD_IMAGE=anyconsole-fakepad
 FAKEPAD_NAME="PS4 Controller"
 FAKEPAD_CROSS=2
+FAKEPAD_L1=5
 FAKEPAD_R1=6
 PLAYSTATION_FACES='{"confirm": "cross", "back": "circle", "x": "square", "y": "triangle"}'
 KEYBOARD_FACES='{"confirm": "Enter", "back": "Esc", "x": "Space", "y": "Tab"}'
@@ -921,6 +922,10 @@ test_skins() {
   expect '.views[-1].tabs == ["I/O", "System"] and .views[-1].tab == 1 and .rows[.selected].action == "display-mode" and .hints == {"back": "Close"}'
   log ok "R1 turns the guide to its System tab"
   snapshot guide-switch-playstation
+  fakepad usb press $FAKEPAD_L1
+  fakepad usb release $FAKEPAD_L1
+  expect '.views[-1].tab == 0 and .rows[.selected].action == "volume"'
+  log ok "L1 turns the guide back to its I/O tab"
   fakepad usb press
   fakepad usb release
   expect '.guide | not'
@@ -994,6 +999,14 @@ test_nes() {
   tap guide
   expect ".guide and .screen == \"guide\" and ($(status_of alter-ego/nes paused)) and .audio.output != \"\""
   snapshot guide
+  expect '.views[-1].tabs == ["Game", "I/O", "System"] and .views[-1].tab == 0'
+  for tab in 1 2; do tap rightshoulder; expect ".views[-1].tab == $tab"; done
+  tap rightshoulder
+  for tab in 1 0; do tap leftshoulder; expect ".views[-1].tab == $tab"; done
+  tap leftshoulder
+  tap rightshoulder
+  expect '.views[-1].tab == 1'
+  log ok "R1 and L1 turn the guide's tabs one at a time and stop at the ends"
   choose Dashboard
   expect '.dashboard and (.guide | not) and .screen == "home"'
 
