@@ -1,6 +1,16 @@
 #!/bin/sh
 set -eu
-jq -nrR --argjson game "$GAME_CONFIG" '
-  [inputs | capture("^(?<key>[^ ]+) = \"(?<value>.*)\"$")] | from_entries + ($game.options // {})
-  | to_entries[] | "\(.key) = \"\(.value)\""' /retroarch/core.opt > /tmp/core.opt
-exec /retroarch/retroarch --verbose --config /retroarch/retroarch.cfg --libretro /retroarch/core.so "$@"
+merge() {
+  extra=$1
+  shift
+  jq -nrR --argjson extra "$extra" '
+    [inputs | capture("^(?<key>[^ ]+) = \"(?<value>.*)\"$")] | from_entries + $extra
+    | to_entries[] | "\(.key) = \"\(.value)\""' "$@"
+}
+merge "$(printf '%s' "$GAME_CONFIG" | jq -c '.options // {}')" /retroarch/core.opt > /tmp/core.opt
+config=/retroarch/retroarch.cfg
+if [ "$PICTURE" = retro ]; then
+  merge '{}' /retroarch/retroarch.cfg /retroarch/retro.cfg > /tmp/retroarch.cfg
+  config=/tmp/retroarch.cfg
+fi
+exec /retroarch/retroarch --verbose --config "$config" --libretro /retroarch/core.so "$@"

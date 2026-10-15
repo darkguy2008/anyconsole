@@ -95,7 +95,7 @@ function listOf(node, plane) {
 
 function page(name) {
   const view = current.views[current.views.length - 1];
-  const list = name in pageDirections && view && screen && listOf(screen, view.plane);
+  const list = name in pageDirections && view && !view.tabs && screen && listOf(screen, view.plane);
   const target = list ? native.page(list.handle, view.selected, pageDirections[name]) : -1;
   if (target < 0) return false;
   native.select(target);

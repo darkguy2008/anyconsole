@@ -8,6 +8,9 @@ RECIPES=app/recipes
 BUILT=build/out/rel/$ENGINES_MODULE
 PUBLISHED=$RELEASES_DIR/$ENGINES_MODULE
 LIST=contracts/$(engine_contract .)
+RETROARCH_REPO=https://github.com/libretro/RetroArch
+RETROARCH_WAYLAND_FIX=a0e2372730
+HTTP_NOT_FOUND=404
 
 platforms() { docker build -q --call targets,format=json $RECIPES | jq -r '.targets[] | select(.description) | .name'; }
 
@@ -21,6 +24,19 @@ export_engine() {
   mv "$index.partial" "$index"
 }
 
+retroarch_arg() { printf '%s' "$1" | jq -r --arg name "$2" '.args[] | select(.name == $name) | .value'; }
+
+warn_retroarch_pin() {
+  outline=$(docker build -q --call outline,format=json --target retroarch $RECIPES)
+  stable=$(retroarch_arg "$outline" RETROARCH)
+  pinned_build=$(retroarch_arg "$outline" RETROARCH_BUILD)
+  tags=$(git ls-remote --tags --refs $RETROARCH_REPO 'v*')
+  latest=$(printf '%s\n' "$tags" | sed 's|^.*refs/tags/v||' | sort -V | tail -n 1)
+  [ "$latest" = "$stable" ] || echo "RetroArch $latest is out: if it has $RETROARCH_WAYLAND_FIX, pin it as RETROARCH_BUILD and its ADD --checksum in $RECIPES/Dockerfile instead of $pinned_build" >&2
+  status=$(curl -sI --retry 3 -o /dev/null -w '%{http_code}' "$pinned_build")
+  [ "$status" != $HTTP_NOT_FOUND ] || echo "the pinned RetroArch build $pinned_build is gone: pin a newer nightly as RETROARCH_BUILD and its ADD --checksum in $RECIPES/Dockerfile" >&2
+}
+
 fetch_blobs() { echo "$1 lacks a blob its engine lists name" >&2; return 1; }
 
 prune() {
@@ -30,6 +46,7 @@ prune() {
 }
 
 build() {
+  warn_retroarch_pin
   rm -rf "$BUILT/index.json" "$BUILT/contracts"
   mkdir -p "$BUILT/$LIST"
   for platform in $(platforms); do export_engine "$platform"; done

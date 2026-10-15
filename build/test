@@ -119,8 +119,17 @@ device_id() {
 device_mode() { echo "($(device_named "$1") | .mode)"; }
 players() { echo "[.session.players[].profile]"; }
 key() { send "EV_KEY $1 1" "EV_KEY $1 0"; }
+turn_tab() {
+  while current=$(state); echo "$current" | jq -e "([.rows[].label] | index(\"$1\")) == null and .views[-1].tabs != null and .views[-1].tab $2" >/dev/null; do
+    tab=$(echo "$current" | jq .views[-1].tab)
+    tap "$3"
+    wait_for $STEP_SECONDS holds ".views[-1].tab != $tab"
+  done
+}
 highlight() {
-  wait_for $STEP_SECONDS holds "[.rows[].label] | index(\"$1\") != null"
+  wait_for $STEP_SECONDS holds "([.rows[].label] | index(\"$1\") != null) or .views[-1].tabs != null"
+  turn_tab "$1" "> 0" leftshoulder
+  turn_tab "$1" "< (.views[-1].tabs | length) - 1" rightshoulder
   while current=$(state); [ "$(echo "$current" | jq -r '.rows[.selected].label')" != "$1" ]; do
     target=$(echo "$current" | jq "[.rows[].label] | index(\"$1\")")
     selected=$(echo "$current" | jq .selected)
@@ -404,6 +413,31 @@ install_and_play() {
   ensure_installed "$1" "$2"
   choose "$2"
   play_game "$1"
+}
+
+kiosk_log_lacks() { guest "! grep '$1' $LOG_DIR/kiosk.log" || { log FAIL "$2" >&2; exit 1; }; }
+
+retroarch_size() { guest "grep -o 'Set video size to: [0-9a-z]*' $(game_log "$1") | tail -1 | cut -d' ' -f5"; }
+retroarch_windowed() { [ "$(retroarch_size "$1")" != fullscreen ]; }
+
+retro_picture() {
+  tap guide
+  highlight "Display Mode"
+  adjust_to "Display Mode" Retro
+  expect '.settings.picture == "retro"'
+  log ok "the guide's Game tab turns Display Mode to Retro"
+  tap guide
+  wait_for $STEP_SECONDS retroarch_windowed "$1"
+  size=$(retroarch_size "$1")
+  expect ".display.frame == \"$size\""
+  log ok "RetroArch leaves fullscreen while playing and hands the compositor only the game picture"
+  snapshot "${1%/*}-retro"
+  expect ".display.frame == \"$size\""
+  kiosk_log_lacks '^compositor: shader:' "the compositor could not build the Retro shader"
+  log ok "the compositor draws $1 through CRT Geom"
+  api POST settings "picture original" >/dev/null
+  expect '.settings.picture == "original" and .display.frame == .display.canvas'
+  log ok "Original turns RetroArch back to fullscreen while playing"
 }
 
 close_game() {
@@ -693,7 +727,7 @@ second_player_joins_and_leaves() {
   log ok "Player 2 got the second virtual pad"
   [ -z "${2:-}" ] || { wait_for $STEP_SECONDS "$2"; log ok "$2"; }
   PAD=2 tap guide
-  expect ".guide and .session.focus == $second and .rows[-1].label == \"Log out\""
+  expect ".guide and .session.focus == $second and .views[-1].tabs == [\"Game\", \"I/O\", \"System\"]"
   PAD=2 choose "Log out"
   expect "$(players) == [1] and (.guide | not) and ($(status_of "$1" running))"
   wait_for $STEP_SECONDS guest "[ ! -e $PAD_NODES/event1 ]"
@@ -819,10 +853,15 @@ test_symlinks() {
 }
 
 test_display() {
-  guest "! grep -q '^xkbcommon: ERROR' $LOG_DIR/kiosk.log" || { log FAIL "the compositor could not load its keyboard layout" >&2; exit 1; }
+  kiosk_log_lacks '^xkbcommon: ERROR' "the compositor could not load its keyboard layout"
   log ok "the compositor loads its keyboard layout"
   change_resolution_in_settings
   stage_display_mode_until_saved
+  expect_reply $STEP_SECONDS 200 '.ok and .state.screen == "settings"' --arg action picture --arg step 1
+  expect '.settings.picture == "retro"'
+  expect_reply $STEP_SECONDS 200 .ok --arg action picture --arg step 1
+  expect '.settings.picture == "original"'
+  log ok "Settings switches Display Mode through the API"
 }
 
 probe_skin() { guest "mkdir -p $USER_SKINS_DIR/probe && echo \"$1\" > $USER_SKINS_DIR/probe/skin.js"; }
@@ -875,7 +914,8 @@ test_skins() {
   fakepad usb release
   fakepad usb press $FAKEPAD_R1
   fakepad usb release $FAKEPAD_R1
-  expect '.selected > 0 and .hints == {"confirm": "OK", "back": "Close"}'
+  expect '.views[-1].tabs == ["I/O", "System"] and .views[-1].tab == 1 and .rows[.selected].action == "display-mode" and .hints == {"back": "Close"}'
+  log ok "R1 turns the guide to its System tab"
   snapshot guide-switch-playstation
   fakepad usb press
   fakepad usb release
@@ -945,6 +985,7 @@ test_nes() {
   change_emulation
   second_player_joins_and_leaves alter-ego/nes
   save_states alter-ego/nes retroarch_loaded_saved_state
+  retro_picture alter-ego/nes
 
   tap guide
   expect ".guide and .screen == \"guide\" and ($(status_of alter-ego/nes paused)) and .audio.output != \"\""

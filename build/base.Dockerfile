@@ -2,7 +2,7 @@ FROM fedora:44
 ARG DOCKER_REPO=https://download.docker.com/linux/fedora
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked \
     curl -fsSL -o /etc/yum.repos.d/docker-ce.repo "$DOCKER_REPO/docker-ce.repo" \
- && dnf install -y --setopt=keepcache=True --setopt=install_weak_deps=False busybox gcc sdl2-compat-devel 'pkgconfig(libevdev)' 'pkgconfig(libdrm)' 'pkgconfig(libpng)' 'pkgconfig(pixman-1)' 'pkgconfig(cairo)' 'pkgconfig(libturbojpeg)' 'pkgconfig(json-c)' 'pkgconfig(wayland-client)' 'pkgconfig(wayland-server)' 'pkgconfig(wayland-protocols)' librsvg2-tools rsms-inter-fonts fontconfig btop ncurses-base rsync grub2-tools-minimal util-linux e2fsprogs dosfstools python3-pyelftools python-unversioned-command dropbear dhcpcd 'pkgconfig(wlroots-0.19)' 'pkgconfig(gbm)' 'pkgconfig(xkbcommon)' 'pkgconfig(egl)' 'pkgconfig(glesv2)' 'pkgconfig(wayland-egl)' 'pkgconfig(freetype2)' 'pkgconfig(harfbuzz)' 'pkgconfig(opusfile)' 'pkgconfig(libpipewire-0.3)' cmake gcc-c++ 'pkgconfig(vulkan)' mesa-vulkan-drivers mesa-dri-drivers mesa-libEGL wayland-utils grim socat systemd-udev kmod pipewire pipewire-utils pipewire-pulseaudio wireplumber cifs-utils jq docker-ce docker-ce-cli containerd.io dbus-daemon seatd libxml2 glibc-gconv-extra 'pkgconfig(libsystemd)' 'pkgconfig(libudev)' 'pkgconfig(opus)' 'pkgconfig(zlib)' 'pkgconfig(glib-2.0)' 'pkgconfig(dbus-1)' make patch xz \
+ && dnf install -y --setopt=keepcache=True --setopt=install_weak_deps=False busybox gcc sdl2-compat-devel 'pkgconfig(libevdev)' 'pkgconfig(libdrm)' 'pkgconfig(libpng)' 'pkgconfig(pixman-1)' 'pkgconfig(cairo)' 'pkgconfig(libturbojpeg)' 'pkgconfig(json-c)' 'pkgconfig(wayland-client)' 'pkgconfig(wayland-server)' 'pkgconfig(wayland-protocols)' librsvg2-tools rsms-inter-fonts fontconfig btop ncurses-base rsync grub2-tools-minimal util-linux e2fsprogs dosfstools python3-pyelftools python-unversioned-command dropbear dhcpcd 'pkgconfig(wlroots-0.19)' 'pkgconfig(gbm)' 'pkgconfig(xkbcommon)' 'pkgconfig(egl)' 'pkgconfig(glesv2)' 'pkgconfig(wayland-egl)' 'pkgconfig(freetype2)' 'pkgconfig(harfbuzz)' 'pkgconfig(opusfile)' 'pkgconfig(libpipewire-0.3)' cmake gcc-c++ 'pkgconfig(vulkan)' mesa-vulkan-drivers mesa-dri-drivers mesa-libEGL wayland-utils grim socat systemd-udev kmod pipewire pipewire-utils pipewire-pulseaudio wireplumber cifs-utils jq docker-ce docker-ce-cli containerd.io dbus-daemon seatd libxml2 glibc-gconv-extra 'pkgconfig(libsystemd)' 'pkgconfig(libudev)' 'pkgconfig(opus)' 'pkgconfig(zlib)' 'pkgconfig(glib-2.0)' 'pkgconfig(dbus-1)' make patch xz glslang \
  && systemd-hwdb update --usr \
  && ld.so --list-diagnostics | sed -n 's/^path\.system_dirs\[0x[0-9a-f]*\]="\(.*\)"$/\1/p' > /etc/ld.so.conf.d/system-dirs.conf
 ARG PAX_UTILS_VERSION=1.3.10
@@ -33,3 +33,10 @@ RUN tar xJf /quickjs.tar.xz \
  && install -D -m 644 -t /usr/local/lib /quickjs-$QUICKJS_VERSION/libquickjs.a \
  && install -D -m 644 -t /usr/local/include/quickjs /quickjs-$QUICKJS_VERSION/quickjs.h /quickjs-$QUICKJS_VERSION/quickjs-libc.h \
  && rm -rf /quickjs.tar.xz /quickjs-$QUICKJS_VERSION
+ARG SPIRV_CROSS_VERSION=vulkan-sdk-1.4.363.0
+ADD --checksum=sha256:f708982e88b763ef5b0394ed468fc2c3628f68cdab89f2e7a946cd628c04e721 https://github.com/KhronosGroup/SPIRV-Cross/archive/refs/tags/$SPIRV_CROSS_VERSION.tar.gz /spirv-cross.tar.gz
+RUN tar xzf /spirv-cross.tar.gz \
+ && cmake -S /SPIRV-Cross-$SPIRV_CROSS_VERSION -B /spirv-cross-build -DCMAKE_BUILD_TYPE=Release -DSPIRV_CROSS_ENABLE_TESTS=OFF \
+ && cmake --build /spirv-cross-build -j"$(nproc)" --target spirv-cross \
+ && install -D -t /usr/local/bin /spirv-cross-build/spirv-cross \
+ && rm -rf /spirv-cross.tar.gz /SPIRV-Cross-$SPIRV_CROSS_VERSION /spirv-cross-build

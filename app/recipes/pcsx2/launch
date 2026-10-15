@@ -8,6 +8,8 @@ VULKAN_RENDERER=14
 OSD_MESSAGES_NONE=0
 SAVE_SLOT=01
 LOAD_SLOT=02
+PICTURE_WIDTH=4
+PICTURE_HEIGHT=3
 
 pad() {
   printf '[Pad%s]\nType = DualShock2\n' "$1"
@@ -35,6 +37,7 @@ Slot2_Enable = false
 [EmuCore/GS]
 Renderer = $renderer
 VsyncEnable = true
+AspectRatio = $PICTURE_WIDTH:$PICTURE_HEIGHT
 OsdMessagesPos = $OSD_MESSAGES_NONE
 [EmuCore/Speedhacks]
 vuThread = true
@@ -56,4 +59,6 @@ ln -sf /bios/* "$PCSX2/bios/"
 settings > "$PCSX2/inis/PCSX2.ini"
 exec 3<&0
 rewind /opt/pcsx2/pine $SAVE_SLOT $LOAD_SLOT .p2s <&3 &
-exec xwayland-run -fullscreen -geometry "$CANVAS" -- sh -c 'matchbox-window-manager -use_titlebar no -use_cursor no & exec "$@"' sh /opt/pcsx2/AppRun -nogui -fullscreen -- "$1"
+height=${CANVAS#*x}
+width=$((height * PICTURE_WIDTH / PICTURE_HEIGHT))
+exec xwayland-run -geometry "${width}x$height" -- sh -c 'matchbox-window-manager -use_titlebar no -use_cursor no & exec "$@"' sh /opt/pcsx2/AppRun -nogui -fullscreen -- "$1"

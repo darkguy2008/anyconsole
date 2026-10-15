@@ -9,11 +9,12 @@ const fade = { opacity: 200 };
 const guideWidth = 640;
 const barHeight = 72;
 const carouselHeight = 226;
+const pill = { borderRadius: 18, borderWidth: 2, borderColor: white, paddingVertical: 4 };
 const faceGlyphs = { cross: '\u00d7', circle: '\u25cb', square: '\u25a1', triangle: '\u25b3' };
 
 function Players({ players }) {
   return players.map(player => html`
-    <view key=${player.profile} style=${{ borderRadius: 18, borderWidth: 2, borderColor: white, paddingHorizontal: 14, paddingVertical: 4 }}>
+    <view key=${player.profile} style=${{ ...pill, paddingHorizontal: 14 }}>
       <text style=${{ fontSize: 24, fontWeight: 600 }}>${`P${player.pad}`}</text>
     </view>`);
 }
@@ -46,6 +47,16 @@ function List({ view }) {
     </view>`;
 }
 
+function Tabs({ view }) {
+  return html`
+    <view style=${{ flexDirection: 'row', gap: 12, paddingHorizontal: margin, paddingBottom: 24 }}>
+      ${view.tabs.map((tab, index) => html`
+        <view key=${tab} style=${{ ...pill, paddingHorizontal: 18, backgroundColor: index === view.tab ? white : black, color: index === view.tab ? black : white }} transition=${{ backgroundColor: 150, color: 150 }}>
+          <text style=${{ fontSize: 28 }}>${tab}</text>
+        </view>`)}
+    </view>`;
+}
+
 function Panel({ view, players, width, shown, side }) {
   const kept = useLatest(view);
   if (!kept) return null;
@@ -53,6 +64,7 @@ function Panel({ view, players, width, shown, side }) {
     <view style=${{ position: 'absolute', left: 0, top: 0, bottom: barHeight, width, backgroundColor: black, opacity: shown ? 1 : 0, translateX: shown ? 0 : side }}
       from=${{ opacity: 0, translateX: side }} transition=${{ opacity: 200, translateX: { duration: 260, easing: 'out' } }}>
       <${TitleBar} title=${kept.title} players=${players} />
+      ${kept.tabs && html`<${Tabs} view=${kept} />`}
       <${List} view=${kept} />
     </view>`;
 }

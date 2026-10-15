@@ -1,4 +1,5 @@
 ARG LIBRETRO=https://buildbot.libretro.com
+ARG RETROARCH=1.22.2 RETROARCH_BUILD=$LIBRETRO/nightly/linux/x86_64/2026-10-14_RetroArch.7z
 # Windows 98 disk controller, picked with --build-arg WIN98_SCSI=<value>:
 #   lsi        -device lsi (53C895A) with LSI's sym_hi driver, fetched from archive.org
 #   lsi53c810  -device lsi53c810 with Windows 98's in-box SYMC8XX driver; builds SeaBIOS and QEMU
@@ -9,13 +10,14 @@ FROM registry.fedoraproject.org/fedora-minimal:44@sha256:f362951032563f154aa9765
 RUN echo install_weak_deps=False >> /etc/dnf/dnf.conf
 
 FROM fedora AS unzip
-ARG LIBRETRO
+ARG LIBRETRO RETROARCH
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y 7zip
-ENV SYSTEM=$LIBRETRO/assets/system STABLE=$LIBRETRO/stable/1.22.2/linux/x86_64
+ENV SYSTEM=$LIBRETRO/assets/system STABLE=$LIBRETRO/stable/$RETROARCH/linux/x86_64
 WORKDIR /cores
 
 FROM unzip AS retroarch-download
-ADD --checksum=sha256:7d62da9a21397d6e1b9490785cedbeafd262781b50115076736fbe8a77ef30e9 $STABLE/RetroArch.7z .
+ARG RETROARCH_BUILD
+ADD --checksum=sha256:9322a725a4e182c4fae32249051aec0df918abec4315f017369bea952e022a61 $RETROARCH_BUILD RetroArch.7z
 ADD --checksum=sha256:e1013acb1e92a9f63fdb368e0d326a269b0ca4eb22b7e0e8263cbb4eae21f655 "https://raw.githubusercontent.com/libretro/retroarch-joypad-autoconfig/f3b62b847ed21939b668b897b18bbc1defbaae05/sdl2/PS5%20Controller.cfg" /retroarch/autoconfig/sdl2/ps5.cfg
 RUN 7z e RetroArch.7z RetroArch-Linux-x86_64/RetroArch-Linux-x86_64.AppImage >/dev/null \
  && chmod +x RetroArch-Linux-x86_64.AppImage \
@@ -50,10 +52,10 @@ FROM gpu AS retroarch
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y alsa-lib pipewire-jack-audio-connection-kit-libs fontconfig dbus-libs libXi libXrandr libXinerama libXxf86vm libXScrnSaver libXext libXrender libXcursor libXfixes libv4l systemd-libs libxkbcommon libwayland-egl libwayland-cursor sdl2-compat libusb1 jq
 COPY --from=retroarch-download /retroarch /retroarch
 RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib64/${bundled##*/}" ] || rm "$bundled"; done
-COPY retroarch.cfg vulkan.cfg /retroarch/
+COPY retroarch.cfg vulkan.cfg retro.cfg /retroarch/
 COPY retroarch-launch /retroarch/launch
 RUN touch /retroarch/core.opt
-LABEL anyconsole.vulkan="--appendconfig=/retroarch/vulkan.cfg" anyconsole.rewind="true"
+LABEL anyconsole.vulkan="--appendconfig=/retroarch/vulkan.cfg" anyconsole.rewind="true" anyconsole.picture="FULLSCREEN_TOGGLE"
 ENV LD_LIBRARY_PATH=/retroarch/lib
 ENTRYPOINT ["/retroarch/launch"]
 
