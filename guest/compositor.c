@@ -81,6 +81,7 @@
 #define RETRO_COORDINATE 1
 #define RETRO_BLOCKS 2
 #define RETRO_ORIGINAL_UNIT 1
+#define TV_LINES 720
 
 enum filter { NEAREST, LINEAR, PIXEL };
 static const char *filters[] = {[NEAREST] = "nearest", [LINEAR] = "linear", [PIXEL] = "pixel"};
@@ -319,6 +320,10 @@ static int start_gpus(void) {
 
 static void name_mode(struct wlr_output_mode *mode, char name[TEXT_MAX]) { snprintf(name, TEXT_MAX, "%dx%d@%d", mode->width, mode->height, mode->refresh); }
 
+static void name_size(int width, int height, char name[TEXT_MAX]) { snprintf(name, TEXT_MAX, "%dx%d", width, height); }
+
+static int widescreen_width(int height) { return height * ASPECT_WIDTH / ASPECT_HEIGHT; }
+
 static const char *label(struct wlr_output *output) { return output->description ? output->description : output->name; }
 
 static int is_pinned(struct display *entry) { return *pinned && !strcmp(label(entry->output), pinned); }
@@ -388,6 +393,13 @@ static void redraw(void) {
     if (active) wlr_output_schedule_frame(active->output);
 }
 
+static int retro_shown(void) { return retro && shown && shown->sandboxed; }
+
+static struct wlr_box tv_signal(int width, int height) {
+    struct wlr_box tv = {0, 0, widescreen_width(TV_LINES), TV_LINES};
+    return width > tv.width || height > tv.height ? fit(tv, width, height) : (struct wlr_box){0, 0, width, height};
+}
+
 static json_object *box_json(struct wlr_box box) {
     json_object *placement = json_object_new_object();
     json_object_object_add(placement, "x", json_object_new_int(box.x));
@@ -399,7 +411,7 @@ static json_object *box_json(struct wlr_box box) {
 
 static void write_state(void) {
     json_object *state = json_object_new_object(), *list = json_object_new_array();
-    char canvas[TEXT_MAX] = "", frame[TEXT_MAX] = "";
+    char canvas[TEXT_MAX] = "", frame[TEXT_MAX] = "", tv_size[TEXT_MAX] = "";
     struct display *entry;
     wl_list_for_each(entry, &displays, link) {
         json_object *item = json_object_new_object();
@@ -407,10 +419,14 @@ static void write_state(void) {
         json_object_object_add(item, "gpu", json_object_new_string(entry->gpu->name));
         json_object_array_add(list, item);
     }
-    if (shown) snprintf(frame, sizeof frame, "%ux%u", shown->source.width, shown->source.height);
+    if (shown) name_size(shown->source.width, shown->source.height, frame);
+    if (retro_shown()) {
+        struct wlr_box tv = tv_signal(shown->source.width, shown->source.height);
+        name_size(tv.width, tv.height, tv_size);
+    }
     if (active) {
         struct wlr_box box = area();
-        snprintf(canvas, sizeof canvas, "%dx%d", canvas_width, canvas_height);
+        name_size(canvas_width, canvas_height, canvas);
         json_object_object_add(state, "filter", json_object_new_string(filters[choose_filter(box, canvas_width, canvas_height)]));
         json_object_object_add(state, "area_box", box_json(box));
         if (shown && shown->source.width && shown->source.height)
@@ -437,6 +453,7 @@ static void write_state(void) {
     json_object_object_add(state, "pending", pending ? json_object_new_string(label(pending->output)) : NULL);
     json_object_object_add(state, "shown", shown ? json_object_new_string(shown->app_id) : NULL);
     json_object_object_add(state, "frame", json_object_new_string(frame));
+    json_object_object_add(state, "retro", *tv_size ? json_object_new_string(tv_size) : NULL);
     char *serialized = strdup(json_object_to_json_string_ext(state, JSON_C_TO_STRING_PLAIN));
     json_object_put(state);
     if (written_state && !strcmp(serialized, written_state)) { free(serialized); return; }
@@ -450,7 +467,7 @@ static void update_canvas(void) {
     int width = canvas_width, height = canvas_height;
     struct window *window;
     if (resolution > 0) {
-        width = resolution * ASPECT_WIDTH / ASPECT_HEIGHT;
+        width = widescreen_width(resolution);
         height = resolution;
     } else if (active) {
         struct wlr_box box = area();
@@ -532,7 +549,7 @@ static int overlay_visible(void) { return overlay && overlay->surface->mapped; }
 
 static int scan_out(struct wlr_output_state *state) {
     struct wlr_surface *surface = shown ? shown->toplevel->base->surface : NULL;
-    if (!surface || !surface->buffer || overlay_visible() || retro) return 0;
+    if (!surface || !surface->buffer || overlay_visible() || retro_shown()) return 0;
     struct wlr_buffer *buffer = &surface->buffer->base;
     struct wlr_box picture = place(area(), shown->display_width, buffer->height);
     if (picture.width != buffer->width || picture.height != buffer->height) return 0;
@@ -883,11 +900,12 @@ static struct wlr_texture *retro_picture(struct wlr_texture *game, struct wlr_bu
     static const GLfloat corners[] = {-1, -1, 1, -1, -1, 1, 1, 1};
     struct wlr_box screen = area(), picture = place(screen, shown->display_width, game->height);
     struct wlr_gles2_texture_attribs attributes = current_attributes(game);
+    struct wlr_box tv = tv_signal(game->width, game->height);
     if (!retro_passes) load_retro();
     glDisable(GL_BLEND);
-    bind_target(&retro_original, game->width, game->height, 0);
-    glViewport(0, 0, game->width, game->height);
-    blit(attributes, GL_NEAREST, game->width, game->height, 1, 1, corners);
+    bind_target(&retro_original, tv.width, tv.height, 0);
+    glViewport(0, 0, tv.width, tv.height);
+    blit(attributes, GL_LINEAR, game->width, game->height, (GLfloat)game->width / tv.width, (GLfloat)game->height / tv.height, corners);
     glActiveTexture(GL_TEXTURE0 + RETRO_ORIGINAL_UNIT);
     glBindTexture(GL_TEXTURE_2D, retro_original.texture);
     glActiveTexture(GL_TEXTURE0);
@@ -913,7 +931,7 @@ static struct wlr_texture *retro_picture(struct wlr_texture *game, struct wlr_bu
         for (int block = 0; block < RETRO_BLOCKS; block++) glUniform1ui(pass->frame_count[block], frame);
         retro_size(pass->output_size, width, height);
         retro_size(pass->source_size, source->width, source->height);
-        retro_size(pass->original_size, game->width, game->height);
+        retro_size(pass->original_size, tv.width, tv.height);
         draw_quad(RETRO_POSITION, RETRO_COORDINATE, corners);
         source = &pass->target;
     }
@@ -933,7 +951,7 @@ static void paint(struct wlr_output_state *state) {
     struct wlr_texture *surface = shown ? wlr_surface_get_texture(shown->toplevel->base->surface) : NULL, *game = surface;
     struct wlr_texture *interface = overlay_visible() ? wlr_surface_get_texture(overlay->surface) : NULL;
     struct wlr_buffer *held = NULL;
-    if (retro && surface) game = retro_picture(surface, &held);
+    if (retro_shown() && surface) game = retro_picture(surface, &held);
     int width = held ? (int)game->width : shown ? shown->display_width : 0;
     enum filter filter = game && !interface ? choose_filter(place(box, width, game->height), game->width, game->height)
                                             : choose_filter(box, canvas_width, canvas_height);

@@ -46,6 +46,8 @@ REAL_GAMES=/tmp/real-games
 PACED_GAMES=/tmp/paced-games
 INSTALL_STEPS=/tmp/install-steps
 HALFWAY_PERCENT=50
+TV_LINES=$(sed -n 's/^#define TV_LINES //p' guest/compositor.c)
+SIZE_NUMBERS='split("x") | map(tonumber)'
 AREA_SIZE='(.display.area_box | "\(.width)x\(.height)")'
 KEEN_ART='(.games[] | select(.key == "commander-keen/msdos"))'
 STALE_ART=stale
@@ -422,12 +424,14 @@ core_geometry() { guest "grep -o 'Geometry: [0-9]*x[0-9]*' $(game_log "$1") | ta
 core_aspect() { guest "grep -o ', Aspect: [0-9.]*' $(game_log "$1") | tail -1 | cut -d' ' -f3"; }
 
 integer_picture() {
-  echo "(.display.frame | split(\"x\") | map(tonumber)) as [\$width, \$height] | (\$height * $1 | round) as \$shown
+  echo "(.display.frame | $SIZE_NUMBERS) as [\$width, \$height] | (\$height * $1 | round) as \$shown
     | .display.area_box as \$area | .display.picture_box as \$box
     | ([\$area.width / \$shown, \$area.height / \$height] | min | floor) as \$factor
     | if \$factor >= 2 then \$box.width == \$factor * \$shown and \$box.height == \$factor * \$height
       else \$box.width == \$area.width or \$box.height == \$area.height end"
 }
+
+closed_at_box() { echo "$(closed_and_running "$1") and .display.frame == \"$geometry\" and .display.picture_box == $box and (.moving | not)"; }
 
 retro_picture() {
   geometry=$(core_geometry "$1")
@@ -442,8 +446,8 @@ retro_picture() {
   expect ".settings.picture == \"retro\" and .display.picture_box == $box"
   log ok "Retro keeps the game's size and place while the guide is open"
   tap guide
-  expect "$(closed_and_running "$1") and .display.frame == \"$geometry\" and .display.picture_box == $box and (.moving | not)"
-  log ok "Retro keeps the game's size and place after the guide closes"
+  expect "$(closed_at_box "$1") and .display.retro == \"$geometry\""
+  log ok "Retro keeps the game's size and place after the guide closes and filters its own pixels"
   snapshot "${1%/*}-retro"
   kiosk_log_lacks '^compositor: shader:' "the compositor could not build the Retro shader"
   log ok "the compositor draws $1 through NTSC and CRT Geom"
@@ -458,9 +462,23 @@ retro_picture() {
   expect ".settings.picture == \"original\" and .display.picture_box == $box"
   log ok "Original keeps the game's size and place while the guide is open"
   tap guide
-  expect "$(closed_and_running "$1") and .display.frame == \"$geometry\" and .display.picture_box == $box and (.moving | not)"
+  expect "$(closed_at_box "$1") and .display.retro == null"
   log ok "Original keeps the game's size and place after the guide closes"
   snapshot "${1%/*}-original"
+}
+
+retro_shrinks_to_tv() {
+  api POST settings "resolution 1080" >/dev/null
+  api POST settings "picture retro" >/dev/null
+  install_and_play "$1" "$2"
+  expect "$(status_of "$1" running) and .display.retro != null"
+  expect "(.display.frame | $SIZE_NUMBERS) as [\$width, \$height] | (.display.retro | $SIZE_NUMBERS) as [\$signal_width, \$signal_height]
+    | \$height > $TV_LINES and \$signal_height == $TV_LINES and \$signal_width == (\$width * $TV_LINES / \$height | floor)"
+  log ok "Retro shrinks $1's $(state | jq -r '.display | "\(.frame) frame to a \(.retro)"') TV picture before filtering"
+  close_game "$1" "$2"
+  api POST settings "picture original" >/dev/null
+  api POST settings "resolution 0" >/dev/null
+  expect ".settings.picture == \"original\" and .display.canvas == $AREA_SIZE"
 }
 
 close_game() {
@@ -881,7 +899,8 @@ test_display() {
   change_resolution_in_settings
   stage_display_mode_until_saved
   expect_reply $STEP_SECONDS 200 '.ok and .state.screen == "settings"' --arg action picture --arg step 1
-  expect '.settings.picture == "retro"'
+  expect '.settings.picture == "retro" and .display.retro == null'
+  log ok "Retro leaves the dashboard unfiltered"
   expect_reply $STEP_SECONDS 200 .ok --arg action picture --arg step 1
   expect '.settings.picture == "original"'
   log ok "Settings switches Display Mode through the API"
@@ -1097,6 +1116,7 @@ test_dreamcast() {
   rewind_dreamcast gravity-wave-twin-stick-shooter/dreamcast
   ! has_redream_license || save_states gravity-wave-twin-stick-shooter/dreamcast redream_read_loaded_state
   close_game gravity-wave-twin-stick-shooter/dreamcast "Gravity Wave"
+  retro_shrinks_to_tv gravity-wave-twin-stick-shooter/dreamcast "Gravity Wave"
 }
 
 test_msdos() {
