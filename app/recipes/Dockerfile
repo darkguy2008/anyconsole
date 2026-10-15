@@ -54,7 +54,7 @@ COPY --from=retroarch-download /retroarch /retroarch
 RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib64/${bundled##*/}" ] || rm "$bundled"; done
 COPY retroarch.cfg vulkan.cfg /retroarch/
 COPY retroarch-launch /retroarch/launch
-RUN touch /retroarch/core.opt
+RUN touch /retroarch/core.opt /retroarch/vulkan.opt
 LABEL anyconsole.vulkan="--appendconfig=/retroarch/vulkan.cfg" anyconsole.rewind="true"
 ENV LD_LIBRARY_PATH=/retroarch/lib
 ENTRYPOINT ["/retroarch/launch"]
@@ -80,6 +80,7 @@ FROM retroarch AS n64
 LABEL anyconsole.launch="z64 n64 v64" anyconsole.thumbnails="Nintendo - Nintendo 64"
 COPY --from=cores /cores/parallel_n64_libretro.so /retroarch/core.so
 COPY n64.opt /retroarch/core.opt
+COPY n64-vulkan.opt /retroarch/vulkan.opt
 
 # genesis Sega Genesis
 FROM retroarch AS genesis

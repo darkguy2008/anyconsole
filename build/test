@@ -502,8 +502,10 @@ close_game() {
 game_container() { echo "\$(docker ps -q --filter label=$GAME_LABEL=$1)"; }
 
 core_options_hold() {
-  guest "docker exec $(game_container "$1") cat /tmp/core.opt" |
-    jq -nRe --argjson options "$2" '[inputs] as $lines | $options | to_entries | all("\(.key) = \"\(.value)\"" as $line | $lines | any(. == $line))'
+  for file in core vulkan; do
+    guest "docker exec $(game_container "$1") cat /tmp/$file.opt" |
+      jq -nRe --argjson options "$2" '[inputs] as $lines | $options | to_entries | all("\(.key) = \"\(.value)\"" as $line | $lines | any(. == $line))' || return
+  done
 }
 
 play_every_other_game() {
