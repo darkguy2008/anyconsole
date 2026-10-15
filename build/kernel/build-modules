@@ -1,0 +1,82 @@
+#!/bin/sh
+set -eu
+PATCHES=$1
+OUT=$2
+KERNEL=$(basename "$PWD")
+
+recipe() {
+  (set +u && srcdir=$PWD/src && . ./APKBUILD && eval "echo \"\$$1\"")
+}
+
+unpack_source() {
+  abuild -F fetch unpack prepare
+  SOURCE=$(recipe builddir)
+}
+
+fetch_kernel() {
+  mkdir -p "$OUT/packages" "$OUT/modules/lib/modules"
+  apk fetch -q -o "$OUT/packages" "$KERNEL"
+}
+
+pending_patches() {
+  for fix in "$PATCHES"/*.patch; do
+    patch -d "$SOURCE" -p1 -R -f -s --dry-run < "$fix" >/dev/null || echo "$fix"
+  done
+}
+
+prepare_tree() {
+  apk update -q
+  apk add -q $(recipe makedepends) "$KERNEL-dev" "$KERNEL"
+  headers=$(echo /usr/src/linux-headers-*)
+  release=${headers##*/linux-headers-}
+  cp "$headers/.config" "$headers/localversion-alpine" "$headers/Module.symvers" "$SOURCE/"
+  cp "/boot/System.map-$release" "$SOURCE/System.map"
+  "$SOURCE/scripts/config" --file "$SOURCE/.config" --disable MODULE_SIG_ALL
+  make -C "$SOURCE" AWK=mawk olddefconfig modules_prepare
+  [ "$(make -C "$SOURCE" -s kernelrelease)" = "$release" ] ||
+    { echo "aports source $(make -C "$SOURCE" -s kernelrelease) does not match the $KERNEL package $release" >&2; exit 1; }
+}
+
+patched_files() {
+  lsdiff --no-filename --strip=1 "$@" | sort -u | grep . || { echo "no files found in $*" >&2; exit 1; }
+}
+
+module_dirs_using() {
+  for file in "$@"; do
+    find "$SOURCE" \( -path "$SOURCE/tools" -o -path "$SOURCE/scripts" \) -prune -o \( -name Makefile -o -name Kbuild \) \
+      -exec grep -lwF "$(basename "${file%.c}.o")" {} +
+  done | xargs -r -n1 dirname | sed "s|^$SOURCE/||" | sort -u
+}
+
+compiled_files() {
+  sources=$(cd "$SOURCE/$1" && find . -name '.*.o.cmd' -exec sed -n 's/^source_[^ ]* := //p' {} + | xargs realpath)
+  shift
+  for file in "$@"; do
+    if echo "$sources" | grep -qxF "$SOURCE/$file"; then echo "$file"; fi
+  done
+}
+
+build_patched_modules() {
+  for fix in "$@"; do patch -d "$SOURCE" -p1 -s < "$fix"; done
+  files=$(patched_files "$@")
+  built=
+  installed=
+  for dir in $(module_dirs_using $files); do
+    case "$dir/" in "$installed"/*) continue ;; esac
+    make -C "$SOURCE" AWK=mawk M="$dir" -j"$(nproc)" modules
+    compiled=$(compiled_files "$dir" $files)
+    [ -z "$compiled" ] && continue
+    make -C "$SOURCE" M="$dir" INSTALL_MOD_DIR="kernel/$dir" INSTALL_MOD_STRIP=1 modules_install
+    built="$built $compiled"
+    installed=$dir
+  done
+  for file in $files; do
+    case " $built " in *" $file "*) ;; *) echo "$file is not compiled into any module, so it needs a full kernel build" >&2; exit 1 ;; esac
+  done
+  cp -a "/lib/modules/$release" "$OUT/modules/lib/modules/"
+}
+
+unpack_source
+fetch_kernel
+pending=$(pending_patches)
+[ -z "$pending" ] || { prepare_tree; build_patched_modules $pending; }

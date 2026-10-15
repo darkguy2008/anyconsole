@@ -1,0 +1,56 @@
+From dd720e2fefb5978dea839a2c7eac5b324977e697 Mon Sep 17 00:00:00 2001
+From: Alemar <6304136+darkguy2008@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 13:59:35 -0600
+Subject: [PATCH] drm/i915/dp: Use max link params for DP branch devices
+
+i915 picks the slowest link rate and fewest lanes that carry the mode on
+an external DisplayPort SST link. Some DP->HDMI protocol converters pass
+the video but drop all audio unless the link runs at their highest rate.
+
+Seen with a branch device reporting type HDMI, ID "176GB0", HW 1.0,
+SW 7.85, in front of a Samsung 4K TV (ELD valid, LPCM 2-6ch), on a
+Skylake HD 530. At 1920x1080@60 the audio stream reaches the HDMI codec
+converter and pin, but the TV plays nothing:
+
+  port_clock  lane_count  audio
+  162000      4           none
+  270000      2           none
+  270000      4           none
+  540000      1           yes
+  540000      4           yes (3840x2160@60 picks this on its own)
+
+The rate was forced through i915_dp_force_link_rate and
+i915_dp_force_lane_count. The lane count makes no difference; only the
+link rate does.
+
+Configure max link bw whenever the sink is a branch device, as is
+already done for MST and for eDP panels that need it (use_max_params).
+Link training fallback is unchanged: a failed training still lowers
+link.max_rate and link.max_lane_count, which become the new limits.
+Native DP sinks keep the minimal link configuration.
+---
+ drivers/gpu/drm/i915/display/intel_dp.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/i915/display/intel_dp.c b/drivers/gpu/drm/i915/display/intel_dp.c
+index 84fca86..7570b06 100644
+--- a/drivers/gpu/drm/i915/display/intel_dp.c
++++ b/drivers/gpu/drm/i915/display/intel_dp.c
+@@ -2602,10 +2602,11 @@ intel_dp_compute_config_limits(struct intel_dp *intel_dp,
+ 	if (dsc && !intel_dp_dsc_compute_pipe_bpp_limits(connector, limits))
+ 		return false;
+ 
+-	if (is_mst || intel_dp->use_max_params) {
++	if (is_mst || drm_dp_is_branch(intel_dp->dpcd) || intel_dp->use_max_params) {
+ 		/*
+-		 * For MST we always configure max link bw - the spec doesn't
+-		 * seem to suggest we should do otherwise.
++		 * For MST and branch devices we always configure max link bw -
++		 * the spec doesn't seem to suggest we should do otherwise, and
++		 * some DP->HDMI converters drop audio below their max rate.
+ 		 *
+ 		 * Use the maximum clock and number of lanes the eDP panel
+ 		 * advertizes being capable of in case the initial fast
+-- 
+2.54.0 (Apple Git-157)
+
