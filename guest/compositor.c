@@ -57,6 +57,7 @@
 
 #define ASPECT_WIDTH 16
 #define ASPECT_HEIGHT 9
+#define MIN_INTEGER_SCALE 2
 #define GPUS_MAX 8
 #define TEXT_MAX 256
 #define NO_VULKAN -1
@@ -333,11 +334,21 @@ static int games_running(void) {
     return 0;
 }
 
+static struct wlr_box centered(struct wlr_box outer, int width, int height) {
+    return (struct wlr_box){outer.x + (outer.width - width) / 2, outer.y + (outer.height - height) / 2, width, height};
+}
+
 static struct wlr_box fit(struct wlr_box outer, int aspect_width, int aspect_height) {
     int width = outer.width, height = outer.height;
     if (width * aspect_height > height * aspect_width) width = height * aspect_width / aspect_height;
     else height = width * aspect_height / aspect_width;
-    return (struct wlr_box){outer.x + (outer.width - width) / 2, outer.y + (outer.height - height) / 2, width, height};
+    return centered(outer, width, height);
+}
+
+static struct wlr_box place(struct wlr_box outer, int width, int height) {
+    int across = outer.width / width, down = outer.height / height, factor = across < down ? across : down;
+    if (factor < MIN_INTEGER_SCALE) return fit(outer, width, height);
+    return centered(outer, width * factor, height * factor);
 }
 
 static void size_window(struct window *window) {
@@ -374,6 +385,15 @@ static void redraw(void) {
     if (active) wlr_output_schedule_frame(active->output);
 }
 
+static json_object *box_json(struct wlr_box box) {
+    json_object *placement = json_object_new_object();
+    json_object_object_add(placement, "x", json_object_new_int(box.x));
+    json_object_object_add(placement, "y", json_object_new_int(box.y));
+    json_object_object_add(placement, "width", json_object_new_int(box.width));
+    json_object_object_add(placement, "height", json_object_new_int(box.height));
+    return placement;
+}
+
 static void write_state(void) {
     json_object *state = json_object_new_object(), *list = json_object_new_array();
     char canvas[TEXT_MAX] = "", frame[TEXT_MAX] = "";
@@ -389,12 +409,9 @@ static void write_state(void) {
         struct wlr_box box = area();
         snprintf(canvas, sizeof canvas, "%dx%d", canvas_width, canvas_height);
         json_object_object_add(state, "filter", json_object_new_string(filters[choose_filter(box, canvas_width, canvas_height)]));
-        json_object *placement = json_object_new_object();
-        json_object_object_add(placement, "x", json_object_new_int(box.x));
-        json_object_object_add(placement, "y", json_object_new_int(box.y));
-        json_object_object_add(placement, "width", json_object_new_int(box.width));
-        json_object_object_add(placement, "height", json_object_new_int(box.height));
-        json_object_object_add(state, "area_box", placement);
+        json_object_object_add(state, "area_box", box_json(box));
+        if (shown && shown->source.width && shown->source.height)
+            json_object_object_add(state, "picture_box", box_json(place(box, shown->source.width, shown->source.height)));
         json_object *modes = json_object_new_array();
         struct wlr_output_mode *mode;
         char name[TEXT_MAX];
@@ -514,7 +531,7 @@ static int scan_out(struct wlr_output_state *state) {
     struct wlr_surface *surface = shown ? shown->toplevel->base->surface : NULL;
     if (!surface || !surface->buffer || overlay_visible() || retro) return 0;
     struct wlr_buffer *buffer = &surface->buffer->base;
-    struct wlr_box picture = fit(area(), buffer->width, buffer->height);
+    struct wlr_box picture = place(area(), buffer->width, buffer->height);
     if (picture.width != buffer->width || picture.height != buffer->height) return 0;
     wlr_output_state_set_buffer(state, buffer);
     state->buffer_dst_box = picture;
@@ -531,7 +548,7 @@ static struct wlr_box scaled(struct wlr_box inner, struct wlr_box box) {
 
 static void draw_scene(struct wlr_render_pass *pass, struct wlr_box target, struct wlr_box box, struct wlr_texture *game, struct wlr_texture *interface,
                        enum wlr_scale_filter_mode mode) {
-    struct wlr_box picture = game ? fit(box, game->width, game->height) : (struct wlr_box){0};
+    struct wlr_box picture = game ? place(box, game->width, game->height) : (struct wlr_box){0};
     pixman_region32_t bars;
     pixman_region32_init_rect(&bars, picture.x, picture.y, picture.width, picture.height);
     pixman_region32_inverse(&bars, &bars, &(pixman_box32_t){target.x, target.y, target.x + target.width, target.y + target.height});
@@ -737,7 +754,7 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct
         return 0;
     }
     GLuint framebuffer = wlr_gles2_renderer_get_buffer_fbo(renderer, buffer);
-    struct wlr_box picture = composed ? box : fit(box, texture->width, texture->height);
+    struct wlr_box picture = composed ? box : place(box, texture->width, texture->height);
     GLfloat left = 2.0f * picture.x / output->width - 1, right = 2.0f * (picture.x + picture.width) / output->width - 1;
     GLfloat top = 2.0f * picture.y / output->height - 1, bottom = 2.0f * (picture.y + picture.height) / output->height - 1;
     const GLfloat corners[] = {left, top, right, top, left, bottom, right, bottom};
@@ -861,7 +878,7 @@ static int pass_size(enum scale_type type, float scale, int source, int viewport
 
 static struct wlr_texture *retro_picture(struct wlr_texture *game, struct wlr_buffer **held) {
     static const GLfloat corners[] = {-1, -1, 1, -1, -1, 1, 1, 1};
-    struct wlr_box picture = fit(area(), game->width, game->height);
+    struct wlr_box screen = area(), picture = place(screen, game->width, game->height);
     struct wlr_gles2_texture_attribs attributes = current_attributes(game);
     if (!retro_passes) load_retro();
     glDisable(GL_BLEND);
@@ -876,13 +893,18 @@ static struct wlr_texture *retro_picture(struct wlr_texture *game, struct wlr_bu
         struct retro_pass *pass = &retro_passes[i];
         int width = pass_size(pass->type_x, pass->scale_x, source->width, picture.width), height = pass_size(pass->type_y, pass->scale_y, source->height, picture.height);
         GLuint frame = pass->frame_count_mod ? retro_frames % pass->frame_count_mod : retro_frames;
+        int x = 0, y = 0;
         if (i < retro_pass_count - 1) bind_target(&pass->target, width, height, pass->floating);
         else {
-            *held = acquire(&retro_chain, width, height);
+            *held = acquire(&retro_chain, screen.width, screen.height);
             if (!*held) break;
             glBindFramebuffer(GL_FRAMEBUFFER, wlr_gles2_renderer_get_buffer_fbo(renderer, *held));
+            glClearColor(0, 0, 0, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            x = picture.x - screen.x;
+            y = picture.y - screen.y;
         }
-        glViewport(0, 0, width, height);
+        glViewport(x, y, width, height);
         glUseProgram(pass->program);
         glBindTexture(GL_TEXTURE_2D, source->texture);
         for (int block = 0; block < RETRO_BLOCKS; block++) glUniform1ui(pass->frame_count[block], frame);
@@ -909,7 +931,7 @@ static void paint(struct wlr_output_state *state) {
     struct wlr_texture *interface = overlay_visible() ? wlr_surface_get_texture(overlay->surface) : NULL;
     struct wlr_buffer *held = NULL;
     if (retro && surface) game = retro_picture(surface, &held);
-    enum filter filter = game && !interface ? choose_filter(fit(box, game->width, game->height), game->width, game->height)
+    enum filter filter = game && !interface ? choose_filter(place(box, game->width, game->height), game->width, game->height)
                                             : choose_filter(box, canvas_width, canvas_height);
     if (!((filter == PIXEL || overlay_blur()) && (game || interface) && draw_pixel(state, box, game))) {
         enum wlr_scale_filter_mode mode = filter == NEAREST ? WLR_SCALE_FILTER_NEAREST : WLR_SCALE_FILTER_BILINEAR;
