@@ -132,7 +132,7 @@ enum tab { GAME_TAB, DEVICES_TAB, SYSTEM_TAB };
 static const char *const tabs[] = {[GAME_TAB] = "Game", [DEVICES_TAB] = "I/O", [SYSTEM_TAB] = "System"};
 enum picture { ORIGINAL, RETRO, ENHANCED, PICTURES };
 static const struct { const char *name, *label; } pictures[PICTURES] = {[ORIGINAL] = {"original", "Original"}, [RETRO] = {"retro", "Retro"}, [ENHANCED] = {"enhanced", "Enhanced"}};
-enum restart { PLAYING, SAVING, CLOSING, LOADING };
+enum restart { PLAYING, SAVING, CLOSING };
 enum command { NONE, UP, DOWN, PAGE_UP, PAGE_DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON, X_BUTTON, Y_BUTTON };
 static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [PAGE_UP] = "page-up", [PAGE_DOWN] = "page-down",
                                        [LEFT] = "left", [RIGHT] = "right", [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide",
@@ -1681,10 +1681,6 @@ static void read_probe(int index) {
     json_object_put(manifest);
     close(game->probe_output);
     game->probe = 0;
-    if (game->restart == LOADING && game->rewinds) {
-        load_slot(index, newest_slot());
-        game->restart = PLAYING;
-    }
     if (index == active) apply_modes();
     changed = 1;
 }
@@ -1699,20 +1695,22 @@ static void finish_close(int index) {
 }
 
 static void play(int index) {
-    char directory[PATH_MAX], states[PATH_MAX], owner[TEXT_MAX];
+    char directory[PATH_MAX], states[PATH_MAX], owner[TEXT_MAX], resume_slot[TEXT_MAX] = "";
     int commands[2];
     struct game *game = &games[index];
     if (!listen_socket(index, directory, sizeof directory)) { fail(index, "Could not start %s", game->title); return; }
     if (pipe2(commands, O_CLOEXEC) < 0) { perror("pipe"); close(game->context); fail(index, "Could not start %s", game->title); return; }
     int output = game_log(index);
     prepare_rewinds(index, states);
+    if (game->restart == CLOSING) snprintf(resume_slot, sizeof resume_slot, "%d", newest_slot());
+    game->restart = PLAYING;
     memset(guide_depths, 0, sizeof guide_depths);
     game->rewinds = 0;
     save_slot = 0;
     game->paused = game->closing = game->booted = 0;
     show_game(index);
     snprintf(owner, sizeof owner, "%d", game->owner);
-    game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, states, owner, NULL}, commands[0], output, output);
+    game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, states, owner, resume_slot, NULL}, commands[0], output, output);
     close(output);
     close(commands[0]);
     game->commands = commands[1];
@@ -2463,7 +2461,7 @@ static int settled(const struct request *request) {
     if (capture.current || refresher > 0) return 0;
     if (request->game < 0) return 1;
     const struct game *game = &games[request->game];
-    return !game->job && !game->freezer && !game->probe && !(game->pid && (!game_window(request->game) || game->closing));
+    return !game->job && !game->freezer && !game->probe && !game->restart && !(game->pid && (!game_window(request->game) || game->closing));
 }
 
 static void remove_request(int index) {
@@ -2586,10 +2584,7 @@ static void reap(void) {
         }
         for (int i = 0; i < game_count; i++) {
             if (games[i].pid == pid) ended(i, failed);
-            if (!games[i].pid && games[i].restart == CLOSING) {
-                games[i].restart = LOADING;
-                play(i);
-            }
+            if (!games[i].pid && games[i].restart == CLOSING) play(i);
             if (games[i].job == pid) job_done(i, failed);
             if (games[i].probe == pid) read_probe(i);
             if (games[i].freezer == pid) {

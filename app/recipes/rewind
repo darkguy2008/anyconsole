@@ -37,6 +37,7 @@ load() {
 }
 
 publish_saves &
+[ -z "$RESUME_SLOT" ] || load "$RESUME_SLOT" || echo "LOAD_STATE_SLOT $RESUME_SLOT failed" >&2
 while read -r command argument; do
   case $command in
     SAVE_STATE) "$CONTROL" save "$SAVE_SLOT" ;;
