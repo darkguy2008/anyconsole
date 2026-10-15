@@ -8,9 +8,4 @@ merge() {
     | to_entries[] | "\(.key) = \"\(.value)\""' "$@"
 }
 merge "$(printf '%s' "$GAME_CONFIG" | jq -c '.options // {}')" /retroarch/core.opt > /tmp/core.opt
-config=/retroarch/retroarch.cfg
-if [ "$PICTURE" = retro ]; then
-  merge '{}' /retroarch/retroarch.cfg /retroarch/retro.cfg > /tmp/retroarch.cfg
-  config=/tmp/retroarch.cfg
-fi
-exec /retroarch/retroarch --verbose --config "$config" --libretro /retroarch/core.so "$@"
+exec /retroarch/retroarch --verbose --config /retroarch/retroarch.cfg --libretro /retroarch/core.so "$@"

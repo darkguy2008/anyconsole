@@ -418,60 +418,48 @@ install_and_play() {
 
 kiosk_log_lacks() { guest "! grep '$1' $LOG_DIR/kiosk.log" || { log FAIL "$2" >&2; exit 1; }; }
 
-retroarch_size() { guest "grep -o 'Set video size to: [0-9a-z]*' $(game_log "$1") | tail -1 | cut -d' ' -f5"; }
-retroarch_windowed() { [ "$(retroarch_size "$1")" != fullscreen ]; }
+core_geometry() { guest "grep -o 'Geometry: [0-9]*x[0-9]*' $(game_log "$1") | tail -1 | cut -d' ' -f2"; }
+core_aspect() { guest "grep -o ', Aspect: [0-9.]*' $(game_log "$1") | tail -1 | cut -d' ' -f3"; }
 
 integer_picture() {
-  echo '.display as $display | ($display.frame | split("x") | map(tonumber)) as [$width, $height]
-    | ([$display.area_box.width / $width, $display.area_box.height / $height] | min | floor) as $factor
-    | if $factor >= 2 then $display.picture_box.width == $factor * $width and $display.picture_box.height == $factor * $height
-      else $display.picture_box.width == $display.area_box.width or $display.picture_box.height == $display.area_box.height end'
+  echo "(.display.frame | split(\"x\") | map(tonumber)) as [\$width, \$height] | (\$height * $1 | round) as \$shown
+    | .display.area_box as \$area | .display.picture_box as \$box
+    | ([\$area.width / \$shown, \$area.height / \$height] | min | floor) as \$factor
+    | if \$factor >= 2 then \$box.width == \$factor * \$shown and \$box.height == \$factor * \$height
+      else \$box.width == \$area.width or \$box.height == \$area.height end"
 }
 
-retroarch_size_changes() { guest "grep -c 'Set video size to:' $(game_log "$1")"; }
-
 retro_picture() {
-  changes=$(retroarch_size_changes "$1")
+  geometry=$(core_geometry "$1")
+  expect ".display.frame == \"$geometry\""
+  log ok "RetroArch hands the compositor the core's own $geometry pixels"
+  expect "$(integer_picture "$(core_aspect "$1")")"
+  log ok "the game is drawn at the core's aspect, at the largest integer scale of at least 2x, else fitted to the screen"
+  box=$(state | jq -c .display.picture_box)
   tap guide
   highlight "Display Mode"
   adjust_to "Display Mode" Retro
-  tap dpleft
-  expect '.settings.picture == "original"'
+  expect ".settings.picture == \"retro\" and .display.picture_box == $box"
+  log ok "Retro keeps the game's size and place while the guide is open"
   tap guide
-  expect "$(closed_and_running "$1")"
-  tap guide
-  expect "$(status_of "$1" paused)"
-  [ "$(retroarch_size_changes "$1")" = "$changes" ] || { log FAIL "RetroArch changed size after Display Mode went to Retro and back in one guide visit" >&2; exit 1; }
-  log ok "Display Mode going to Retro and back in one guide visit leaves RetroArch as it was"
-  highlight "Display Mode"
-  adjust_to "Display Mode" Retro
-  expect '.settings.picture == "retro"'
-  log ok "the guide's Game tab turns Display Mode to Retro"
-  tap guide
-  wait_for $STEP_SECONDS retroarch_windowed "$1"
-  size=$(retroarch_size "$1")
-  expect ".display.frame == \"$size\""
-  log ok "RetroArch leaves fullscreen while playing and hands the compositor only the game picture"
-  expect "$(integer_picture)"
-  log ok "Retro draws the game at the largest integer scale of at least 2x, else fits it to the screen"
+  expect "$(closed_and_running "$1") and .display.frame == \"$geometry\" and .display.picture_box == $box and (.moving | not)"
+  log ok "Retro keeps the game's size and place after the guide closes"
   snapshot "${1%/*}-retro"
-  expect ".display.frame == \"$size\""
   kiosk_log_lacks '^compositor: shader:' "the compositor could not build the Retro shader"
-  log ok "the compositor draws $1 through CRT Geom"
+  log ok "the compositor draws $1 through NTSC and CRT Geom"
   close_game "$1" "$2"
   install_and_play "$1" "$2"
-  expect ".display.frame == \"$(retroarch_size "$1")\""
-  log ok "RetroArch starts with only the game picture in Retro"
-  box=$(state | jq -c .display.picture_box)
+  expect ".display.frame == \"$geometry\" and .display.picture_box == $box"
+  log ok "a fresh launch in Retro draws the game at the same size and place"
   tap guide
   expect "$(status_of "$1" paused)"
   highlight "Display Mode"
   tap dpleft
   expect ".settings.picture == \"original\" and .display.picture_box == $box"
-  log ok "Original keeps the game at the Retro size while the guide is open"
+  log ok "Original keeps the game's size and place while the guide is open"
   tap guide
-  expect "$(closed_and_running "$1") and .display.frame == .display.canvas"
-  log ok "Original turns RetroArch back to fullscreen when the guide closes"
+  expect "$(closed_and_running "$1") and .display.frame == \"$geometry\" and .display.picture_box == $box and (.moving | not)"
+  log ok "Original keeps the game's size and place after the guide closes"
   snapshot "${1%/*}-original"
 }
 
@@ -1012,10 +1000,10 @@ test_nes() {
   log ok "Player 1 plays with its own saves"
   snapshot alter-ego
   api POST settings "resolution 1080" >/dev/null
-  expect ".display.canvas == \"1920x1080\" and .display.frame == .display.canvas and ($(status_of alter-ego/nes running))"
+  expect ".display.canvas == \"1920x1080\" and .display.frame == \"$(core_geometry alter-ego/nes)\" and ($(status_of alter-ego/nes running))"
   snapshot alter-ego-1080
   api POST settings "resolution 0" >/dev/null
-  expect ".display.canvas == $AREA_SIZE and .display.frame == .display.canvas and ($(status_of alter-ego/nes running))"
+  expect ".display.canvas == $AREA_SIZE and .display.frame == \"$(core_geometry alter-ego/nes)\" and ($(status_of alter-ego/nes running))"
   wait_for $STEP_SECONDS guest ". /etc/profile; pw-dump | jq -e '[.[] | select(.info.props[\"media.class\"]? == \"Stream/Output/Audio\" and .info.state == \"running\")] | length == 1'"
   log ok "the game plays sound into PipeWire"
   remember_guide_position

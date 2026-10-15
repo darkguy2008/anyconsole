@@ -52,10 +52,10 @@ FROM gpu AS retroarch
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y alsa-lib pipewire-jack-audio-connection-kit-libs fontconfig dbus-libs libXi libXrandr libXinerama libXxf86vm libXScrnSaver libXext libXrender libXcursor libXfixes libv4l systemd-libs libxkbcommon libwayland-egl libwayland-cursor sdl2-compat libusb1 jq
 COPY --from=retroarch-download /retroarch /retroarch
 RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib64/${bundled##*/}" ] || rm "$bundled"; done
-COPY retroarch.cfg vulkan.cfg retro.cfg /retroarch/
+COPY retroarch.cfg vulkan.cfg /retroarch/
 COPY retroarch-launch /retroarch/launch
 RUN touch /retroarch/core.opt
-LABEL anyconsole.vulkan="--appendconfig=/retroarch/vulkan.cfg" anyconsole.rewind="true" anyconsole.picture="FULLSCREEN_TOGGLE"
+LABEL anyconsole.vulkan="--appendconfig=/retroarch/vulkan.cfg" anyconsole.rewind="true"
 ENV LD_LIBRARY_PATH=/retroarch/lib
 ENTRYPOINT ["/retroarch/launch"]
 
