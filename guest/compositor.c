@@ -190,7 +190,9 @@ static struct display *active, *pending;
 static struct window *shown;
 static struct wlr_layer_surface_v1 *overlay;
 static struct wl_listener overlay_commit, overlay_destroy;
-static struct wlr_swapchain *canvas_chain;
+static struct wlr_swapchain *canvas_chain, *still_chain;
+static struct wlr_buffer *still_buffer, *still_blur[2 * BLUR_LEVELS];
+static struct wlr_texture *still, *still_soft;
 static struct program programs[sizeof sampler_prefixes / sizeof *sampler_prefixes];
 static const char *const scale_types[] = {[SOURCE_SCALE] = "source", [VIEWPORT_SCALE] = "viewport", [ABSOLUTE_SCALE] = "absolute"};
 static const char *const retro_blocks[RETRO_BLOCKS] = {"global", "registers"};
@@ -373,6 +375,8 @@ static enum filter choose_filter(struct wlr_box target, int width, int height) {
     return PIXEL;
 }
 
+static enum wlr_scale_filter_mode scale_mode(enum filter filter) { return filter == NEAREST ? WLR_SCALE_FILTER_NEAREST : WLR_SCALE_FILTER_BILINEAR; }
+
 static struct wlr_box overlay_box(void) {
     uint32_t anchor = overlay->current.anchor, horizontal = anchor & (ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT),
              vertical = anchor & (ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM);
@@ -391,6 +395,17 @@ static void configure_overlay(void) {
 static void redraw(void) {
     dirty = 1;
     if (active) wlr_output_schedule_frame(active->output);
+}
+
+static void forget_still(void) {
+    if (still) wlr_texture_destroy(still);
+    if (still_soft) wlr_texture_destroy(still_soft);
+    if (still_buffer) wlr_buffer_unlock(still_buffer);
+    for (int i = 0; i < 2 * BLUR_LEVELS; i++)
+        if (still_blur[i]) wlr_buffer_unlock(still_blur[i]);
+    still = still_soft = NULL;
+    still_buffer = NULL;
+    memset(still_blur, 0, sizeof still_blur);
 }
 
 static int retro_shown(void) { return retro && shown && shown->sandboxed; }
@@ -477,6 +492,7 @@ static void update_canvas(void) {
     if (width == canvas_width && height == canvas_height) return;
     canvas_width = width;
     canvas_height = height;
+    forget_still();
     wl_list_for_each(window, &windows, link)
         if (window->toplevel->base->initialized) size_window(window);
     configure_overlay();
@@ -520,6 +536,7 @@ static void activate(struct display *wanted) {
         }
     }
     active = wanted;
+    forget_still();
     redraw();
 }
 
@@ -691,33 +708,34 @@ static struct wlr_texture *blurred(struct wlr_texture *scene, struct wlr_buffer 
     return step;
 }
 
-static struct wlr_texture *compose(struct wlr_texture *game, int game_width, struct wlr_buffer **composed) {
-    if (!overlay_visible()) return game;
+static struct wlr_texture *compose(struct wlr_texture *scene, struct wlr_buffer **composed) {
+    if (!overlay_visible()) return scene;
     *composed = acquire(&canvas_chain, canvas_width, canvas_height);
-    if (!*composed) return game;
-    struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, *composed, NULL);
+    if (!*composed) return scene;
     struct wlr_box canvas = {0, 0, canvas_width, canvas_height}, box = overlay_box();
     struct wlr_texture *interface = wlr_surface_get_texture(overlay->surface);
     const pixman_region32_t *blur = overlay_blur();
-    draw_scene(pass, canvas, canvas, game, game_width, blur ? NULL : interface, WLR_SCALE_FILTER_BILINEAR);
-    wlr_render_pass_submit(pass);
-    if (!blur) return wlr_texture_from_buffer(renderer, *composed);
-    struct wlr_buffer *held[2 * BLUR_LEVELS] = {0};
-    struct wlr_texture *scene = wlr_texture_from_buffer(renderer, *composed), *soft = blurred(scene, held);
     pixman_region32_t clip;
     pixman_region32_init(&clip);
-    pixman_region32_copy(&clip, blur);
-    pixman_region32_translate(&clip, box.x, box.y);
-    pass = wlr_renderer_begin_buffer_pass(renderer, *composed, NULL);
-    if (soft) wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = soft, .dst_box = canvas, .clip = &clip, .filter_mode = WLR_SCALE_FILTER_BILINEAR});
+    if (blur) {
+        if (!still_soft) still_soft = blurred(scene, still_blur);
+        pixman_region32_copy(&clip, blur);
+        pixman_region32_translate(&clip, box.x, box.y);
+    }
+    struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, *composed, NULL);
+    wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = scene, .dst_box = canvas, .blend_mode = WLR_RENDER_BLEND_MODE_NONE});
+    if (blur && still_soft)
+        wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = still_soft, .dst_box = canvas, .clip = &clip, .filter_mode = WLR_SCALE_FILTER_BILINEAR});
     wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){.texture = interface, .dst_box = box, .filter_mode = WLR_SCALE_FILTER_BILINEAR});
     wlr_render_pass_submit(pass);
     pixman_region32_fini(&clip);
-    if (soft) wlr_texture_destroy(soft);
-    wlr_texture_destroy(scene);
-    for (int i = 0; i < 2 * BLUR_LEVELS; i++)
-        if (held[i]) wlr_buffer_unlock(held[i]);
     return wlr_texture_from_buffer(renderer, *composed);
+}
+
+static void release_picture(struct wlr_texture *picture, struct wlr_buffer *held) {
+    if (!held) return;
+    wlr_texture_destroy(picture);
+    wlr_buffer_unlock(held);
 }
 
 static void draw_quad(GLint position, GLint coordinate, const GLfloat *corners) {
@@ -760,7 +778,7 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct
     if (!wlr_output_configure_primary_swapchain(output, state, &output->swapchain)) return 0;
     struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain), *composed = NULL;
     if (!buffer) return 0;
-    struct wlr_texture *texture = compose(game, game_width, &composed);
+    struct wlr_texture *texture = compose(game, &composed);
     if (!texture) {
         wlr_buffer_unlock(buffer);
         return 0;
@@ -783,10 +801,7 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct
     glFlush();
     wlr_output_state_set_buffer(state, buffer);
     wlr_buffer_unlock(buffer);
-    if (composed) {
-        wlr_texture_destroy(texture);
-        wlr_buffer_unlock(composed);
-    }
+    release_picture(texture, composed);
     return 1;
 }
 
@@ -940,25 +955,49 @@ static struct wlr_texture *retro_picture(struct wlr_texture *game, struct wlr_bu
     return *held ? wlr_texture_from_buffer(renderer, *held) : game;
 }
 
+static struct wlr_texture *game_picture(struct wlr_texture *surface, struct wlr_buffer **held, int *width) {
+    *width = shown ? shown->display_width : 0;
+    if (!retro_shown() || !surface) return surface;
+    struct wlr_texture *picture = retro_picture(surface, held);
+    if (*held) *width = picture->width;
+    return picture;
+}
+
+static struct wlr_texture *freeze(struct wlr_texture *surface) {
+    if (still) return still;
+    struct wlr_buffer *held = NULL;
+    int width;
+    struct wlr_texture *game = game_picture(surface, &held, &width);
+    struct wlr_box canvas = {0, 0, canvas_width, canvas_height};
+    still_buffer = acquire(&still_chain, canvas_width, canvas_height);
+    if (still_buffer) {
+        enum filter filter = game ? choose_filter(place(canvas, width, game->height), game->width, game->height) : NEAREST;
+        struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, still_buffer, NULL);
+        draw_scene(pass, canvas, canvas, game, width, NULL, scale_mode(filter));
+        wlr_render_pass_submit(pass);
+        still = wlr_texture_from_buffer(renderer, still_buffer);
+    }
+    release_picture(game, held);
+    return still;
+}
+
 static void paint(struct wlr_output_state *state) {
     struct wlr_output *output = active->output;
     struct wlr_box box = area();
-    struct wlr_texture *surface = shown ? wlr_surface_get_texture(shown->toplevel->base->surface) : NULL, *game = surface;
+    struct wlr_texture *surface = shown ? wlr_surface_get_texture(shown->toplevel->base->surface) : NULL, *game;
     struct wlr_texture *interface = overlay_visible() ? wlr_surface_get_texture(overlay->surface) : NULL;
     struct wlr_buffer *held = NULL;
-    if (retro_shown() && surface) game = retro_picture(surface, &held);
-    int width = held ? (int)game->width : shown ? shown->display_width : 0;
+    int width = canvas_width;
+    if (interface) game = freeze(surface);
+    else game = game_picture(surface, &held, &width);
     enum filter filter = game && !interface ? choose_filter(place(box, width, game->height), game->width, game->height)
                                             : choose_filter(box, canvas_width, canvas_height);
     if (!((filter == PIXEL || overlay_blur()) && (game || interface) && draw_pixel(state, box, game, width))) {
-        enum wlr_scale_filter_mode mode = filter == NEAREST ? WLR_SCALE_FILTER_NEAREST : WLR_SCALE_FILTER_BILINEAR;
         struct wlr_render_pass *pass = wlr_output_begin_render_pass(output, state, NULL);
-        draw_scene(pass, (struct wlr_box){0, 0, output->width, output->height}, box, game, width, interface, mode);
+        draw_scene(pass, (struct wlr_box){0, 0, output->width, output->height}, box, game, width, interface, scale_mode(filter));
         wlr_render_pass_submit(pass);
     }
-    if (!held) return;
-    wlr_texture_destroy(game);
-    wlr_buffer_unlock(held);
+    release_picture(game, held);
 }
 
 static void on_frame(struct wl_listener *listener, void *data) {
@@ -1043,6 +1082,7 @@ static void show(struct window *window) {
         wlr_foreign_toplevel_handle_v1_set_activated(shown->handle, false);
     }
     shown = window;
+    forget_still();
     if (window) {
         wlr_xdg_toplevel_set_activated(window->toplevel, true);
         struct wlr_surface *surface = window->toplevel->base->surface;
@@ -1134,7 +1174,9 @@ static void on_window_commit(struct wl_listener *listener, void *data) {
         wl_signal_emit_mutable(&window->source.events.constraints_update, NULL);
         write_state();
     }
-    if (window == shown) redraw();
+    if (window != shown) return;
+    if (surface->current.committed & WLR_SURFACE_STATE_BUFFER) forget_still();
+    redraw();
 }
 
 static void on_window_request_fullscreen(struct wl_listener *listener, void *data) {
@@ -1348,6 +1390,7 @@ static void load_settings(void) {
     snprintf(chosen_mode, sizeof chosen_mode, "%s", json_object_object_get_ex(settings, "mode", &field) ? json_object_get_string(field) : "");
     retro = json_object_object_get_ex(settings, "picture", &field) && !strcmp(json_object_get_string(field), RETRO_PICTURE);
     json_object_put(settings);
+    forget_still();
     redraw();
 }
 
