@@ -22,7 +22,7 @@ const actionIcons = {
   'open-store': 'storefront', 'open-settings': 'settings', play: 'play_arrow', resume: 'play_arrow', close: 'close', uninstall: 'delete',
   install: 'download', dashboard: 'home', volume: 'volume_up', 'open-outputs': 'speaker', 'open-microphones': 'mic', 'microphone-volume': 'mic',
   'open-controllers': 'sports_esports', reload: 'refresh', restart: 'restart_alt', 'power-off': 'power_settings_new', 'log-out': 'logout',
-  rewind: 'history', emulate: 'keyboard', picture: 'tv', 'second-screen': 'picture_in_picture', 'display-mode': 'monitor', resolution: 'aspect_ratio',
+  rewind: 'history', emulate: 'keyboard', analog: 'joystick', picture: 'tv', 'second-screen': 'picture_in_picture', 'display-mode': 'monitor', resolution: 'aspect_ratio',
   pair: 'bluetooth_searching', forget: 'link_off', 'confirm-log-out': 'logout', login: 'person', 'save-states': 'save',
 };
 

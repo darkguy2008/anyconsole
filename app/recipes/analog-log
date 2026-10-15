@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+LOG=/tmp/analog-log
+program=$1
+shift
+mkfifo "$LOG"
+gawk -f "${0%/*}/analog-state.awk" -f "$program" < "$LOG" &
+exec "$@" > "$LOG" 2>&1

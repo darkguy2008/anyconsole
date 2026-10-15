@@ -68,7 +68,7 @@ ENTRYPOINT ["/retroarch/launch"]
 
 # nes Nintendo Entertainment System
 FROM retroarch AS nes
-LABEL anyconsole.launch="nes fds unf unif" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.thumbnails="Nintendo - Nintendo Entertainment System"
+LABEL anyconsole.launch="nes fds unf unif" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Nintendo - Nintendo Entertainment System"
 COPY --from=cores /cores/fceumm_libretro.so /retroarch/core.so
 
 # msdos MS-DOS
@@ -80,73 +80,80 @@ COPY msdos-refresh.jq /retroarch/refresh.jq
 
 # snes Super Nintendo
 FROM retroarch AS snes
-LABEL anyconsole.launch="sfc smc fig swc bs" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.thumbnails="Nintendo - Super Nintendo Entertainment System"
+LABEL anyconsole.launch="sfc smc fig swc bs" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Nintendo - Super Nintendo Entertainment System"
 COPY --from=cores /cores/snes9x_libretro.so /retroarch/core.so
 
 # n64 Nintendo 64
 FROM retroarch AS n64
-LABEL anyconsole.launch="z64 n64 v64" anyconsole.thumbnails="Nintendo - Nintendo 64"
+LABEL anyconsole.launch="z64 n64 v64" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Nintendo - Nintendo 64"
 COPY --from=cores /cores/parallel_n64_libretro.so /retroarch/core.so
 COPY n64.opt /retroarch/core.opt
 COPY n64-vulkan.opt /retroarch/vulkan.opt
 
 # genesis Sega Genesis
 FROM retroarch AS genesis
-LABEL anyconsole.launch="md gen smd bin mdx" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.thumbnails="Sega - Mega Drive - Genesis"
+LABEL anyconsole.launch="md gen smd bin mdx" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Sega - Mega Drive - Genesis"
 COPY --from=cores /cores/genesis_plus_gx_libretro.so /retroarch/core.so
 
 # gba Game Boy Advance
 FROM retroarch AS gba
-LABEL anyconsole.launch="gba" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.bios="/system" anyconsole.thumbnails="Nintendo - Game Boy Advance"
+LABEL anyconsole.launch="gba" anyconsole.analog="{\"sticks\":false}" anyconsole.bios="/system" anyconsole.thumbnails="Nintendo - Game Boy Advance"
 COPY --from=cores /cores/mgba_libretro.so /retroarch/core.so
 
 # gb Game Boy
 FROM retroarch AS gb
-LABEL anyconsole.launch="gb gbc dmg" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.thumbnails="Nintendo - Game Boy"
+LABEL anyconsole.launch="gb gbc dmg" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Nintendo - Game Boy"
 COPY --from=cores /cores/gambatte_libretro.so /retroarch/core.so
 
 # wsc WonderSwan Color
 FROM retroarch AS wsc
-LABEL anyconsole.launch="wsc ws pc2" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.thumbnails="Bandai - WonderSwan Color"
+LABEL anyconsole.launch="wsc ws pc2" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Bandai - WonderSwan Color"
 COPY --from=cores /cores/mednafen_wswan_libretro.so /retroarch/core.so
 
 # msx2 MSX2
 FROM retroarch AS msx2
-LABEL anyconsole.launch="m3u dsk mx2 rom cas" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.thumbnails="Microsoft - MSX2"
+LABEL anyconsole.launch="m3u dsk mx2 rom cas" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Microsoft - MSX2"
 COPY --from=cores /cores/bluemsx_libretro.so /retroarch/core.so
 COPY --from=bluemsx /system /system
 
 # intellivision Intellivision
 FROM retroarch AS intellivision
-LABEL anyconsole.launch="int bin rom" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.bios="/system" anyconsole.thumbnails="Mattel - Intellivision"
+LABEL anyconsole.launch="int bin rom" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/system" anyconsole.thumbnails="Mattel - Intellivision"
 COPY --from=cores /cores/freeintv_libretro.so /retroarch/core.so
 
 # atari2600 Atari 2600
 FROM retroarch AS atari2600
-LABEL anyconsole.launch="a26 bin" anyconsole.emulate="{\"pad\":\"digital\"}" anyconsole.thumbnails="Atari - 2600"
-COPY --from=cores /cores/stella2014_libretro.so /retroarch/core.so
+LABEL anyconsole.launch="a26 bin" anyconsole.analog="{\"sticks\":false,\"dial\":\"stella_paddle_analog_absolute\"}" anyconsole.thumbnails="Atari - 2600"
+COPY --from=cores /cores/stella_libretro.so /retroarch/core.so
 
 # ps1 PlayStation
 FROM retroarch AS ps1
-LABEL anyconsole.launch="m3u chd cue pbp" anyconsole.bios="/system" anyconsole.thumbnails="Sony - PlayStation"
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gawk
+LABEL anyconsole.launch="m3u chd cue pbp" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"forced\":[\"swanstation_Controller1_ForceAnalog\",\"swanstation_Controller2_ForceAnalog\",\"swanstation_Controller3_ForceAnalog\",\"swanstation_Controller4_ForceAnalog\"]}}" anyconsole.bios="/system" anyconsole.thumbnails="Sony - PlayStation"
 COPY --from=cores /cores/swanstation_libretro.so /retroarch/core.so
+COPY ps1.opt /retroarch/core.opt
+COPY analog-state.awk ps1-analog.awk analog-log /retroarch/
+ARG RETRO_DEVICE_ANALOG=5 RETRO_DEVICE_TYPE_SHIFT=8 SWANSTATION_DUALSHOCK_SUBCLASS=0 SWANSTATION_LIBRARY_NAME=SwanStation
+RUN mkdir -p "/retroarch/remaps/$SWANSTATION_LIBRARY_NAME" \
+ && for port in 1 2 3 4; do echo "input_libretro_device_p$port = \"$(((SWANSTATION_DUALSHOCK_SUBCLASS + 1) << RETRO_DEVICE_TYPE_SHIFT | RETRO_DEVICE_ANALOG))\""; done > "/retroarch/remaps/$SWANSTATION_LIBRARY_NAME/$SWANSTATION_LIBRARY_NAME.rmp"
+ENTRYPOINT ["/retroarch/analog-log", "/retroarch/ps1-analog.awk", "/retroarch/launch"]
 
 # gamecube Nintendo GameCube
 FROM retroarch AS gamecube
-LABEL anyconsole.launch="m3u rvz gcm iso ciso gcz wia tgc dol elf" anyconsole.thumbnails="Nintendo - GameCube"
+LABEL anyconsole.launch="m3u rvz gcm iso ciso gcz wia tgc dol elf" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Nintendo - GameCube"
 COPY --from=cores /cores/dolphin_libretro.so /retroarch/core.so
 COPY --from=dolphin /system /system
 
 # psp PlayStation Portable
 FROM retroarch AS psp
-LABEL anyconsole.launch="iso cso pbp" anyconsole.thumbnails="Sony - PlayStation Portable"
+LABEL anyconsole.launch="iso cso pbp" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Sony - PlayStation Portable"
 COPY --from=cores /cores/ppsspp_libretro.so /retroarch/core.so
 COPY --from=ppsspp /system /system
 COPY psp-enhanced.jq /retroarch/enhanced.jq
 
 # n3ds Nintendo 3DS
 FROM retroarch AS n3ds
-LABEL anyconsole.launch="3ds cci cxi 3dsx zcci" anyconsole.bios="/saves/Azahar/sysdata" anyconsole.thumbnails="Nintendo - Nintendo 3DS"
+LABEL anyconsole.launch="3ds cci cxi 3dsx zcci" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/saves/Azahar/sysdata" anyconsole.thumbnails="Nintendo - Nintendo 3DS"
 COPY --from=azahar /cores/azahar_libretro.so /retroarch/core.so
 
 FROM gpu AS x11
@@ -176,7 +183,7 @@ RUN /addresses /redream > /addresses.flags \
 
 # dreamcast Sega Dreamcast
 FROM x11-rewind AS dreamcast
-LABEL anyconsole.launch="m3u gdi chd cdi cue" anyconsole.bios="/bios" anyconsole.rewind="true" anyconsole.thumbnails="Sega - Dreamcast"
+LABEL anyconsole.launch="m3u gdi chd cdi cue" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.rewind="true" anyconsole.thumbnails="Sega - Dreamcast"
 COPY --from=redream-download /redream/redream /opt/redream/redream
 COPY --from=redream-commands /commands.so /opt/redream/
 COPY redream/ /opt/redream/
@@ -190,7 +197,7 @@ RUN appimage /cemu
 # wiiu Nintendo Wii U
 FROM x11 AS wiiu
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y xdotool
-LABEL anyconsole.launch="wux wud iso rpx wua" anyconsole.bios="/bios" anyconsole.screen="/opt/cemu/screen" anyconsole.thumbnails="Nintendo - Wii U"
+LABEL anyconsole.launch="wux wud iso rpx wua" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.screen="/opt/cemu/screen" anyconsole.thumbnails="Nintendo - Wii U"
 COPY --from=cemu-download /cemu /opt/cemu
 COPY cemu/ /opt/cemu/
 ENV XDG_CONFIG_HOME=/engine XDG_DATA_HOME=/engine XDG_CACHE_HOME=/engine GDK_BACKEND=x11
@@ -202,7 +209,7 @@ RUN appimage /rpcs3
 
 # ps3 PlayStation 3
 FROM x11 AS ps3
-LABEL anyconsole.launch="sfo" anyconsole.bios="/bios" anyconsole.install="/opt/rpcs3/install" anyconsole.thumbnails="Sony - PlayStation 3"
+LABEL anyconsole.launch="sfo" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.install="/opt/rpcs3/install" anyconsole.thumbnails="Sony - PlayStation 3"
 COPY --from=rpcs3-download /rpcs3 /opt/rpcs3
 RUN ln -s /opt/rpcs3/usr/share/rpcs3 /usr/share/rpcs3
 COPY rpcs3/ /opt/rpcs3/
@@ -215,12 +222,12 @@ RUN appimage /pcsx2
 
 # ps2 PlayStation 2
 FROM x11-rewind AS ps2
-RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y fontconfig freetype harfbuzz libcom_err libSM libICE matchbox-window-manager jq
-LABEL anyconsole.launch="chd iso cso" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true" anyconsole.thumbnails="Sony - PlayStation 2"
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y fontconfig freetype harfbuzz libcom_err libSM libICE matchbox-window-manager jq gawk
+LABEL anyconsole.launch="chd iso cso" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"button\":\"guide\"}}" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true" anyconsole.thumbnails="Sony - PlayStation 2"
 COPY --from=pcsx2-download /pcsx2 /opt/pcsx2
-COPY pcsx2/ /opt/pcsx2/
+COPY pcsx2/ analog-state.awk analog-log /opt/pcsx2/
 ENV XDG_CONFIG_HOME=/engine QT_QPA_PLATFORM=xcb
-ENTRYPOINT ["/opt/pcsx2/launch"]
+ENTRYPOINT ["/opt/pcsx2/analog-log", "/opt/pcsx2/analog.awk", "/opt/pcsx2/launch"]
 
 FROM fetch AS win98-download
 ADD --checksum=sha256:287449f16ad234da1d546deac66b3f91ab3101f5d3a202472117b83de42ccc68 https://github.com/JHRobotics/softgpu/releases/download/v0.8.2025.53/softgpu-0.8.2025.53.zip /softgpu.zip

@@ -240,7 +240,7 @@ static struct pollfd watched[WATCHED_MAX];
 static struct watch watches[WATCHED_MAX];
 static int watched_count;
 static struct pad pads[PHYSICAL_PADS_MAX];
-static int pad_count, sleep_minutes, touchpad_pointer = 1, blowing, blow_sent;
+static int pad_count, sleep_minutes, touchpad_pointer = 1, blowing, blow_sent, dial, dial_absolute;
 static struct bluetooth_device known[BLUETOOTH_DEVICES_MAX];
 static int known_count;
 static char adapter[PATH_MAX], target[ADDRESS_SIZE], armed[ADDRESS_SIZE], offered[PHYSICAL_PADS_MAX][ADDRESS_SIZE];
@@ -460,6 +460,7 @@ static int effective(struct device *device, unsigned i) {
         int stick = control_index(EV_ABS, c->code == ABS_HAT0X ? ABS_X : ABS_Y);
         return value || stick_direction(mapped(device, stick)) == c->direction;
     }
+    if (dial && c->code == ABS_X) return dial_absolute ? mapped(device, control_index(EV_ABS, ABS_RX)) : value;
     if (is_stick(i)) return AXIS_CENTER;
     if (c->button) return pressed_value(i, value) ? AXIS_MAX : 0;
     return value;
@@ -523,6 +524,12 @@ static void sync_control(int seat, unsigned i) {
         libevdev_uinput_write_event(pad[seat], EV_ABS, c->code, value);
         if (c->button) libevdev_uinput_write_event(pad[seat], EV_KEY, c->button, value > 0);
     }
+}
+
+static void tap(int seat, int i) {
+    if (seat < 0 || seat >= PADS || !pad[seat] || i < 0 || controls[i].type != EV_KEY) { fprintf(stderr, "padd: cannot tap %s on pad %d\n", i < 0 ? "?" : controls[i].name, seat + 1); return; }
+    emit(pad[seat], EV_KEY, controls[i].code, 1);
+    emit(pad[seat], EV_KEY, controls[i].code, 0);
 }
 
 static void sync_pad(int seat) {
@@ -648,11 +655,19 @@ static void emulate(struct device *device, unsigned i, int before, int value) {
     else if (!is_stick(i) && pressed_value(i, before) != pressed_value(i, value)) press_key(emulated_code(device->mode, i), pressed_value(i, value));
 }
 
+static void follow_dial(int i, int value) {
+    int absolute = controls[i].code == ABS_RX;
+    if (!dial || (controls[i].code != ABS_X && !absolute) || !stick_direction(value) || absolute == dial_absolute) return;
+    dial_absolute = absolute;
+    tell_overlay("dial %s", absolute ? "absolute" : "relative");
+}
+
 static void drive_control(struct device *device, int i, int value) {
     if (i < 0 || device->raw[i] == value) return;
     int before = device->raw[i];
     device->raw[i] = value;
     if (!routed(device)) return;
+    if (device->mode == DIGITAL) follow_dial(i, value);
     if (device->mode == ANALOG || device->mode == DIGITAL) sync_pad(device->pad);
     else emulate(device, i, before, value);
 }
@@ -1025,6 +1040,13 @@ static json_object *face_of(struct device *device, struct pad *controller_pad, c
     return NULL;
 }
 
+static const char *identity(struct device *device, struct pad *controller_pad) {
+    const char *phys = controller_pad ? udev_device_get_property_value(controller_pad->hid, "HID_PHYS") : device->evdev ? libevdev_get_phys(device->evdev) : NULL;
+    if (controller_pad && *controller_pad->address) return controller_pad->address;
+    if (device->evdev && libevdev_get_uniq(device->evdev) && *libevdev_get_uniq(device->evdev)) return libevdev_get_uniq(device->evdev);
+    return phys && *phys ? phys : device->name;
+}
+
 static json_object *device_entry(struct device *device) {
     json_object *entry = json_object_new_object(), *allowed = json_object_new_array(), *buttons = json_object_new_object();
     struct pad *controller_pad = pad_with_input(device);
@@ -1033,6 +1055,8 @@ static json_object *device_entry(struct device *device) {
     json_object_object_add(entry, "id", json_object_new_int(device->id));
     json_object_object_add(entry, "name", json_object_new_string(device->name));
     json_object_object_add(entry, "kind", json_object_new_string(kinds[device->kind].name));
+    json_object_object_add(entry, "identity", json_object_new_string(identity(device, controller_pad)));
+    json_object_object_add(entry, "sticks", json_object_new_boolean(device->kind == PAD && (!controller_pad || SDL_GameControllerHasAxis(controller_pad->controller, SDL_CONTROLLER_AXIS_LEFTX))));
     json_object_object_add(entry, "guide", json_object_new_boolean(device->guide));
     json_object_object_add(entry, "bluetooth", json_object_new_boolean(controller_pad && controller_pad->bus == BUS_BLUETOOTH));
     json_object_object_add(entry, "pad", device->pad == NO_PAD ? NULL : json_object_new_int(device->pad + 1));
@@ -1591,6 +1615,11 @@ static void command(char *line) {
             detach(controller_pad->instance);
             power_off(bluetooth);
         }
+    } else if (count == 2 && !strcmp(words[0], "dial")) {
+        dial = strcmp(words[1], "off") != 0;
+        dial_absolute = !strcmp(words[1], "absolute");
+    } else if (count == 3 && !strcmp(words[0], "tap")) {
+        tap(atoi(words[1]) - 1, control_named(words[2]));
     } else if (count == 2 && !strcmp(words[0], "touchpad")) {
         touchpad_pointer = !strcmp(words[1], "pointer");
     } else if (count >= 2 && !strcmp(words[0], "game")) {

@@ -55,6 +55,7 @@ vuThread = true
 [Logging]
 EnableSystemConsole = true
 EnableFileLogging = false
+EnableTimestamps = false
 $(pads)
 SETTINGS
 }

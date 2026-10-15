@@ -91,7 +91,7 @@ wait_for() {
   shift
   until "$@" >/dev/null 2>&1; do
     attempt=$((attempt + 1))
-    [ $attempt -le $attempts ] || { log FAIL "timed out waiting for: $*" >&2; diagnose; exit 1; }
+    [ $attempt -le $attempts ] || { "$@" >/dev/null || :; log FAIL "timed out waiting for: $*" >&2; diagnose; exit 1; }
     sleep $POLL_INTERVAL
   done
 }
@@ -795,11 +795,15 @@ sign_in_from_attract() {
   expect ".screen == \"home\" and $(players) == [1] and .session.players[0].devices == [$pad] and $(device_mode "$REMOTE_PAD") == \"analog\""
 }
 
-join_keyboard() {
-  ! holds "[$(device_named "$REMOTE_KEYBOARD_NAME") | .id] as \$ids | any(.session.players[].devices[]; . as \$id | \$ids | index(\$id) != null)" >/dev/null || return 0
+keyboard_at_picker() {
   key KEY_UP
   keyboard=$(device_id "$REMOTE_KEYBOARD_NAME")
   expect ".screen == \"whois\" and .session.picker == $keyboard and (.guide | not)"
+}
+
+join_keyboard() {
+  ! holds "[$(device_named "$REMOTE_KEYBOARD_NAME") | .id] as \$ids | any(.session.players[].devices[]; . as \$id | \$ids | index(\$id) != null)" >/dev/null || return 0
+  keyboard_at_picker
   key KEY_ENTER
   expect "(.screen == \"whois\" | not) and (.session.players[0].devices | index($keyboard) != null)"
 }
@@ -821,15 +825,36 @@ second_player_joins_and_leaves() {
   log ok "Player 2 logged out and gave the pad back"
 }
 
-change_emulation() {
+analog_choice() { guest "jq -r '.\"$1\".\"$2\" // \"auto\"' $PROFILES_DIR/1/analog.json"; }
+
+change_analog() {
   tap guide
-  expect '.guide'
-  highlight Emulate
-  expect "($(row_value Emulate)) == \"Default (Digital pad)\" and $(device_mode "$REMOTE_PAD") == \"digital\""
+  expect '.guide and ([.rows[].label] | index("Emulate") == null)'
+  highlight Analog
+  expect "($(row_value Analog)) == \"Auto (Off)\" and $(device_mode "$REMOTE_PAD") == \"digital\""
   tap dpright
-  expect "($(row_value Emulate)) == \"Analog pad\" and $(device_mode "$REMOTE_PAD") == \"analog\""
-  tap dpleft
-  expect "($(row_value Emulate)) == \"Default (Digital pad)\" and $(device_mode "$REMOTE_PAD") == \"digital\""
+  expect "($(row_value Analog)) == \"On\" and $(device_mode "$REMOTE_PAD") == \"analog\""
+  [ "$(analog_choice nes "$REMOTE_PAD")" = on ] || { log FAIL "the Analog choice was not saved for $REMOTE_PAD on nes" >&2; exit 1; }
+  tap dpright
+  expect "($(row_value Analog)) == \"Off\" and $(device_mode "$REMOTE_PAD") == \"digital\""
+  tap dpright
+  expect "($(row_value Analog)) == \"Auto (Off)\" and $(device_mode "$REMOTE_PAD") == \"digital\""
+  [ "$(analog_choice nes "$REMOTE_PAD")" = auto ] || { log FAIL "Auto kept a saved Analog choice" >&2; exit 1; }
+  tap guide
+  expect '.guide | not'
+}
+
+analog_for_pad_and_keyboard() {
+  combination="$REMOTE_KEYBOARD_NAME+$REMOTE_PAD"
+  tap guide
+  highlight Analog
+  expect "($(row_value Analog)) == \"Auto (Off)\""
+  tap dpright
+  expect "($(row_value Analog)) == \"On\" and $(device_mode "$REMOTE_PAD") == \"analog\""
+  [ "$(analog_choice nes "$combination")" = on ] && [ "$(analog_choice nes "$REMOTE_PAD")" = auto ] ||
+    { log FAIL "the Analog choice was not saved for the pad and keyboard together" >&2; exit 1; }
+  log ok "Analog remembers its choice per combination of devices"
+  adjust_to Analog "Auto (Off)"
   tap guide
   expect '.guide | not'
 }
@@ -852,7 +877,8 @@ input_holds() {
 import glob, sys, libevdev
 devices = (libevdev.Device(open(path, "rb")) for path in sorted(glob.glob("/dev/input/event*")))
 device = next(device for device in devices if device.name == sys.argv[1])
-sys.exit(any(device.value[libevdev.evbit(code)] != int(value) for code, value in zip(sys.argv[2::2], sys.argv[3::2])))
+wrong = [f"{code} is {actual}, not {value}" for code, value in zip(sys.argv[2::2], sys.argv[3::2]) if (actual := device.value[libevdev.evbit(code)]) != int(value)]
+sys.exit("\n".join(wrong) or None)
 PYTHON
 }
 
@@ -1087,7 +1113,7 @@ test_nes() {
   remember_guide_position
   apply_resolution_from_guide
   blow_into_microphone
-  change_emulation
+  change_analog
   second_player_joins_and_leaves alter-ego/nes
   save_states alter-ego/nes retroarch_loaded_saved_state
   retro_picture alter-ego/nes "Alter Ego"
@@ -1110,6 +1136,7 @@ test_nes() {
   expect "$(status_of alter-ego/nes paused)"
 
   join_keyboard
+  analog_for_pad_and_keyboard
   key KEY_LEFTMETA
   expect ".guide and ($(status_of lan-master/nes paused))"
   key KEY_ESC
@@ -1177,6 +1204,57 @@ test_dreamcast() {
   ! has_redream_license || save_states gravity-wave-twin-stick-shooter/dreamcast redream_read_loaded_state
   close_game gravity-wave-twin-stick-shooter/dreamcast "Gravity Wave"
   retro_shrinks_to_tv gravity-wave-twin-stick-shooter/dreamcast "Gravity Wave"
+}
+
+test_atari() {
+  install_and_play legendary-spear/atari2600 "Legendary Spear"
+  expect "$(device_mode "$REMOTE_PAD") == \"digital\""
+  send "1 leftx 0"
+  wait_for $STEP_SECONDS input_holds $PAD_NODES "$PAD_NAME" ABS_HAT0X -1 ABS_X 0
+  send "1 leftx $AXIS_CENTER" "1 rightx $AXIS_MAX"
+  wait_for $STEP_SECONDS input_holds $PAD_NODES "$PAD_NAME" ABS_HAT0X 0 ABS_X $AXIS_MAX
+  wait_for $STEP_SECONDS guest "grep -q 'stella_paddle_analog_absolute[[:space:]]enabled' $(game_log legendary-spear/atari2600)"
+  log ok "the right stick sets the dial's position, absolute"
+  send "1 rightx $AXIS_CENTER" "1 leftx $AXIS_MAX"
+  wait_for $STEP_SECONDS input_holds $PAD_NODES "$PAD_NAME" ABS_HAT0X 1 ABS_X $AXIS_MAX
+  wait_for $STEP_SECONDS guest "grep -q 'stella_paddle_analog_absolute[[:space:]]disabled' $(game_log legendary-spear/atari2600)"
+  send "1 leftx $AXIS_CENTER"
+  log ok "the left stick turns the dial, relative, and steers the joystick"
+  close_game legendary-spear/atari2600 "Legendary Spear"
+}
+
+analog_state_has() { guest "grep -qx '$2' $REWIND_DIR/$(game_name "$1")/states/$ANALOG_FILE"; }
+
+choose_analog() {
+  tap guide
+  expect '.guide'
+  highlight Analog
+  adjust_to Analog "$1"
+  tap guide
+  expect '.guide | not'
+}
+
+test_ps1() {
+  if [ ! -d "$TEST_BIOS/ps1" ]; then
+    log skip "ps1: no PS1 BIOS in $TEST_BIOS/ps1 on the build host"
+    return
+  fi
+  key=a-small-journey/ps1
+  install_and_play $key "A Small Journey"
+  wait_for $STEP_SECONDS analog_state_has $key "1 on usable"
+  log ok "the DualShock of a player whose pad has sticks starts in analog mode"
+  choose_analog Off
+  wait_for $STEP_SECONDS analog_state_has $key "1 off usable"
+  log ok "Analog Off switches the DualShock to digital while the game runs"
+  choose_analog "Auto (On)"
+  wait_for $STEP_SECONDS analog_state_has $key "1 on usable"
+  keyboard_at_picker
+  expect_reply $STEP_SECONDS 200 .ok --arg action login --arg arg 2 --arg device "$keyboard"
+  wait_for $STEP_SECONDS analog_state_has $key "2 off usable"
+  log ok "a player with only a keyboard, which has no sticks, gets a digital DualShock on Auto"
+  expect_reply $STEP_SECONDS 200 .ok --arg action log-out --arg profile 2
+  [ "$(jq -r .state.screen $OUT/reply.json)" != logout ] || expect_reply $STEP_SECONDS 200 .ok --arg action confirm-log-out --arg profile 2
+  close_game $key "A Small Journey"
 }
 
 test_genesis() {
@@ -1281,6 +1359,8 @@ test_ps2() {
   fi
   key=cubes-demo/ps2
   install_and_play $key "Cubes Demo"
+  wait_for $STEP_SECONDS analog_state_has $key "1 on locked"
+  log ok "PCSX2's log shows $key locking its DualShock 2 in analog mode"
   expect ".display.frame == \"$(picture_frame 4 3)\""
   restart_into $key 'Loading GS' expect_reply $STEP_SECONDS 200 ".ok and .state.settings.picture == \"enhanced\" and (.state | $(closed_and_running $key))" --arg action picture --arg step -1
   expect ".display.frame == \"$(picture_frame 16 9)\""
@@ -1354,7 +1434,7 @@ test_thumbnails() {
   log ok "one fetch downloads every boxart it asks for"
 }
 
-TESTS="capture symlinks display audio controllers nes genesis snes actions dreamcast msdos msx2 stores gpu logout reboot skins engines thumbnails enhanced ps2"
+TESTS="capture symlinks display audio controllers nes atari ps1 genesis snes actions dreamcast msdos msx2 stores gpu logout reboot skins engines thumbnails enhanced ps2"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in

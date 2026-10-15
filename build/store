@@ -44,6 +44,13 @@ add_zipped_without() {
   add_game "$slug" "$title" "$platform" "$SCRATCH/$slug.zip" "$config"
 }
 
+add_cue_disc() {
+  file=${4##*/}
+  extract "$file" "$4"
+  add_game "$1" "$2" "$3" "$(find "$SCRATCH/$file" -iname '*.cue')"
+  cp "$(find "$SCRATCH/$file" -iname '*.bin')" "$TEST_STORE/$1/$3/rom/"
+}
+
 pcsx2_crc() { python3 -I -c 'import struct, sys; data = open(sys.argv[1], "rb").read(); crc = 0
 for (word,) in struct.iter_unpack("<I", data[: len(data) // 4 * 4]): crc ^= word
 print(f"{crc:08X}")' "$1"; }
@@ -75,5 +82,6 @@ add_zipped cracky "Cracky" wsc "$INUFUTO/16bit/wsc/cracky_bin.zip" '*.wsc'
 add_zipped cracky-msx "Cracky MSX" msx2 "$INUFUTO/8bit/msx/cracky_rom.zip" '*.rom' '{"hold": {"key": "KEY_LEFTCTRL", "ms": 15000}}'
 add_zipped gc-controller-test "GC Controller Test" gamecube "$GITHUB/corenting/GC-Controller-Test/releases/download/v1.2/gc-1-2.zip" '*.dol'
 add_download mini-mine-rt "Mini Mine RT" psp "$GITHUB/Saymond/PSP-apps/releases/download/v2.0/EBOOT.PBP" '{"enhanced": {"scale": 2}}'
+[ ! -d "$TEST_BIOS/ps1" ] || add_cue_disc a-small-journey "A Small Journey" ps1 "$ARCHIVE/asj-1.0/asj-1.0.zip"
 [ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo "Cubes Demo" ps2 "$GITHUB/glampert/ps2-homebrew/raw/602441a6877a3136709d6320664340d52e3027a1/source/demos/bin/cubes_demo.elf" '{"enhanced": {"widescreen": true, "scale": 2}}'
 add_download gravity-wave-twin-stick-shooter "Gravity Wave" dreamcast "$GITHUB/richstokes/dreamcast-homebrew/releases/download/continuous/gravity-wave.cdi" "{\"pad\": $TWIN_STICK}"

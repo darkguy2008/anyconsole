@@ -94,6 +94,7 @@
 #define STRINGIFY(x) STRINGIFY_(x)
 #define PROFILE_NAME "Player %d"
 #define EMULATE_FILE "emulate.json"
+#define ANALOG_CHOICES_FILE "analog.json"
 #define DEFAULT_SKIN "classic"
 #define CURRENT_SCREEN "current-screen"
 #define RELOAD_SECONDS 0.2
@@ -115,7 +116,7 @@ static const struct { const char *name, *title; enum plane plane; } screens[] = 
 };
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
-              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN, CLEAR_THUMBNAILS,
+              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, ANALOG, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN, CLEAR_THUMBNAILS,
               SAVE_STATES, DELETE_STATE, OVERWRITE_STATE, CHOOSE_PICTURE };
 static const char *const actions[] = {
     [NOTHING] = "nothing", [OPEN_STORE] = "open-store", [OPEN_SETTINGS] = "open-settings", [OPEN_GAME] = "open-game", [PLAY] = "play", [RESUME] = "resume",
@@ -123,7 +124,7 @@ static const char *const actions[] = {
     [OPEN_MICROPHONES] = "open-microphones", [SET_DEVICE] = "set-device", [OPEN_CONTROLLERS] = "open-controllers", [PAIR] = "pair",
     [OPEN_CONTROLLER] = "open-controller", [FORGET] = "forget", [RELOAD] = "reload", [RESTART] = "restart", [POWER_OFF] = "power-off",
     [CHOOSE_DISPLAY] = "display", [CHOOSE_DISPLAY_MODE] = "display-mode", [APPLY_RESOLUTIONS] = "apply-resolutions", [CHOOSE_RESOLUTION] = "resolution",
-    [CHOOSE_SLEEP] = "sleep", [REWIND] = "rewind", [LOGIN] = "login", [EMULATE] = "emulate", [LOG_OUT_PLAYER] = "log-out",
+    [CHOOSE_SLEEP] = "sleep", [REWIND] = "rewind", [LOGIN] = "login", [EMULATE] = "emulate", [ANALOG] = "analog", [LOG_OUT_PLAYER] = "log-out",
     [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen", [CHOOSE_SKIN] = "skin",
     [CLEAR_THUMBNAILS] = "clear-thumbnails", [SAVE_STATES] = "save-states", [DELETE_STATE] = "delete-state", [OVERWRITE_STATE] = "overwrite-state",
     [CHOOSE_PICTURE] = "picture"};
@@ -142,12 +143,15 @@ static const struct { const char *name, *label; } mode_labels[] = {
 enum task { INSTALLING, UNINSTALLING, LAUNCHING };
 static const char *const tasks[] = {[INSTALLING] = "installing", [UNINSTALLING] = "uninstalling", [LAUNCHING] = "launching"};
 
+struct port { int analog, locked, pending, forced; };
+
 struct game {
     char slug[NAME_MAX + 1], platform[NAME_MAX + 1], thumbnail[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX], job_error[TEXT_MAX], error_line[TEXT_MAX];
-    json_object *emulate;
+    json_object *emulate, *analog;
     double thumbnail_aspect;
     time_t thumbnail_time;
-    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown, error_output, enhanced, restart_slot, booted;
+    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown, error_output, enhanced, restart_slot, booted, dial_absolute;
+    struct port ports[PADS];
     size_t job_length, error_length;
     enum task task;
     enum restart restart;
@@ -200,7 +204,7 @@ static struct notification notifications[NOTIFICATIONS_MAX];
 static int notification_count;
 static enum command repeating;
 static int repeat_timer, notification_timer, save_timer, watcher, log_file, changed = 1;
-static json_object *emulate_choices[PROFILES + 1];
+static json_object *emulate_choices[PROFILES + 1], *analog_choices[PROFILES + 1];
 static char rewinds[REWIND_STATES][NAME_MAX + 1];
 static cairo_surface_t *pending_screen, *newest_screen;
 static char newest_name[NAME_MAX + 1];
@@ -997,15 +1001,6 @@ static void drop_member(int index) {
     members[index] = members[--member_count];
 }
 
-static void read_controllers(void) {
-    json_object_put(controllers_state);
-    controllers_state = json_object_from_file(CONTROLLERS_FILE);
-    for (int i = member_count - 1; i >= 0; i--)
-        if (!device_of(members[i].device)) drop_member(i);
-    if (!device_of(picker)) picker = NO_DEVICE;
-    changed = 1;
-}
-
 static int controller_count(void) { return length_of(list_at(controllers_state, "controllers")); }
 
 static json_object *controller_at(int index) { return json_object_array_get_idx(list_at(controllers_state, "controllers"), index); }
@@ -1125,16 +1120,78 @@ static void write_json(const char *path, json_object *object) {
     if (json_object_to_file_ext(partial, object, JSON_C_TO_STRING_PLAIN) < 0 || rename(partial, path) < 0) perror(path);
 }
 
-static const char *emulate_path(int profile) {
+static const char *choices_path(int profile, const char *file) {
     static char path[PATH_MAX];
-    snprintf(path, sizeof path, PROFILES_DIR "/%d/" EMULATE_FILE, profile);
+    snprintf(path, sizeof path, PROFILES_DIR "/%d/%s", profile, file);
     return path;
 }
 
-static json_object *emulate_of(int profile) {
-    if (!emulate_choices[profile]) emulate_choices[profile] = json_object_from_file(emulate_path(profile));
-    if (!emulate_choices[profile]) emulate_choices[profile] = json_object_new_object();
-    return emulate_choices[profile];
+static json_object *choices_of(json_object **cache, int profile, const char *file) {
+    if (!cache[profile]) cache[profile] = json_object_from_file(choices_path(profile, file));
+    if (!cache[profile]) cache[profile] = json_object_new_object();
+    return cache[profile];
+}
+
+static json_object *emulate_of(int profile) { return choices_of(emulate_choices, profile, EMULATE_FILE); }
+
+static json_object *analog_of(int profile) { return choices_of(analog_choices, profile, ANALOG_CHOICES_FILE); }
+
+static void choose(json_object **cache, int profile, const char *file, const char *outer, const char *inner, const char *value) {
+    json_object *choices = choices_of(cache, profile, file), *chosen;
+    if (!json_object_object_get_ex(choices, outer, &chosen)) {
+        chosen = json_object_new_object();
+        json_object_object_add(choices, outer, chosen);
+    }
+    if (*value) json_object_object_add(chosen, inner, json_object_new_string(value));
+    else json_object_object_del(chosen, inner);
+    mkdir(choices_path(profile, ""), DIRECTORY_MODE);
+    write_json(choices_path(profile, file), choices);
+}
+
+static int by_text(const void *left, const void *right) { return strcmp(*(const char *const *)left, *(const char *const *)right); }
+
+static const char *combination(int profile) {
+    static char text[INPUT_DEVICES_MAX * TEXT_MAX];
+    const char *identities[INPUT_DEVICES_MAX];
+    int count = 0, length = 0;
+    for (int i = 0; i < member_count; i++)
+        if (members[i].profile == profile && device_of(members[i].device)) identities[count++] = string_at(device_of(members[i].device), "identity", NULL);
+    qsort(identities, count, sizeof *identities, by_text);
+    text[0] = '\0';
+    for (int i = 0; i < count; i++) length += snprintf(text + length, sizeof text - length, "%s%s", i ? "+" : "", identities[i]);
+    return text;
+}
+
+static const char *analog_override(int profile, int game) { return string_at(json_object_object_get(analog_of(profile), games[game].platform), combination(profile), NULL); }
+
+static int analog_auto(int profile, int game) {
+    json_object *toggle;
+    int seat = seat_of(profile);
+    if (json_object_object_get_ex(games[game].analog, "toggle", &toggle) && json_object_object_get_ex(toggle, "button", NULL))
+        return seat >= 0 && games[game].ports[seat].analog > 0;
+    if (!json_object_get_boolean(json_object_object_get(games[game].analog, "sticks"))) return 0;
+    for (int i = 0; i < member_count; i++)
+        if (members[i].profile == profile && json_object_get_boolean(json_object_object_get(device_of(members[i].device), "sticks"))) return 1;
+    return 0;
+}
+
+static int analog_wanted(int profile, int game) {
+    const char *chosen = analog_override(profile, game);
+    return *chosen ? !strcmp(chosen, "on") : analog_auto(profile, game);
+}
+
+static const char *analog_value(void) {
+    static char value[TEXT_MAX];
+    const char *chosen = analog_override(guide_profile, active);
+    if (*chosen) return !strcmp(chosen, "on") ? "On" : "Off";
+    snprintf(value, sizeof value, "Auto (%s)", analog_auto(guide_profile, active) ? "On" : "Off");
+    return value;
+}
+
+static int analog_row(int game) { return games[game].analog && !*string_at(games[game].emulate, "pad", NULL); }
+
+static const char *analog_mode(int profile, int game) {
+    return json_object_object_get_ex(games[game].analog, "toggle", NULL) || analog_wanted(profile, game) ? "analog" : "digital";
 }
 
 static const char *default_mode(int game, json_object *device) {
@@ -1144,6 +1201,7 @@ static const char *default_mode(int game, json_object *device) {
 
 static const char *mode_for(int profile, int game, json_object *device) {
     if (game < 0) return string_at(device, "native", NULL);
+    if (analog_row(game) && !strcmp(string_at(device, "kind", NULL), "pad")) return analog_mode(profile, game);
     const char *chosen = string_at(emulate_of(profile), key(game), string_at(device, "kind", NULL));
     return mode_index(device, chosen) < 0 ? default_mode(game, device) : chosen;
 }
@@ -1157,27 +1215,73 @@ static const char *emulate_value(void) {
     return value;
 }
 
-static void choose_mode(int profile, int game, const char *kind, const char *mode) {
-    char directory[PATH_MAX];
-    json_object *choices = emulate_of(profile), *game_choices;
-    if (!json_object_object_get_ex(choices, key(game), &game_choices)) {
-        game_choices = json_object_new_object();
-        json_object_object_add(choices, key(game), game_choices);
+static void send_command(int index, const char *command) {
+    if (dprintf(games[index].commands, "%s\n", command) < 0) perror(command);
+}
+
+static void set_core_option(int index, const char *option, const char *value) {
+    char command[TEXT_MAX];
+    snprintf(command, sizeof command, "SET_CORE_OPTION %s %s", option, value);
+    send_command(index, command);
+}
+
+static void press_analog(int index, int seat, json_object *toggle) {
+    json_object *forced;
+    if (!json_object_object_get_ex(toggle, "forced", &forced)) {
+        tell_padd("tap %d %s", seat + 1, string_at(toggle, "button", NULL));
+        return;
     }
-    if (*mode) json_object_object_add(game_choices, kind, json_object_new_string(mode));
-    else json_object_object_del(game_choices, kind);
-    snprintf(directory, sizeof directory, PROFILES_DIR "/%d", profile);
-    mkdir(directory, DIRECTORY_MODE);
-    write_json(emulate_path(profile), choices);
+    struct port *port = &games[index].ports[seat];
+    port->forced = !port->forced;
+    set_core_option(index, json_object_get_string(json_object_array_get_idx(forced, seat)), port->forced ? "true" : "false");
+}
+
+static void converge_analog(int index) {
+    struct game *game = &games[index];
+    json_object *toggle;
+    if (index < 0 || !game->pid || !json_object_object_get_ex(game->analog, "toggle", &toggle)) return;
+    for (int seat = 0; seat < player_count; seat++) {
+        struct port *port = &game->ports[seat];
+        if (port->analog < 0 || port->analog == analog_wanted(players[seat], index) || port->locked || port->pending) continue;
+        port->pending = 1;
+        press_analog(index, seat, toggle);
+    }
+}
+
+static void read_analog(int index) {
+    char path[PATH_MAX], line[TEXT_MAX], mode[WORD_MAX + 1], lock[WORD_MAX + 1];
+    int port;
+    FILE *file = fopen(rewind_path(path, index, "/" STATES "/" ANALOG_FILE), "re");
+    if (!file) { perror(path); return; }
+    while (fgets(line, sizeof line, file))
+        if (sscanf(line, "%d %" STRINGIFY(WORD_MAX) "s %" STRINGIFY(WORD_MAX) "s", &port, mode, lock) == 3 && port >= 1 && port <= PADS) {
+            games[index].ports[port - 1] = (struct port){.analog = !strcmp(mode, "on"), .locked = !strcmp(lock, "locked"), .forced = games[index].ports[port - 1].forced};
+        }
+    fclose(file);
+    if (index == active) converge_analog(index);
+}
+
+static const char *dial_mode(void) {
+    if (active < 0 || !*string_at(games[active].analog, "dial", NULL)) return "off";
+    return games[active].dial_absolute ? "absolute" : "relative";
+}
+
+static void turn_dial(const char *mode) {
+    if (active < 0 || !games[active].pid || !*string_at(games[active].analog, "dial", NULL)) return;
+    games[active].dial_absolute = !strcmp(mode, "absolute");
+    set_core_option(active, string_at(games[active].analog, "dial", NULL), games[active].dial_absolute ? "enabled" : "disabled");
+    tell_padd("dial %s", dial_mode());
 }
 
 static void apply_modes(void) {
     if (active != applied_game) tell_padd("game %s", active >= 0 ? key(active) : NO_GAME);
+    tell_padd("dial %s", dial_mode());
     applied_game = active;
     for (int i = 0; i < member_count; i++) {
         json_object *device = device_of(members[i].device);
         if (device) tell_padd("mode %d %s", members[i].device, mode_for(members[i].profile, active, device));
     }
+    if (active >= 0) converge_analog(active);
 }
 
 static void screen_path(int index, char *path) {
@@ -1193,11 +1297,35 @@ static void toggle_second_screen(void) {
     else close(open(path, O_WRONLY | O_CREAT | O_CLOEXEC, S_IRUSR | S_IWUSR));
 }
 
+static void read_controllers(void) {
+    int dropped = 0;
+    json_object_put(controllers_state);
+    controllers_state = json_object_from_file(CONTROLLERS_FILE);
+    for (int i = member_count - 1; i >= 0; i--)
+        if (!device_of(members[i].device)) {
+            drop_member(i);
+            dropped = 1;
+        }
+    if (dropped) apply_modes();
+    if (!device_of(picker)) picker = NO_DEVICE;
+    changed = 1;
+}
+
 static void cycle_mode(int step) {
     json_object *device = device_of(focus), *modes = list_at(device, "modes");
     int current = mode_index(device, string_at(emulate_of(guide_profile), key(active), kind_of(focus))) + 1;
     int next = cycle(current, length_of(modes), step);
-    choose_mode(guide_profile, active, kind_of(focus), next ? json_object_get_string(json_object_array_get_idx(modes, next - 1)) : "");
+    choose(emulate_choices, guide_profile, EMULATE_FILE, key(active), kind_of(focus), next ? json_object_get_string(json_object_array_get_idx(modes, next - 1)) : "");
+    apply_modes();
+}
+
+static void cycle_analog(int step) {
+    static const char *const choices[] = {"", "on", "off"};
+    const char *chosen = analog_override(guide_profile, active);
+    int current = 0;
+    for (unsigned i = 1; i < sizeof choices / sizeof *choices; i++)
+        if (!strcmp(chosen, choices[i])) current = i;
+    choose(analog_choices, guide_profile, ANALOG_CHOICES_FILE, games[active].platform, combination(guide_profile), choices[cycle(current, sizeof choices / sizeof *choices - 1, step)]);
     apply_modes();
 }
 
@@ -1250,7 +1378,8 @@ static int build(struct view *view) {
             count = add_row(count, SHOW_DASHBOARD, 0, "Dashboard", "");
             if (rewindable()) count = add_row(count, REWIND, 0, "Rewind", "%s", rewind_age());
             if (rewindable() && guide_profile) count = add_row(count, SAVE_STATES, 0, "Save States", "%s", save_slot_value());
-            if (guide_profile) count = add_row(count, EMULATE, 0, "Emulate", "%s", emulate_value());
+            if (guide_profile && analog_row(active)) count = add_row(count, ANALOG, 0, "Analog", "%s", analog_value());
+            else if (guide_profile && !games[active].analog) count = add_row(count, EMULATE, 0, "Emulate", "%s", emulate_value());
             if (games[active].second_screen) count = add_row(count, SECOND_SCREEN, 0, "Second screen", "%s", games[active].screen_shown ? "Inset" : "Off");
             count = add_picture_row(count);
             break;
@@ -1407,10 +1536,6 @@ static int game_log(int index) {
     char path[PATH_MAX];
     snprintf(path, sizeof path, LOG_DIR "/%s.log", name(index));
     return open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, S_IRUSR | S_IWUSR);
-}
-
-static void send_command(int index, const char *command) {
-    if (dprintf(games[index].commands, "%s\n", command) < 0) perror(command);
 }
 
 static void resume(int index) {
@@ -1691,9 +1816,10 @@ static void read_probe(int index) {
     game->second_screen = *string_at(labels, SCREEN_LABEL, NULL);
     screen_path(index, path);
     game->screen_shown = !access(path, F_OK);
+    json_object_put(game->analog);
+    game->analog = json_tokener_parse(string_at(labels, ANALOG_LABEL, NULL));
     json_object_put(game->emulate);
-    game->emulate = json_tokener_parse(string_at(labels, EMULATE_LABEL, NULL));
-    if (!game->emulate) game->emulate = json_object_new_object();
+    game->emulate = json_object_new_object();
     json_object_put(labels);
     snprintf(path, sizeof path, GAMES_DIR "/%s/" MANIFEST, game->slug);
     manifest = json_object_from_file(path);
@@ -1730,7 +1856,8 @@ static void play(int index) {
     memset(guide_depths, 0, sizeof guide_depths);
     game->rewinds = 0;
     save_slot = 0;
-    game->paused = game->closing = game->booted = 0;
+    game->paused = game->closing = game->booted = game->dial_absolute = 0;
+    for (int seat = 0; seat < PADS; seat++) game->ports[seat] = (struct port){.analog = -1, .forced = 1};
     show_game(index);
     snprintf(owner, sizeof owner, "%d", game->owner);
     game->pid = spawn((char *[]){"games", "run", game->slug, game->platform, directory, states, owner, resume_slot, NULL}, commands[0], output, output);
@@ -1917,7 +2044,7 @@ static void logout(int profile, int device) {
 
 static int inert(enum action action) {
     return action == NOTHING || action == VOLUME || action == MICROPHONE_VOLUME || action == SECOND_SCREEN || action == CHOOSE_DISPLAY ||
-           action == CHOOSE_DISPLAY_MODE || action == CHOOSE_RESOLUTION || action == CHOOSE_SLEEP || action == CHOOSE_SKIN || action == EMULATE || action == CHOOSE_PICTURE;
+           action == CHOOSE_DISPLAY_MODE || action == CHOOSE_RESOLUTION || action == CHOOSE_SLEEP || action == CHOOSE_SKIN || action == EMULATE || action == ANALOG || action == CHOOSE_PICTURE;
 }
 
 static void act(struct row *row, int profile) {
@@ -2011,6 +2138,7 @@ static void adjust(enum action action, int step) {
     if (action == REWIND && rewind_back - step >= 0 && rewind_back - step <= rewind_count) rewind_back -= step;
     if (action == SAVE_STATES && save_slot + step >= 0 && save_slot + step < SAVE_SLOTS) save_slot += step;
     if (action == EMULATE) cycle_mode(step);
+    if (action == ANALOG) cycle_analog(step);
     if (action == SECOND_SCREEN) toggle_second_screen();
 }
 
@@ -2624,7 +2752,9 @@ static void reap(void) {
 static int read_game_change(struct inotify_event *event) {
     for (int i = 0; i < game_count; i++) {
         if (event->wd == games[i].states_watch) {
-            if (i != active) return 1;
+            int analog = !strcmp(event->name, ANALOG_FILE);
+            if (analog) read_analog(i);
+            if (i != active || analog) return 1;
             refresh_rewinds();
             if (games[i].restart == SAVING && newest_slot() > games[i].restart_slot) {
                 games[i].restart = CLOSING;
@@ -2899,6 +3029,7 @@ static void handle_message(char *line, void *context) {
     if (!strncmp(line, NOTIFY_PREFIX, strlen(NOTIFY_PREFIX))) notify("%s", line + strlen(NOTIFY_PREFIX));
     else if (!strcmp(line, "reset")) reset_devices();
     else if (sscanf(line, "connect %d", &first) == 1) connected(first);
+    else if (sscanf(line, "dial %" STRINGIFY(WORD_MAX) "s", name) == 1) turn_dial(name);
     else if (sscanf(line, "press %d %" STRINGIFY(WORD_MAX) "s %d", &first, name, &value) == 3) {
         know(first);
         hold(first, command_named(name), value);
