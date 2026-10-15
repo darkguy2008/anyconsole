@@ -9,7 +9,6 @@ KERNEL_VERSION=$(basename /lib/modules/*-lts)
 MODULE_DIR=/lib/modules/$KERNEL_VERSION
 STAGE=build/out/stage
 INITRAMFS_FEATURES="base ata scsi usb nvme ext4"
-INITRAMFS_CACHE=build/out/cache/initramfs-$KERNEL_VERSION-$(echo $INITRAMFS_FEATURES | tr " " -)
 MODULE_TREE=build/out/module-tree
 MODULE_FEATURES=build/out/features
 RELEASE=rel/$VERSION
@@ -17,10 +16,8 @@ BASE_IMAGE=$BASE_IMAGE_PREFIX-$(basename "$PWD")
 
 stage_kernel() {
   rm -rf "$STAGE"
-  mkdir -p "$STAGE/boot" build/out/cache
-  [ -f "$INITRAMFS_CACHE" ] ||
-    mkinitfs -F "$INITRAMFS_FEATURES" -o "$INITRAMFS_CACHE" "$KERNEL_VERSION"
-  cp "$INITRAMFS_CACHE" "$STAGE/boot/initramfs"
+  mkdir -p "$STAGE/boot"
+  mkinitfs -F "$INITRAMFS_FEATURES" -o "$STAGE/boot/initramfs" "$KERNEL_VERSION"
   cp /boot/vmlinuz-lts "$STAGE/boot/kernel"
 }
 
