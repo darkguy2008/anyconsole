@@ -94,7 +94,7 @@ case "${1:-status}" in
   start) on_host sh "$DEPLOY_PATH/build/run" ;;
   link) ssh "$DEPLOY_HOST" "echo set_link $NIC $2 | socat - UNIX-CONNECT:$DEPLOY_PATH/build/out/monitor.sock" >/dev/null ;;
   ssh) shift; route=$(ssh_route); with_password ssh $route "$SSH_HOST" "$@" ;;
-  bios) route=$(ssh_route); with_password rsync -a -e "ssh $route" "$2/" "$SSH_HOST:$BIOS_DIR/" ;;
+  bios) route=$(ssh_route); with_password rsync -a --chmod=u=rwX,go=rX -e "ssh $route" "$2/" "$SSH_HOST:$BIOS_DIR/" ;;
   log) ssh "$DEPLOY_HOST" "tail -n ${2:-40} $DEPLOY_PATH/build/out/boot.log" ;;
   help) cat >&2 <<'USAGE'
 usage: console [box address] <command>
