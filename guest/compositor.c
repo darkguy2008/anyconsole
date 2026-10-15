@@ -720,14 +720,6 @@ static struct wlr_texture *compose(struct wlr_texture *game, int game_width, str
     return wlr_texture_from_buffer(renderer, *composed);
 }
 
-static struct wlr_gles2_texture_attribs current_attributes(struct wlr_texture *texture) {
-    struct wlr_gles2_texture_attribs attributes;
-    struct wlr_egl *egl = wlr_gles2_renderer_get_egl(renderer);
-    wlr_gles2_texture_get_attribs(texture, &attributes);
-    eglMakeCurrent(wlr_egl_get_display(egl), EGL_NO_SURFACE, EGL_NO_SURFACE, wlr_egl_get_context(egl));
-    return attributes;
-}
-
 static void draw_quad(GLint position, GLint coordinate, const GLfloat *corners) {
     static const GLfloat coordinates[] = {0, 0, 1, 0, 0, 1, 1, 1};
     glVertexAttribPointer(position, 2, GL_FLOAT, GL_FALSE, 0, corners);
@@ -773,6 +765,8 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct
         wlr_buffer_unlock(buffer);
         return 0;
     }
+    struct wlr_gles2_texture_attribs attributes;
+    wlr_gles2_texture_get_attribs(texture, &attributes);
     GLuint framebuffer = wlr_gles2_renderer_get_buffer_fbo(renderer, buffer);
     struct wlr_box picture = composed ? box : place(box, game_width, texture->height);
     GLfloat left = 2.0f * picture.x / output->width - 1, right = 2.0f * (picture.x + picture.width) / output->width - 1;
@@ -783,7 +777,7 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct
     glDisable(GL_BLEND);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
-    blit(current_attributes(texture), GL_LINEAR, texture->width, texture->height, (GLfloat)texture->width / picture.width,
+    blit(attributes, GL_LINEAR, texture->width, texture->height, (GLfloat)texture->width / picture.width,
         (GLfloat)texture->height / picture.height, corners);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glFlush();
@@ -886,8 +880,6 @@ static void bind_target(struct retro_target *target, int width, int height, int 
     target->height = height;
     attach_texture(target->texture, target->framebuffer, width, height, floating ? GL_RGBA16F : GL_RGBA8, floating ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE,
         target->filter, GL_CLAMP_TO_BORDER);
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE) fprintf(stderr, "compositor: retro framebuffer %dx%d (float %d) incomplete: 0x%x\n", width, height, floating, status);
 }
 
 static int pass_size(enum scale_type type, float scale, int source, int viewport) {
@@ -901,7 +893,8 @@ static int pass_size(enum scale_type type, float scale, int source, int viewport
 static struct wlr_texture *retro_picture(struct wlr_texture *game, struct wlr_buffer **held) {
     static const GLfloat corners[] = {-1, -1, 1, -1, -1, 1, 1, 1};
     struct wlr_box screen = area(), picture = place(screen, shown->display_width, game->height);
-    struct wlr_gles2_texture_attribs attributes = current_attributes(game);
+    struct wlr_gles2_texture_attribs attributes;
+    wlr_gles2_texture_get_attribs(game, &attributes);
     struct wlr_box tv = tv_signal(game->width, game->height);
     if (!retro_passes) load_retro();
     glDisable(GL_BLEND);
@@ -1412,6 +1405,8 @@ int main(int argc, char *argv[]) {
     renderer = wlr_renderer_autocreate(backend);
     allocator = renderer ? wlr_allocator_autocreate(backend, renderer) : NULL;
     if (!allocator) { fprintf(stderr, "compositor: no renderer\n"); return 1; }
+    struct wlr_egl *egl = wlr_gles2_renderer_get_egl(renderer);
+    eglMakeCurrent(wlr_egl_get_display(egl), EGL_NO_SURFACE, EGL_NO_SURFACE, wlr_egl_get_context(egl));
     wlr_renderer_init_wl_display(renderer, display);
     wlr_compositor_create(display, COMPOSITOR_VERSION, renderer);
     struct wlr_xdg_shell *xdg_shell = wlr_xdg_shell_create(display, XDG_SHELL_VERSION);
