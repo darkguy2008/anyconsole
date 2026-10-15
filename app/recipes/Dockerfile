@@ -79,6 +79,7 @@ COPY --from=cores /cores/snes9x_libretro.so /retroarch/core.so
 FROM retroarch AS n64
 LABEL anyconsole.launch="z64 n64 v64" anyconsole.thumbnails="Nintendo - Nintendo 64"
 COPY --from=cores /cores/parallel_n64_libretro.so /retroarch/core.so
+COPY n64.opt /retroarch/core.opt
 
 # genesis Sega Genesis
 FROM retroarch AS genesis
