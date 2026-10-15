@@ -45,6 +45,7 @@ Renderer = $renderer
 VsyncEnable = true
 SyncToHostRefreshRate = true
 UseVSyncForTiming = true
+SkipDuplicateFrames = false
 AspectRatio = $aspect_ratio
 FMVAspectRatioSwitch = $PICTURE_ASPECT
 upscale_multiplier = $(enhanced scale $NATIVE_SCALE)
