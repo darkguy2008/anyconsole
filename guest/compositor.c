@@ -148,7 +148,7 @@ struct window {
     long log_read;
     float aspect;
     struct wl_list link;
-    struct wl_listener commit, map, unmap, destroy, activate, request_fullscreen;
+    struct wl_listener commit, map, unmap, destroy, activate, minimize, request_fullscreen;
 };
 
 struct keyboard { struct wlr_keyboard *keyboard; struct wl_listener key, modifiers, destroy; };
@@ -886,6 +886,8 @@ static void bind_target(struct retro_target *target, int width, int height, int 
     target->height = height;
     attach_texture(target->texture, target->framebuffer, width, height, floating ? GL_RGBA16F : GL_RGBA8, floating ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE,
         target->filter, GL_CLAMP_TO_BORDER);
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) fprintf(stderr, "compositor: retro framebuffer %dx%d (float %d) incomplete: 0x%x\n", width, height, floating, status);
 }
 
 static int pass_size(enum scale_type type, float scale, int source, int viewport) {
@@ -1052,6 +1054,7 @@ static void show(struct window *window) {
         wlr_xdg_toplevel_set_activated(window->toplevel, true);
         struct wlr_surface *surface = window->toplevel->base->surface;
         struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(seat);
+        wlr_foreign_toplevel_handle_v1_set_minimized(window->handle, false);
         wlr_foreign_toplevel_handle_v1_set_activated(window->handle, true);
         if (keyboard) wlr_seat_keyboard_notify_enter(seat, surface, keyboard->keycodes, keyboard->num_keycodes, &keyboard->modifiers);
         else wlr_seat_keyboard_notify_enter(seat, surface, NULL, 0, NULL);
@@ -1069,6 +1072,13 @@ static void on_window_activate(struct wl_listener *listener, void *data) {
     (void)data;
     struct window *window = wl_container_of(listener, window, activate);
     show(window);
+}
+
+static void on_window_minimize(struct wl_listener *listener, void *data) {
+    struct wlr_foreign_toplevel_handle_v1_minimized_event *event = data;
+    struct window *window = wl_container_of(listener, window, minimize);
+    wlr_foreign_toplevel_handle_v1_set_minimized(window->handle, event->minimized);
+    if (event->minimized && window == shown) show(NULL);
 }
 
 static void schedule_game_frame(struct wlr_ext_image_capture_source_v1 *source) {
@@ -1146,6 +1156,7 @@ static void on_window_map(struct wl_listener *listener, void *data) {
     window->handle = wlr_foreign_toplevel_handle_v1_create(foreign);
     wlr_foreign_toplevel_handle_v1_set_app_id(window->handle, window->app_id);
     listen(&window->activate, &window->handle->events.request_activate, on_window_activate);
+    listen(&window->minimize, &window->handle->events.request_minimize, on_window_minimize);
     window->listed = wlr_ext_foreign_toplevel_handle_v1_create(listing, &(struct wlr_ext_foreign_toplevel_handle_v1_state){.app_id = window->app_id});
     window->listed->data = window;
     show(window);
@@ -1156,6 +1167,7 @@ static void on_window_unmap(struct wl_listener *listener, void *data) {
     struct window *window = wl_container_of(listener, window, unmap);
     if (window == shown) show(NULL);
     wl_list_remove(&window->activate.link);
+    wl_list_remove(&window->minimize.link);
     wlr_foreign_toplevel_handle_v1_destroy(window->handle);
     wlr_ext_foreign_toplevel_handle_v1_destroy(window->listed);
 }

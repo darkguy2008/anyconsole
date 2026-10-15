@@ -158,7 +158,7 @@ struct row { char label[TEXT_MAX], value[TEXT_MAX]; enum action action; int arg;
 struct device { int id; char name[TEXT_MAX], node[TEXT_MAX]; };
 struct member { int device, profile; };
 struct notification { char text[TEXT_MAX]; struct timespec expires; };
-struct window { struct zwlr_foreign_toplevel_handle_v1 *handle; struct ext_foreign_toplevel_handle_v1 *listed; char app_id[TEXT_MAX]; };
+struct window { struct zwlr_foreign_toplevel_handle_v1 *handle; struct ext_foreign_toplevel_handle_v1 *listed; char app_id[TEXT_MAX]; int activated; };
 struct request {
     int fd, waiting, game;
     size_t length;
@@ -2482,6 +2482,10 @@ static void settle(void) {
         if (!games[i].pid || !game_window(i) || games[i].closing || games[i].paused == pause || games[i].freezer) continue;
         freeze(i, pause);
     }
+    for (int i = 0; i < game_count; i++) {
+        struct window *window = game_window(i);
+        if (window && window->activated && (i != active || dashboard_open)) zwlr_foreign_toplevel_handle_v1_set_minimized(window->handle);
+    }
     apply_governor();
     if (menu_told != menu_wanted()) {
         menu_told = menu_wanted();
@@ -2604,7 +2608,16 @@ static void on_toplevel_app_id(void *data, struct zwlr_foreign_toplevel_handle_v
 
 static void on_toplevel_output(void *data, struct zwlr_foreign_toplevel_handle_v1 *handle, struct wl_output *output) { (void)data, (void)handle, (void)output; }
 
-static void on_toplevel_state(void *data, struct zwlr_foreign_toplevel_handle_v1 *handle, struct wl_array *state) { (void)data, (void)handle, (void)state; }
+static void on_toplevel_state(void *data, struct zwlr_foreign_toplevel_handle_v1 *handle, struct wl_array *states) {
+    (void)data;
+    uint32_t *state;
+    for (int i = 0; i < window_count; i++)
+        if (windows[i].handle == handle) {
+            windows[i].activated = 0;
+            wl_array_for_each(state, states) windows[i].activated |= *state == ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED;
+        }
+    changed = 1;
+}
 
 static void on_toplevel_done(void *data, struct zwlr_foreign_toplevel_handle_v1 *handle) { (void)data, (void)handle; }
 
