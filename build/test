@@ -1010,7 +1010,7 @@ test_display() {
   expect '.screen == "home"'
 }
 
-probe_skin() { guest "mkdir -p $USER_SKINS_DIR/probe && echo \"$1\" > $USER_SKINS_DIR/probe/skin.js"; }
+probe_skin() { guest "mkdir -p $USER_SKINS_DIR/probe && cat > $USER_SKINS_DIR/probe/skin.js"; }
 
 test_skins() {
   highlight Store
@@ -1073,15 +1073,24 @@ test_skins() {
   fakepad usb unplug
   expect '(.controllers.controllers | length) == 0'
   ! api POST settings "skin ../classic" 2>/dev/null || { log FAIL "accepted a skin outside the skin folders" >&2; exit 1; }
-  probe_skin "import { mount, select, useConsole } from 'anyconsole'; mount(() => select(useConsole().rows.length - 1));"
+  echo "import { mount, select, useConsole } from 'anyconsole'; mount(() => select(useConsole().rows.length - 1));" | probe_skin
   api POST settings "skin probe" >/dev/null
   expect '.skin == "probe" and .selected == (.rows | length) - 1'
-  probe_skin "import { select } from 'anyconsole'; select(0);"
+  echo "import { select } from 'anyconsole'; select(0);" | probe_skin
   expect '.selected == 0'
   log ok "a skin in $USER_SKINS_DIR loads and reloads when it changes"
-  probe_skin "throw new Error('broken');"
+  echo "throw new Error('broken');" | probe_skin
   expect '.settings.skin == "probe" and .skin == "classic"'
   log ok "a broken skin falls back to classic"
+  probe_skin <<'SKIN'
+import { html, mount } from 'anyconsole';
+mount(() => html`<text style=${{ fontFamily: 'probe.ttf', fontSize: 200, color: '#ffffff' }}>Aa</text>`);
+SKIN
+  expect '.skin == "probe"'
+  wait_for $STEP_SECONDS capture_settled font-missing
+  guest "cp $SKINS_DIR/switch/Nunito.ttf $USER_SKINS_DIR/probe/probe.ttf"
+  wait_for $STEP_SECONDS capture_differs font-missing font-added
+  log ok "a skin draws a font that appears after it failed to open"
   api POST settings "skin classic" >/dev/null
   guest "rm -r $USER_SKINS_DIR/probe"
   expect '.settings.skin == "classic" and .skin == "classic"'

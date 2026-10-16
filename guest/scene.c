@@ -124,6 +124,7 @@ struct face {
     hb_font_t *hb;
     struct glyph *glyphs;
     int glyph_count, glyph_capacity;
+    unsigned folder_generation;
 };
 struct image { char key[PATH_MAX]; GLuint texture; int width, height, users, named, loaded, pending; time_t mtime; unsigned long drawn; cairo_surface_t *surface; };
 struct decode { struct decode *next; struct image *image; char path[PATH_MAX]; float blur; time_t mtime; cairo_surface_t *picture; };
@@ -169,6 +170,7 @@ static YGNodeRef pristine;
 static FT_Library library;
 static struct face faces[FACES_MAX];
 static int face_count;
+static unsigned folder_generation;
 static struct page pages[ATLAS_PAGES_MAX];
 static int page_count;
 static struct image images[IMAGES_MAX];
@@ -338,7 +340,10 @@ void scene_detach(void) {
     egl_surface = EGL_NO_SURFACE;
 }
 
-void scene_folder(const char *path) { snprintf(folder, sizeof folder, "%s", path); }
+void scene_folder(const char *path) {
+    snprintf(folder, sizeof folder, "%s", path);
+    folder_generation++;
+}
 
 const char *scene_resolve(const char *name, char path[PATH_MAX]) {
     if (*name == '/') return name;
@@ -628,11 +633,16 @@ static struct face *open_face(const char *family, const char *variation, float w
     const char *path = family ? scene_resolve(family, resolved) : NULL;
     if (!path) return NULL;
     snprintf(key, sizeof key, "%s|%s|%g", path, variation ? variation : "", weight);
-    for (int i = 0; i < face_count; i++)
-        if (!strcmp(faces[i].key, key)) return faces[i].ft ? &faces[i] : NULL;
-    if (face_count == FACES_MAX) return NULL;
-    struct face *face = &faces[face_count++];
-    snprintf(face->key, sizeof face->key, "%s", key);
+    struct face *face = NULL;
+    for (int i = 0; i < face_count && !face; i++)
+        if (!strcmp(faces[i].key, key)) face = &faces[i];
+    if (face && (face->ft || face->folder_generation == folder_generation)) return face->ft ? face : NULL;
+    if (!face) {
+        if (face_count == FACES_MAX) return NULL;
+        face = &faces[face_count++];
+        snprintf(face->key, sizeof face->key, "%s", key);
+    }
+    face->folder_generation = folder_generation;
     if (FT_New_Face(library, path, 0, &face->ft)) {
         fprintf(stderr, "scene: cannot open font %s\n", path);
         face->ft = NULL;
