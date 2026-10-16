@@ -150,10 +150,14 @@ highlight() {
   wait_for $STEP_SECONDS holds "([.rows[].label] | index(\"$1\") != null) or .views[-1].tabs != null"
   turn_tab "$1" "> 0" leftshoulder
   turn_tab "$1" "< (.views[-1].tabs | length) - 1" rightshoulder
+  previous=
   while current=$(state); [ "$(echo "$current" | jq -r '.rows[.selected].label')" != "$1" ]; do
     target=$(echo "$current" | jq "[.rows[].label] | index(\"$1\")")
     selected=$(echo "$current" | jq .selected)
     [ "$target" != null ] || { log FAIL "no row $1" >&2; diagnose; exit 1; }
+    distance=$((target > selected ? target - selected : selected - target))
+    [ -z "$previous" ] || [ $distance -lt $previous ] || { log FAIL "up and down do not bring row $1 closer on $(echo "$current" | jq -r .screen) with skin $(echo "$current" | jq -r .skin)" >&2; diagnose; exit 1; }
+    previous=$distance
     if [ "$selected" -lt "$target" ]; then tap dpdown; else tap dpup; fi
     wait_for $STEP_SECONDS holds ".selected != $selected or ([.rows[].label] | index(\"$1\")) != $target"
   done
@@ -1560,7 +1564,11 @@ run_tests() {
   expect ".screen == \"home\" and .dashboard and (.rows | length) == 2 and (.display.displays | length) == 2 and .display.canvas == $AREA_SIZE and .display.filter == \"nearest\""
   api POST stores "$TEST_STORE_URL" >/dev/null
   expect '.stores[0].online and ([.games[].key] | index("alter-ego/nes") != null)'
-  for name; do "test_$name"; done
+  for name; do
+    api POST settings "skin $DEFAULT_SKIN" >/dev/null
+    expect ".skin == \"$DEFAULT_SKIN\""
+    "test_$name"
+  done
   log PASS "v$VERSION installed from USB, then passed: $*"
 }
 

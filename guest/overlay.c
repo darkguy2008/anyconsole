@@ -94,7 +94,6 @@
 #define STRINGIFY(x) STRINGIFY_(x)
 #define EMULATE_FILE "emulate.json"
 #define ANALOG_CHOICES_FILE "analog.json"
-#define DEFAULT_SKIN "classic"
 #define CURRENT_SCREEN "current-screen"
 #define RELOAD_SECONDS 0.2
 #define SKIN_WATCHES_MAX 256
