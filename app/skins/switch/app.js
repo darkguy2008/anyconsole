@@ -203,7 +203,7 @@ function Settings({ state, view, theme }) {
           <${Icon} name="settings" size=${52} />
           <text style=${{ fontSize: 44, fontWeight: 800 }}>${translate('System Settings')}</text>
         </view>
-        <view style=${{ gap: 4 }} plane=${view.plane}>
+        <view style=${{ flexGrow: 1, flexShrink: 1, overflow: 'hidden', gap: 4 }} follow=${view.selected} plane=${view.plane}>
           <view style=${{ position: 'absolute', backgroundColor: theme.surface, borderRadius: 12, borderWidth: 0 }} track=${view.selected}
             transition=${{ track: 'spring' }} />
           <view style=${{ position: 'absolute', width: 8, backgroundColor: accent, borderRadius: 4 }} track=${view.selected}
