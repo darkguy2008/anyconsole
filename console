@@ -17,7 +17,7 @@ on_vm_host() {
 SSH_HOST=root@${CONSOLE_BOX:-127.0.0.1}
 ssh_route() {
   [ -z "${CONSOLE_BOX:-}" ] || return 0
-  port=$(on_vm_host 'echo $VM_SSH_PORT') || return
+  port=$(on_vm_host 'echo $VM_SSH_PORT' < /dev/null) || return
   echo "-J $DEPLOY_HOST -p $port"
 }
 api_raw() {
