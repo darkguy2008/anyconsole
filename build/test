@@ -746,6 +746,12 @@ hotplug_wired_controller() {
 play_wireless_controller() {
   plug_fakepad bluetooth
   expect "$(has_fakepad bluetooth)"
+  expect ".screen == \"whois\" and .session.picker == $(device_id "$FAKEPAD_NAME")"
+  fakepad bluetooth unplug
+  expect "(.controllers.controllers | length) == 0 and .session.picker == null and .screen != \"whois\""
+  wait_for $STEP_SECONDS guest "! docker container inspect fakepad-bluetooth"
+  plug_fakepad bluetooth
+  expect "$(has_fakepad bluetooth)"
   pad=$(device_id "$FAKEPAD_NAME")
   expect ".screen == \"whois\" and .session.picker == $pad and (.guide | not)"
   fakepad bluetooth press $FAKEPAD_CROSS
@@ -963,9 +969,7 @@ test_logout() {
   choose "Log out"
   expect '.screen == "logout" and .rows[0].value == "Closes 1 game"'
   choose "Log out"
-  expect ".screen == \"whois\" and (.session.players | length) == 0 and ($(status_of alter-ego/nes installed))"
-  tap b
-  expect '.screen == "attract"'
+  expect ".screen == \"attract\" and .session.picker == null and (.session.players | length) == 0 and ($(status_of alter-ego/nes installed))"
   snapshot attract-after-logout
   sign_in_from_attract
 }

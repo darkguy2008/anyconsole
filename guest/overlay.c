@@ -2199,7 +2199,7 @@ static void login(int profile, int device) {
     seat_devices();
 }
 
-static void logout(int profile, int device) {
+static void logout(int profile) {
     int seat = seat_of(profile);
     if (seat < 0) return;
     for (int i = 0; i < game_count; i++)
@@ -2214,7 +2214,6 @@ static void logout(int profile, int device) {
     memmove(players + seat, players + seat + 1, (player_count - seat) * sizeof *players);
     guide_shown = 0;
     seat_devices();
-    if (!player_count && device != NO_DEVICE) open_picker(device);
 }
 
 static int inert(enum action action) {
@@ -2237,9 +2236,9 @@ static void act(struct row *row, int profile) {
     case LOGIN: login(row->arg, picker); break;
     case LOG_OUT_PLAYER:
         if (owned_games(guide_profile)) push(LOG_OUT, -1);
-        else logout(guide_profile, focus);
+        else logout(guide_profile);
         break;
-    case CONFIRM_LOG_OUT: logout(guide_profile, focus); break;
+    case CONFIRM_LOG_OUT: logout(guide_profile); break;
     case OPEN_STORE: push(STORE, -1); refresh(); break;
     case OPEN_SETTINGS:
         discard_staged();
