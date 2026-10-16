@@ -20,6 +20,7 @@ POLLS_PER_SECOND=10
 SSH_ALIVE_SECONDS=1
 POLL_INTERVAL=$(awk "BEGIN { print 1 / $POLLS_PER_SECOND }")
 STEP_SECONDS=15
+PS2_BOOT_SECONDS=40
 CRAB_PRIDE_FLAG_PRESSES="rightshoulder rightshoulder start"
 BOOT_SECONDS=180
 INSTALL_SECONDS=1200
@@ -41,6 +42,12 @@ DEFAULT_SLEEP=${SLEEP_MINUTES%% *}
 STRONG_RUMBLE_EFFECT=4
 REDREAM_ENGINE=$ENGINES/dreamcast/engine
 REDREAM_LICENSE=dreamcast/redream.key
+PCSX2_CONFIG=$ENGINES/ps2/engine/PCSX2
+PS2_CONFIG_BLOCK=$((0x2C0))
+PS2_LANGUAGE_BITS=0x1F
+PS2_INITIALIZED=0x80
+PS2_SPANISH=3
+PS2_ENGLISH=1
 VIRGL_GPU=virtio_gpu
 PNG_SIGNATURE=89504e470d0a1a0a
 REAL_GAMES=/tmp/real-games
@@ -1390,15 +1397,29 @@ test_language() {
 
 picture_frame() { height=$(state | jq ".display.canvas | $SIZE_NUMBERS | .[1]"); echo "$((height * $1 / $2))x$height"; }
 
+ps2_nvm_holds() {
+  bios=$(guest "sed -n 's/^BIOS = //p' $PCSX2_CONFIG/inis/PCSX2.ini")
+  read -r language flags <<BYTES
+$(guest "od -A n -t u1 -j $((PS2_CONFIG_BLOCK + 1)) -N 2 '$PCSX2_CONFIG/bios/${bios%.*}.nvm'")
+BYTES
+  language=$((language & PS2_LANGUAGE_BITS))
+  [ $language -eq "$1" ] && [ $((flags & PS2_INITIALIZED)) -ne 0 ] || { log FAIL "the BIOS settings of $bios hold language $language, flags $flags, not language $1 and initialized" >&2; exit 1; }
+}
+
 test_ps2() {
   if [ ! -d "$TEST_BIOS/ps2" ]; then
     log skip "ps2: no PS2 BIOS in $TEST_BIOS/ps2 on the build host"
     return
   fi
   key=cubes-demo/ps2
+  api POST settings "game-language es_419" >/dev/null
   install_and_play $key "Cubes Demo"
-  wait_for $STEP_SECONDS analog_state_has $key "1 on locked"
+  wait_for $PS2_BOOT_SECONDS analog_state_has $key "1 on locked"
   log ok "PCSX2's log shows $key locking its DualShock 2 in analog mode"
+  guest "grep -q 'rom0:PS2LOGO' $(game_log $key)"
+  ps2_nvm_holds $PS2_SPANISH
+  log ok "$key boots through the BIOS intro without its first-time setup, with Game language es_419 set to the BIOS's Spanish"
+  api POST settings "game-language en" >/dev/null
   expect ".display.frame == \"$(picture_frame 4 3)\""
   restart_into $key 'Loading GS' expect_reply $STEP_SECONDS 200 ".ok and .state.settings.picture == \"enhanced\" and (.state | $(closed_and_running $key))" --arg action picture --arg step -1
   expect ".display.frame == \"$(picture_frame 16 9)\""
@@ -1406,7 +1427,16 @@ test_ps2() {
   restart_into $key 'Loading GS' api POST settings "picture original"
   expect ".display.frame == \"$(picture_frame 4 3)\""
   log ok "Original restarts $key in its 4:3 window and loads the state it left"
+  ps2_nvm_holds $PS2_ENGLISH
+  api POST settings "game-language" >/dev/null
+  log ok "the restart wrote the new Game language into the BIOS settings"
   close_game $key "Cubes Demo"
+  key=cubes-demo-europe/ps2
+  install_and_play $key "Cubes Demo Europe"
+  wait_for $PS2_BOOT_SECONDS guest "grep -q 'BIOS Found: Europe' $(game_log $key)"
+  ps2_nvm_holds $PS2_ENGLISH
+  log ok "a manifest region boots $key on the matching BIOS with its own first-boot settings"
+  close_game $key "Cubes Demo Europe"
 }
 
 test_gpu() {

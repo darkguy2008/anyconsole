@@ -1,0 +1,89 @@
+#!/usr/bin/python3
+import json
+import struct
+import sys
+from pathlib import Path
+
+ROMDIR_ENTRY = struct.Struct("<10sHI")
+ROMDIR_START = b"RESET"
+ROMVER = b"ROMVER"
+ROMVER_LENGTH = 14
+ROMVER_REGION = 4
+ROMDIR_ALIGNMENT = 0x10
+DEFAULT_REGION = "usa"
+REGIONS = {
+    "J": ("japan", b"JJjpnJJ", b"\x20\x20"),
+    "A": ("usa", b"AAengAU", b"\x30\x21"),
+    "E": ("europe", b"EEengEE", b"\x30\x21"),
+    "H": ("asia", b"HHengJA", b"\x30\x21"),
+    "C": ("china", b"CCschJC", b"\x30\x2b"),
+}
+NVM_SIZE = 1024
+REGION_PARAMS_OFFSET = 0x180
+SECOND_LAYOUT_VERSION = (1, 70)
+CONFIG_OFFSETS = {False: 0x310, True: 0x2C0}
+ILINK_OFFSETS = {False: 0x1C0, True: 0x1E0}
+ILINK_ID = bytes.fromhex("00acffffffffb986")
+ILINK_CHECKSUM = bytes.fromhex("0018")
+PSTWO_MAJOR = 2
+PSX_DESR_MINOR = 10
+LANGUAGE = 1
+FLAGS = 2
+TIME_ZONE = 5
+CHECKSUM = 15
+DEFAULT_TIME_ZONE = 0x70
+LANGUAGE_BITS = 0x1F
+INITIALIZED = 0x80
+BYTE = 0xFF
+
+
+def romver(path):
+    data = path.read_bytes()
+    entries = range(0, len(data) - ROMDIR_ENTRY.size + 1, ROMDIR_ENTRY.size)
+    entry = next((offset for offset in entries if ROMDIR_ENTRY.unpack_from(data, offset)[0].rstrip(b"\0") == ROMDIR_START), None)
+    content = 0
+    while entry is not None and entry + ROMDIR_ENTRY.size <= len(data):
+        name, _, size = ROMDIR_ENTRY.unpack_from(data, entry)
+        name = name.rstrip(b"\0")
+        if not name:
+            return None
+        if name == ROMVER:
+            return data[content:content + ROMVER_LENGTH].decode("ascii", "replace")
+        content += (size + ROMDIR_ALIGNMENT - 1) // ROMDIR_ALIGNMENT * ROMDIR_ALIGNMENT
+        entry += ROMDIR_ENTRY.size
+    return None
+
+
+def write_nvm(path, major, minor, region_params, default_config, language):
+    nvm = path.with_suffix(".nvm")
+    data = bytearray(nvm.read_bytes()) if nvm.exists() else bytearray()
+    second_layout = (major, minor) >= SECOND_LAYOUT_VERSION
+    config = CONFIG_OFFSETS[second_layout]
+    if len(data) != NVM_SIZE:
+        data = bytearray(NVM_SIZE)
+        if major == PSTWO_MAJOR and minor != PSX_DESR_MINOR:
+            data[REGION_PARAMS_OFFSET:REGION_PARAMS_OFFSET + len(region_params)] = region_params
+        ilink = ILINK_ID + ILINK_CHECKSUM if second_layout else ILINK_ID
+        data[ILINK_OFFSETS[second_layout]:ILINK_OFFSETS[second_layout] + len(ilink)] = ilink
+        data[config:config + len(default_config)] = default_config
+        data[config + TIME_ZONE] = DEFAULT_TIME_ZONE
+    if language is not None:
+        data[config + LANGUAGE] = (data[config + LANGUAGE] & ~LANGUAGE_BITS) | language
+    data[config + FLAGS] |= INITIALIZED
+    data[config + CHECKSUM] = sum(data[config:config + CHECKSUM]) & BYTE
+    nvm.write_bytes(data)
+
+
+settings = json.load(sys.stdin)
+bioses = {}
+for path in sorted(Path(sys.argv[1]).iterdir()):
+    version = romver(path)
+    if version and version[ROMVER_REGION] in REGIONS:
+        region, region_params, default_config = REGIONS[version[ROMVER_REGION]]
+        bioses.setdefault(region, (path, int(version[:2]), int(version[2:4]), region_params, default_config))
+if not bioses:
+    sys.exit(f"no PS2 BIOS in {sys.argv[1]}")
+region = next(region for region in (settings["region"], DEFAULT_REGION, *bioses) if region in bioses)
+path, *bios = bioses[region]
+write_nvm(path, *bios, settings["languages"].get(region))
+print(path.name)

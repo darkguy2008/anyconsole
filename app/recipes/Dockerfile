@@ -250,6 +250,7 @@ COPY with-window-manager /usr/local/bin/
 LABEL anyconsole.launch="chd iso cso" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"button\":\"guide\"}}" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true" anyconsole.thumbnails="Sony - PlayStation 2"
 COPY --from=pcsx2-download /pcsx2 /opt/pcsx2
 COPY pcsx2/ analog-state.awk analog-log /opt/pcsx2/
+COPY ps2-system.jq /usr/lib/jq/system.jq
 ENV XDG_CONFIG_HOME=/engine QT_QPA_PLATFORM=xcb
 ENTRYPOINT ["/opt/pcsx2/analog-log", "/opt/pcsx2/analog.awk", "/opt/pcsx2/launch"]
 

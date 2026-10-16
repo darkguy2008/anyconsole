@@ -9,6 +9,7 @@ INUFUTO=https://web.archive.org/web/2024id_/http://inufuto.web.fc2.com
 GITHUB=https://github.com
 ARCHIVE=https://archive.org/download
 PS2_BOOT_FILE=TEST_000.01
+CUBES_DEMO=$GITHUB/glampert/ps2-homebrew/raw/602441a6877a3136709d6320664340d52e3027a1/source/demos/bin/cubes_demo.elf
 PS2_RAM_BELOW_PROGRAMS=000FFFF0
 TWIN_STICK='{"-lefty": "y", "+lefty": "a", "-leftx": "x", "+leftx": "b", "rightx": "leftx", "righty": "lefty"}'
 
@@ -83,5 +84,6 @@ add_zipped cracky-msx "Cracky MSX" msx2 "$INUFUTO/8bit/msx/cracky_rom.zip" '*.ro
 add_zipped gc-controller-test "GC Controller Test" gamecube "$GITHUB/corenting/GC-Controller-Test/releases/download/v1.2/gc-1-2.zip" '*.dol'
 add_download mini-mine-rt "Mini Mine RT" psp "$GITHUB/Saymond/PSP-apps/releases/download/v2.0/EBOOT.PBP" '{"enhanced": {"scale": 2}}' '{"es": "Mini Mina RT"}'
 [ ! -d "$TEST_BIOS/ps1" ] || add_cue_disc a-small-journey "A Small Journey" ps1 "$ARCHIVE/asj-1.0/asj-1.0.zip"
-[ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo "Cubes Demo" ps2 "$GITHUB/glampert/ps2-homebrew/raw/602441a6877a3136709d6320664340d52e3027a1/source/demos/bin/cubes_demo.elf" '{"enhanced": {"widescreen": true, "scale": 2}}'
+[ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo "Cubes Demo" ps2 "$CUBES_DEMO" '{"enhanced": {"widescreen": true, "scale": 2}}'
+[ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo-europe "Cubes Demo Europe" ps2 "$CUBES_DEMO" '{"region": "europe"}'
 add_download gravity-wave-twin-stick-shooter "Gravity Wave" dreamcast "$GITHUB/richstokes/dreamcast-homebrew/releases/download/continuous/gravity-wave.cdi" "{\"pad\": $TWIN_STICK}"

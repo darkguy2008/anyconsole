@@ -30,11 +30,14 @@ settings() {
 [UI]
 SettingsVersion = $SETTINGS_VERSION
 HideMouseCursor = true
+[Filenames]
+BIOS = $bios
 [Folders]
 MemoryCards = /saves
 Savestates = /states
 [EmuCore]
 EnablePINE = true
+EnableFastBoot = false
 BackupSavestate = false
 EnableWideScreenPatches = $widescreen
 [MemoryCards]
@@ -72,6 +75,7 @@ aspect_ratio=$PICTURE_ASPECT
 rm -rf "$PCSX2/patches"
 mkdir -p "$PCSX2/inis" "$PCSX2/bios" "$PCSX2/patches"
 ln -sf /bios/* "$PCSX2/bios/"
+bios=$(system-settings | /opt/pcsx2/bios-settings "$PCSX2/bios")
 find "${1%/*}" -maxdepth 1 -iname '*.pnach' -exec ln -s -t "$PCSX2/patches" {} +
 settings > "$PCSX2/inis/PCSX2.ini"
 exec 3<&0
