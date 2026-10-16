@@ -2396,7 +2396,6 @@ static void press(int device, enum command command) {
         open_picker(device);
     } else if (picker != NO_DEVICE) {
         if (device == picker) navigate(device, command);
-        else open_picker(device);
     } else if (!profile_of(device)) {
         if (command == GUIDE_BUTTON || !int_at(device_of(device), "guide")) open_picker(device);
     } else if (command == GUIDE_BUTTON) {

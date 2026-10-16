@@ -964,9 +964,7 @@ test_logout() {
   expect '.screen == "logout" and .rows[0].value == "Closes 1 game"'
   choose "Log out"
   expect ".screen == \"whois\" and (.session.players | length) == 0 and ($(status_of alter-ego/nes installed))"
-  PAD=2 tap b
-  expect ".screen == \"whois\" and .session.picker == $(device_id "$SECOND_REMOTE_PAD")"
-  PAD=2 tap b
+  tap b
   expect '.screen == "attract"'
   snapshot attract-after-logout
   sign_in_from_attract
