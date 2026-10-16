@@ -48,6 +48,14 @@ PS2_LANGUAGE_BITS=0x1F
 PS2_INITIALIZED=0x80
 PS2_SPANISH=3
 PS2_ENGLISH=1
+PS2_OFFSET_BITS=11
+PS2_OFFSET_HIGH_SHIFT=8
+PS2_DAYLIGHT_SAVING=0x08
+TEST_ZONE=America/Costa_Rica
+TEST_ZONE_AREA=${TEST_ZONE%%/*}
+TEST_ZONE_CITY="Costa Rica"
+TEST_ZONE_OFFSET=-0600
+TEST_ZONE_MINUTES=-360
 VIRGL_GPU=virtio_gpu
 PNG_SIGNATURE=89504e470d0a1a0a
 REAL_GAMES=/tmp/real-games
@@ -1395,15 +1403,39 @@ test_language() {
   close_game $key "Mini Mine RT"
 }
 
+test_time_zone() {
+  key=mini-mine-rt/psp
+  ! api POST settings "time-zone Mars/Olympus_Mons" 2>/dev/null || { log FAIL "settings took a time zone that is not in the zone table" >&2; exit 1; }
+  expect_reply $STEP_SECONDS 200 .ok --arg action open-settings
+  expect "($(row_value "Time zone")) == \"UTC\" and ([.rows[].label] | index(\"City\") == null)"
+  api POST settings "time-zone $TEST_ZONE" >/dev/null
+  expect "($(row_value "Time zone")) == \"$TEST_ZONE_AREA\" and ($(row_value City)) == \"$TEST_ZONE_CITY  \u00b7  UTC$TEST_ZONE_OFFSET\""
+  log ok "Settings shows the time zone's area, city and current UTC offset"
+  expect_reply $STEP_SECONDS 200 ".ok and (.state.settings[\"time-zone\"] | startswith(\"$TEST_ZONE_AREA/\")) and .state.settings[\"time-zone\"] != \"$TEST_ZONE\"" --arg action city --arg step 1
+  expect_reply $STEP_SECONDS 200 ".ok and (.state.settings[\"time-zone\"] | startswith(\"$TEST_ZONE_AREA/\") | not)" --arg action time-zone --arg step 1
+  log ok "City cycles within the area and Time zone moves to the next area"
+  api POST settings "time-zone $TEST_ZONE" >/dev/null
+  tap b
+  expect '.screen == "home"'
+  install_and_play $key "Mini Mine RT"
+  [ "$(guest "docker exec $(game_container $key) date +%z")" = "$TEST_ZONE_OFFSET" ] || { log FAIL "$key does not run in $TEST_ZONE" >&2; exit 1; }
+  log ok "$key runs in the console's time zone"
+  close_game $key "Mini Mine RT"
+  api POST settings "time-zone" >/dev/null
+}
+
 picture_frame() { height=$(state | jq ".display.canvas | $SIZE_NUMBERS | .[1]"); echo "$((height * $1 / $2))x$height"; }
 
 ps2_nvm_holds() {
   bios=$(guest "sed -n 's/^BIOS = //p' $PCSX2_CONFIG/inis/PCSX2.ini")
-  read -r language flags <<BYTES
-$(guest "od -A n -t u1 -j $((PS2_CONFIG_BLOCK + 1)) -N 2 '$PCSX2_CONFIG/bios/${bios%.*}.nvm'")
+  read -r language flags offset <<BYTES
+$(guest "od -A n -t u1 -j $((PS2_CONFIG_BLOCK + 1)) -N 3 '$PCSX2_CONFIG/bios/${bios%.*}.nvm'")
 BYTES
   language=$((language & PS2_LANGUAGE_BITS))
-  [ $language -eq "$1" ] && [ $((flags & PS2_INITIALIZED)) -ne 0 ] || { log FAIL "the BIOS settings of $bios hold language $language, flags $flags, not language $1 and initialized" >&2; exit 1; }
+  minutes=$((((flags << PS2_OFFSET_HIGH_SHIFT) | offset) & ((1 << PS2_OFFSET_BITS) - 1)))
+  [ $minutes -lt $((1 << (PS2_OFFSET_BITS - 1))) ] || minutes=$((minutes - (1 << PS2_OFFSET_BITS)))
+  [ $language -eq "$1" ] && [ $((flags & PS2_INITIALIZED)) -ne 0 ] && [ $minutes -eq "$2" ] && [ $((flags & PS2_DAYLIGHT_SAVING)) -eq 0 ] ||
+    { log FAIL "the BIOS settings of $bios hold language $language, flags $flags, offset $minutes minutes, not language $1, initialized, $2 minutes without daylight saving" >&2; exit 1; }
 }
 
 test_ps2() {
@@ -1413,12 +1445,13 @@ test_ps2() {
   fi
   key=cubes-demo/ps2
   api POST settings "game-language es_419" >/dev/null
+  api POST settings "time-zone $TEST_ZONE" >/dev/null
   install_and_play $key "Cubes Demo"
   wait_for $PS2_BOOT_SECONDS analog_state_has $key "1 on locked"
   log ok "PCSX2's log shows $key locking its DualShock 2 in analog mode"
   guest "grep -q 'rom0:PS2LOGO' $(game_log $key)"
-  ps2_nvm_holds $PS2_SPANISH
-  log ok "$key boots through the BIOS intro without its first-time setup, with Game language es_419 set to the BIOS's Spanish"
+  ps2_nvm_holds $PS2_SPANISH $TEST_ZONE_MINUTES
+  log ok "$key boots through the BIOS intro without its first-time setup, with Game language es_419 set to the BIOS's Spanish and the time zone's UTC offset"
   api POST settings "game-language en" >/dev/null
   expect ".display.frame == \"$(picture_frame 4 3)\""
   restart_into $key 'Loading GS' expect_reply $STEP_SECONDS 200 ".ok and .state.settings.picture == \"enhanced\" and (.state | $(closed_and_running $key))" --arg action picture --arg step -1
@@ -1427,14 +1460,15 @@ test_ps2() {
   restart_into $key 'Loading GS' api POST settings "picture original"
   expect ".display.frame == \"$(picture_frame 4 3)\""
   log ok "Original restarts $key in its 4:3 window and loads the state it left"
-  ps2_nvm_holds $PS2_ENGLISH
+  ps2_nvm_holds $PS2_ENGLISH $TEST_ZONE_MINUTES
   api POST settings "game-language" >/dev/null
+  api POST settings "time-zone" >/dev/null
   log ok "the restart wrote the new Game language into the BIOS settings"
   close_game $key "Cubes Demo"
   key=cubes-demo-europe/ps2
   install_and_play $key "Cubes Demo Europe"
   wait_for $PS2_BOOT_SECONDS guest "grep -q 'BIOS Found: Europe' $(game_log $key)"
-  ps2_nvm_holds $PS2_ENGLISH
+  ps2_nvm_holds $PS2_ENGLISH 0
   log ok "a manifest region boots $key on the matching BIOS with its own first-boot settings"
   close_game $key "Cubes Demo Europe"
 }
@@ -1506,7 +1540,7 @@ test_thumbnails() {
   log ok "one fetch downloads every boxart it asks for"
 }
 
-TESTS="capture symlinks display audio controllers nes atari ps1 genesis snes actions dreamcast msdos msx2 stores gpu logout reboot skins engines thumbnails enhanced ps2 language"
+TESTS="capture symlinks display audio controllers nes atari ps1 genesis snes actions dreamcast msdos msx2 stores gpu logout reboot skins engines thumbnails enhanced ps2 language time_zone"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in

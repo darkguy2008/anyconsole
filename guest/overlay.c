@@ -103,6 +103,7 @@
 #define SKINS_MAX 64
 #define DIRECTORY_MODE (S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH)
 #define LANGUAGES_MAX 32
+#define ZONE_COLUMN 2
 #define CATALOG "/LC_MESSAGES/" TEXT_DOMAIN ".mo"
 #define _(text) gettext(text)
 #define N_(text) text
@@ -122,7 +123,7 @@ static const struct { const char *name, *title; enum plane plane; } screens[] = 
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
               CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, ANALOG, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN, CLEAR_THUMBNAILS,
-              SAVE_STATES, DELETE_STATE, OVERWRITE_STATE, CHOOSE_PICTURE, CHOOSE_LANGUAGE, CHOOSE_GAME_LANGUAGE };
+              SAVE_STATES, DELETE_STATE, OVERWRITE_STATE, CHOOSE_PICTURE, CHOOSE_LANGUAGE, CHOOSE_GAME_LANGUAGE, CHOOSE_TIME_ZONE, CHOOSE_CITY };
 static const char *const actions[] = {
     [NOTHING] = "nothing", [OPEN_STORE] = "open-store", [OPEN_SETTINGS] = "open-settings", [OPEN_GAME] = "open-game", [PLAY] = "play", [RESUME] = "resume",
     [CLOSE] = "close", [UNINSTALL] = "uninstall", [INSTALL] = "install", [SHOW_DASHBOARD] = "dashboard", [VOLUME] = "volume", [OPEN_OUTPUTS] = "open-outputs",
@@ -132,7 +133,8 @@ static const char *const actions[] = {
     [CHOOSE_SLEEP] = "sleep", [REWIND] = "rewind", [LOGIN] = "login", [EMULATE] = "emulate", [ANALOG] = "analog", [LOG_OUT_PLAYER] = "log-out",
     [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen", [CHOOSE_SKIN] = "skin",
     [CLEAR_THUMBNAILS] = "clear-thumbnails", [SAVE_STATES] = "save-states", [DELETE_STATE] = "delete-state", [OVERWRITE_STATE] = "overwrite-state",
-    [CHOOSE_PICTURE] = "picture", [CHOOSE_LANGUAGE] = "language", [CHOOSE_GAME_LANGUAGE] = "game-language"};
+    [CHOOSE_PICTURE] = "picture", [CHOOSE_LANGUAGE] = "language", [CHOOSE_GAME_LANGUAGE] = "game-language",
+    [CHOOSE_TIME_ZONE] = "time-zone", [CHOOSE_CITY] = "city"};
 static const char *const criteria[] = {"action", "label", "value", "arg"};
 enum tab { GAME_TAB, DEVICES_TAB, SYSTEM_TAB };
 static const char *const tabs[] = {[GAME_TAB] = N_("Game"), [DEVICES_TAB] = N_("I/O"), [SYSTEM_TAB] = N_("System")};
@@ -249,6 +251,8 @@ static double reload_due = -1;
 static char wanted_skin[NAME_MAX + 1], loaded_skin[NAME_MAX + 1];
 static char languages[LANGUAGES_MAX][NAME_MAX + 1], language_names[LANGUAGES_MAX][TEXT_MAX];
 static int language_count;
+static char **time_zones;
+static int time_zone_count, chosen_zone = -1;
 
 static pid_t spawn(char *const argv[], int input, int output, int errors) {
     posix_spawn_file_actions_t actions;
@@ -1009,6 +1013,89 @@ static void find_languages(void) {
     }
 }
 
+static int by_text(const void *left, const void *right) { return strcmp(*(const char *const *)left, *(const char *const *)right); }
+
+static void find_time_zones(void) {
+    FILE *table = fopen(ZONE_TABLE, "r");
+    char *line = NULL;
+    size_t size = 0;
+    if (!table) {
+        perror(ZONE_TABLE);
+        return;
+    }
+    while (getline(&line, &size, table) >= 0) {
+        char *fields = line;
+        if (*line == '#') continue;
+        for (int column = 0; column < ZONE_COLUMN; column++) strsep(&fields, "\t");
+        const char *zone = strsep(&fields, "\t\n");
+        if (!zone || !*zone) continue;
+        time_zones = realloc(time_zones, (time_zone_count + 1) * sizeof *time_zones);
+        time_zones[time_zone_count++] = strdup(zone);
+    }
+    free(line);
+    fclose(table);
+    qsort(time_zones, time_zone_count, sizeof *time_zones, by_text);
+}
+
+static const char *time_zone(void) { return string_at(settings, "time-zone", NULL); }
+
+static int time_zone_index(void) {
+    for (int i = 0; i < time_zone_count; i++)
+        if (!strcmp(time_zones[i], time_zone())) return i;
+    return -1;
+}
+
+static int area_length(const char *zone) { return strcspn(zone, "/"); }
+
+static int same_area(const char *zone, const char *other) { return area_length(zone) == area_length(other) && !strncmp(zone, other, area_length(zone)); }
+
+static int area_start(int zone) { return !zone || !same_area(time_zones[zone - 1], time_zones[zone]); }
+
+static const char *area_value(void) {
+    static char value[TEXT_MAX];
+    if (chosen_zone < 0) return "UTC";
+    snprintf(value, sizeof value, "%.*s", area_length(time_zone()), time_zone());
+    return value;
+}
+
+static const char *city_value(void) {
+    static char value[TEXT_MAX];
+    char offset[TEXT_MAX];
+    time_t now = time(NULL);
+    if (!strftime(offset, sizeof offset, "UTC%z", localtime(&now))) *offset = '\0';
+    int length = snprintf(value, sizeof value, "%s", time_zone() + area_length(time_zone()) + 1);
+    for (char *space = value; (space = strchr(space, '_'));) *space = ' ';
+    snprintf(value + length, sizeof value - length, "  \u00b7  %s", offset);
+    return value;
+}
+
+static void choose_time_zone(const char *zone) { start((char *[]){"settings", "time-zone", (char *)zone, NULL}); }
+
+static void cycle_time_zone(int step) {
+    int areas = 0, current = 0, firsts[time_zone_count + 1];
+    for (int i = 0; i < time_zone_count; i++) {
+        if (!area_start(i)) continue;
+        firsts[++areas] = i;
+        if (chosen_zone >= 0 && same_area(time_zones[i], time_zones[chosen_zone])) current = areas;
+    }
+    int next = cycle(current, areas, step);
+    choose_time_zone(next ? time_zones[firsts[next]] : "");
+}
+
+static void cycle_city(int step) {
+    int first = chosen_zone, count = 0;
+    while (!area_start(first)) first--;
+    while (first + count < time_zone_count && same_area(time_zones[first], time_zones[first + count])) count++;
+    choose_time_zone(time_zones[first + (chosen_zone - first + step + count) % count]);
+}
+
+static void use_time_zone(void) {
+    if (*time_zone()) setenv("TZ", time_zone(), 1);
+    else unsetenv("TZ");
+    tzset();
+    chosen_zone = time_zone_index();
+}
+
 static enum picture chosen_picture(void) {
     const char *chosen = string_at(settings, "picture", NULL);
     for (unsigned picture = 0; picture < PICTURES; picture++)
@@ -1047,6 +1134,7 @@ static void read_settings(void) {
     settings = json_object_from_file(SETTINGS_FILE);
     if (strcmp(skin_name(), wanted_skin)) load_skin();
     use_language(ui_language());
+    use_time_zone();
     changed = 1;
 }
 
@@ -1221,8 +1309,6 @@ static void choose(json_object **cache, int profile, const char *file, const cha
     mkdir(choices_path(profile, ""), DIRECTORY_MODE);
     write_json(choices_path(profile, file), choices);
 }
-
-static int by_text(const void *left, const void *right) { return strcmp(*(const char *const *)left, *(const char *const *)right); }
 
 static const char *combination(int profile) {
     static char text[INPUT_DEVICES_MAX * TEXT_MAX];
@@ -1518,6 +1604,8 @@ static int build(struct view *view) {
         count = add_row(count, CHOOSE_SKIN, 0, _("Skin"), "%s", skin_name());
         count = add_row(count, CHOOSE_LANGUAGE, 0, _("Language"), "%s", language_names[language_index(ui_language())]);
         count = add_row(count, CHOOSE_GAME_LANGUAGE, 0, _("Game language"), "%s", game_language_value());
+        count = add_row(count, CHOOSE_TIME_ZONE, 0, _("Time zone"), "%s", area_value());
+        if (chosen_zone >= 0) count = add_row(count, CHOOSE_CITY, 0, _("City"), "%s", city_value());
         count = add_row(count, CLEAR_THUMBNAILS, 0, _("Clear thumbnails"), "");
         break;
     }
@@ -2133,7 +2221,7 @@ static void logout(int profile, int device) {
 static int inert(enum action action) {
     return action == NOTHING || action == VOLUME || action == MICROPHONE_VOLUME || action == SECOND_SCREEN || action == CHOOSE_DISPLAY ||
            action == CHOOSE_DISPLAY_MODE || action == CHOOSE_RESOLUTION || action == CHOOSE_SLEEP || action == CHOOSE_SKIN || action == EMULATE || action == ANALOG || action == CHOOSE_PICTURE ||
-           action == CHOOSE_LANGUAGE || action == CHOOSE_GAME_LANGUAGE;
+           action == CHOOSE_LANGUAGE || action == CHOOSE_GAME_LANGUAGE || action == CHOOSE_TIME_ZONE || action == CHOOSE_CITY;
 }
 
 static void act(struct row *row, int profile) {
@@ -2226,6 +2314,8 @@ static void adjust(enum action action, int step) {
     if (action == CHOOSE_PICTURE) cycle_picture(step);
     if (action == CHOOSE_LANGUAGE) cycle_language(step);
     if (action == CHOOSE_GAME_LANGUAGE) cycle_game_language(step);
+    if (action == CHOOSE_TIME_ZONE) cycle_time_zone(step);
+    if (action == CHOOSE_CITY) cycle_city(step);
     if (action == REWIND && rewind_back - step >= 0 && rewind_back - step <= rewind_count) rewind_back -= step;
     if (action == SAVE_STATES && save_slot + step >= 0 && save_slot + step < SAVE_SLOTS) save_slot += step;
     if (action == EMULATE) cycle_mode(step);
@@ -3202,6 +3292,7 @@ int main(void) {
     watched[LISTENER] = (struct pollfd){.fd = bind_socket(OVERLAY_SOCKET, SOCK_NONBLOCK), .events = POLLIN};
     keep_interrupted_rewinds();
     find_languages();
+    find_time_zones();
     read_stores();
     read_settings();
     read_display();

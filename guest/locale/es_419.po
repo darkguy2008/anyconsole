@@ -264,6 +264,12 @@ msgstr "Idioma"
 msgid "Game language"
 msgstr "Idioma de los juegos"
 
+msgid "Time zone"
+msgstr "Zona horaria"
+
+msgid "City"
+msgstr "Ciudad"
+
 msgid "Clear thumbnails"
 msgstr "Eliminar miniaturas"
 

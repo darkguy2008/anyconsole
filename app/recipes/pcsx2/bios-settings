@@ -2,6 +2,7 @@
 import json
 import struct
 import sys
+import time
 from pathlib import Path
 
 ROMDIR_ENTRY = struct.Struct("<10sHI")
@@ -29,11 +30,19 @@ PSTWO_MAJOR = 2
 PSX_DESR_MINOR = 10
 LANGUAGE = 1
 FLAGS = 2
+OFFSET = 3
 TIME_ZONE = 5
 CHECKSUM = 15
 DEFAULT_TIME_ZONE = 0x70
 LANGUAGE_BITS = 0x1F
 INITIALIZED = 0x80
+DAYLIGHT_SAVING = 0x08
+OFFSET_BITS = 11
+OFFSET_HIGH_SHIFT = 8
+OFFSET_HIGH_BITS = (1 << OFFSET_BITS - OFFSET_HIGH_SHIFT) - 1
+SECONDS_PER_MINUTE = 60
+MINUTES_PER_HOUR = 60
+DAYLIGHT_SAVING_SECONDS = MINUTES_PER_HOUR * SECONDS_PER_MINUTE
 BYTE = 0xFF
 PARTIAL = ".partial"
 
@@ -55,6 +64,13 @@ def romver(path):
     return None
 
 
+def time_zone():
+    now = time.localtime()
+    daylight = now.tm_gmtoff + time.timezone
+    summer = daylight == DAYLIGHT_SAVING_SECONDS
+    return (now.tm_gmtoff - summer * daylight) // SECONDS_PER_MINUTE, summer
+
+
 def write_nvm(path, major, minor, region_params, default_config, language):
     nvm = path.with_suffix(".nvm")
     data = bytearray(nvm.read_bytes()) if nvm.exists() else bytearray()
@@ -70,7 +86,10 @@ def write_nvm(path, major, minor, region_params, default_config, language):
         data[config + TIME_ZONE] = DEFAULT_TIME_ZONE
     if language is not None:
         data[config + LANGUAGE] = (data[config + LANGUAGE] & ~LANGUAGE_BITS) | language
-    data[config + FLAGS] |= INITIALIZED
+    offset, summer = time_zone()
+    offset &= (1 << OFFSET_BITS) - 1
+    data[config + FLAGS] = data[config + FLAGS] & ~(DAYLIGHT_SAVING | OFFSET_HIGH_BITS) | INITIALIZED | summer * DAYLIGHT_SAVING | offset >> OFFSET_HIGH_SHIFT
+    data[config + OFFSET] = offset & BYTE
     data[config + CHECKSUM] = sum(data[config:config + CHECKSUM]) & BYTE
     partial = nvm.with_name(nvm.name + PARTIAL)
     partial.write_bytes(data)

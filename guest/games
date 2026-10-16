@@ -231,8 +231,10 @@ launch_file() {
   return 1
 }
 
+saved_settings() { cat "$SETTINGS_FILE" 2>/dev/null || echo '{}'; }
+
 enhanced() {
-  { cat "$SETTINGS_FILE" 2>/dev/null || echo '{}'; } | jq -c --arg picture "$ENHANCED_PICTURE" --argjson config "$1" 'if .picture == $picture then $config[$picture] // {} else {} end'
+  saved_settings | jq -c --arg picture "$ENHANCED_PICTURE" --argjson config "$1" 'if .picture == $picture then $config[$picture] // {} else {} end'
 }
 
 hold_idle_latency() {
@@ -259,6 +261,7 @@ run() {
     -v "$3:/run/wayland" -v "$4:/states" -v "${DISPLAY_FILE%/*}:/display:ro" -e DISPLAY_STATE="/display/${DISPLAY_FILE##*/}" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
     -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PADS="$PADS" -e PAD_NAME="$PAD_NAME" -e MOTION_NAME="$MOTION_NAME" -e MICROPHONE="$MICROPHONE_NODE" -e SCREEN="$(screen_state "$1" "$2")" \
     -e GAME_CONFIG="$config" -e ANALOG_STATE="/states/$ANALOG_FILE" -e ENHANCED="$(enhanced "$config")" -e RESUME_SLOT="$6" -e GAME_LANGUAGE="$7" \
+    -v "$ZONEINFO_DIR:$ZONEINFO_DIR:ro" -e TZ="$(saved_settings | jq -r '."time-zone" // ""')" \
     -e REFRESH="$(printf '%s' "$config" | jq -r --argjson display "$display" --argjson mhz "$MHZ_PER_HZ" '.refresh // ($display.refresh / $mhz)')" \
     -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
     -v "$rom:/game:ro" -v "$saves:/saves" "$GAME_IMAGE/$2" $video "/game/$file"
