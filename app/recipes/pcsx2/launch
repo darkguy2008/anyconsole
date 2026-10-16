@@ -12,6 +12,8 @@ PICTURE_WIDTH=4
 PICTURE_HEIGHT=3
 PICTURE_ASPECT=$PICTURE_WIDTH:$PICTURE_HEIGHT
 WIDESCREEN_ASPECT_RATIO="Auto 4:3/3:2"
+WIDESCREEN_PATCH="Widescreen 16:9"
+STANDARD_PATCH="Standard 4:3"
 NATIVE_SCALE=1
 
 pad() {
@@ -39,7 +41,8 @@ Savestates = /states
 EnablePINE = true
 EnableFastBoot = false
 BackupSavestate = false
-EnableWideScreenPatches = $widescreen
+[Patches]
+Enable = $picture_patch
 [MemoryCards]
 Slot1_Filename = ${game%.*}.ps2
 Slot2_Enable = false
@@ -71,7 +74,11 @@ fi
 game=${1##*/}
 widescreen=$(enhanced widescreen false)
 aspect_ratio=$PICTURE_ASPECT
-[ "$widescreen" = false ] || aspect_ratio=$WIDESCREEN_ASPECT_RATIO
+picture_patch=$STANDARD_PATCH
+if [ "$widescreen" != false ]; then
+  aspect_ratio=$WIDESCREEN_ASPECT_RATIO
+  picture_patch=$WIDESCREEN_PATCH
+fi
 rm -rf "$PCSX2/patches"
 mkdir -p "$PCSX2/inis" "$PCSX2/bios" "$PCSX2/patches"
 ln -sf /bios/* "$PCSX2/bios/"

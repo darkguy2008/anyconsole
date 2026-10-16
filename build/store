@@ -64,7 +64,7 @@ add_ps2_disc() {
   printf 'BOOT2 = cdrom0:\\%s;1\r\nVER = 1.00\r\nVMODE = NTSC\r\n' "$PS2_BOOT_FILE" > "$disc/SYSTEM.CNF"
   xorriso -as mkisofs -quiet -o "$SCRATCH/$1.iso" "$disc"
   add_game "$1" "$2" "$3" "$SCRATCH/$1.iso" "$5"
-  printf '[Widescreen 16:9]\ngsaspectratio=16:9\npatch=0,EE,%s,word,00000000\n' "$PS2_RAM_BELOW_PROGRAMS" > "$TEST_STORE/$1/$3/rom/$(pcsx2_crc "$disc/$PS2_BOOT_FILE").pnach"
+  printf '[Widescreen 16:9]\ngsaspectratio=16:9\npatch=0,EE,%s,word,00000000\n[Standard 4:3]\npatch=0,EE,%s,word,00000000\n' "$PS2_RAM_BELOW_PROGRAMS" "$PS2_RAM_BELOW_PROGRAMS" > "$TEST_STORE/$1/$3/rom/$(pcsx2_crc "$disc/$PS2_BOOT_FILE").pnach"
 }
 
 rm -rf "$SCRATCH" "$TEST_STORE"

@@ -51,6 +51,8 @@ PS2_ENGLISH=1
 PS2_OFFSET_BITS=11
 PS2_OFFSET_HIGH_SHIFT=8
 PS2_DAYLIGHT_SAVING=0x08
+PS2_WIDESCREEN_PATCH=$(sed -n 's/^WIDESCREEN_PATCH="\(.*\)"$/\1/p' app/recipes/pcsx2/launch)
+PS2_STANDARD_PATCH=$(sed -n 's/^STANDARD_PATCH="\(.*\)"$/\1/p' app/recipes/pcsx2/launch)
 TEST_ZONE=America/Costa_Rica
 TEST_ZONE_AREA=${TEST_ZONE%%/*}
 TEST_ZONE_CITY="Costa Rica"
@@ -1445,6 +1447,11 @@ test_time_zone() {
   api POST settings "time-zone" >/dev/null
 }
 
+ps2_patch_enabled() {
+  enabled=$(guest "sed -n 's/.*Enabled patch: //p' $(game_log $1)")
+  [ "$enabled" = "$2" ] || { log FAIL "PCSX2 enabled the patches '$enabled' for $1, not only '$2'" >&2; exit 1; }
+}
+
 picture_frame() { height=$(state | jq ".display.canvas | $SIZE_NUMBERS | .[1]"); echo "$((height * $1 / $2))x$height"; }
 
 ps2_nvm_holds() {
@@ -1475,12 +1482,15 @@ test_ps2() {
   log ok "$key boots through the BIOS intro without its first-time setup, with Game language es_419 set to the BIOS's Spanish and the time zone's UTC offset"
   api POST settings "game-language en" >/dev/null
   expect ".display.frame == \"$(picture_frame 4 3)\""
+  ps2_patch_enabled $key "$PS2_STANDARD_PATCH"
   restart_into $key 'Loading GS' expect_reply $STEP_SECONDS 200 ".ok and .state.settings.picture == \"enhanced\" and (.state | $(closed_and_running $key))" --arg action picture --arg step -1
   expect ".display.frame == \"$(picture_frame 16 9)\""
+  ps2_patch_enabled $key "$PS2_WIDESCREEN_PATCH"
   log ok "Enhanced restarts $key with its widescreen patch, loads the state it left, and the compositor widens its window to 16:9"
   restart_into $key 'Loading GS' api POST settings "picture original"
   expect ".display.frame == \"$(picture_frame 4 3)\""
-  log ok "Original restarts $key in its 4:3 window and loads the state it left"
+  ps2_patch_enabled $key "$PS2_STANDARD_PATCH"
+  log ok "Original restarts $key in its 4:3 window with its standard patch and loads the state it left"
   ps2_nvm_holds $PS2_ENGLISH $TEST_ZONE_MINUTES
   api POST settings "game-language" >/dev/null
   api POST settings "time-zone" >/dev/null
