@@ -1,0 +1,1 @@
+def resolution($scale): {};

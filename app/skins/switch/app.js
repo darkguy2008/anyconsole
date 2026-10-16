@@ -22,7 +22,7 @@ const actionIcons = {
   'open-store': 'storefront', 'open-settings': 'settings', play: 'play_arrow', resume: 'play_arrow', close: 'close', uninstall: 'delete',
   install: 'download', dashboard: 'home', volume: 'volume_up', 'open-outputs': 'speaker', 'open-microphones': 'mic', 'microphone-volume': 'mic',
   'open-controllers': 'sports_esports', reload: 'refresh', restart: 'restart_alt', 'power-off': 'power_settings_new', 'log-out': 'logout',
-  rewind: 'history', emulate: 'keyboard', analog: 'joystick', picture: 'tv', 'second-screen': 'picture_in_picture', 'display-mode': 'monitor', resolution: 'aspect_ratio',
+  rewind: 'history', emulate: 'keyboard', analog: 'joystick', picture: 'tv', 'second-screen': 'picture_in_picture', 'display-mode': 'monitor', 'open-resolutions': 'aspect_ratio', resolution: 'aspect_ratio',
   pair: 'bluetooth_searching', forget: 'link_off', 'confirm-log-out': 'logout', login: 'person', 'save-states': 'save',
 };
 
@@ -196,12 +196,13 @@ function GamePage({ state, view, theme }) {
 
 function Settings({ state, view, theme }) {
   const chosen = view.rows[view.selected];
+  const system = view.screen === 'settings';
   return html`
     <view style=${{ ...fill, backgroundColor: theme.background, flexDirection: 'row' }}>
       <view style=${{ width: 640, paddingBottom: 2 * edge + barHeight, backgroundColor: theme.sidebar, paddingTop: 72, paddingHorizontal: 40, gap: 8 }}>
         <view style=${{ flexDirection: 'row', alignItems: 'center', gap: 16, paddingBottom: 40 }}>
-          <${Icon} name="settings" size=${52} />
-          <text style=${{ fontSize: 44, fontWeight: 800 }}>${translate('System Settings')}</text>
+          <${Icon} name=${system ? 'settings' : 'aspect_ratio'} size=${52} />
+          <text style=${{ fontSize: 44, fontWeight: 800 }}>${system ? translate('System Settings') : view.title}</text>
         </view>
         <view style=${{ flexGrow: 1, flexShrink: 1, overflow: 'hidden', gap: 4 }} follow=${view.selected} plane=${view.plane}>
           <view style=${{ position: 'absolute', backgroundColor: theme.surface, borderRadius: 12, borderWidth: 0 }} track=${view.selected}
@@ -232,7 +233,7 @@ function Settings({ state, view, theme }) {
 }
 
 function Dashboard({ state, view, theme, lastTile }) {
-  const screens = { home: Home, store: Store, game: GamePage, settings: Settings };
+  const screens = { home: Home, store: Store, game: GamePage, settings: Settings, resolutions: Settings };
   const Screen = screens[view.screen] ?? Store;
   return html`<${Screen} state=${state} view=${view} theme=${theme} lastTile=${lastTile} />`;
 }

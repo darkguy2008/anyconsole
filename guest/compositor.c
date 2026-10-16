@@ -85,7 +85,6 @@
 #define TV_LINES 720
 
 enum filter { NEAREST, LINEAR, PIXEL };
-static const char *filters[] = {[NEAREST] = "nearest", [LINEAR] = "linear", [PIXEL] = "pixel"};
 static const VkPhysicalDeviceType preference[] = {VK_PHYSICAL_DEVICE_TYPE_OTHER, VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU,
                                                   VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU};
 
@@ -207,7 +206,7 @@ static int retro;
 static char pinned[TEXT_MAX], chosen_mode[TEXT_MAX], *written_state;
 static struct wlr_output_mode *applied_mode;
 static int shown_refresh, watcher, log_watch, manifest_watch = -1;
-static int resolution, canvas_width, canvas_height, started, stopping, dirty;
+static int canvas_width, canvas_height, started, stopping, dirty;
 static unsigned connections;
 static double pointer_x, pointer_y;
 static pid_t session_leader;
@@ -446,7 +445,6 @@ static void write_state(void) {
     if (active) {
         struct wlr_box box = area();
         name_size(canvas_width, canvas_height, canvas);
-        json_object_object_add(state, "filter", json_object_new_string(filters[choose_filter(box, canvas_width, canvas_height)]));
         json_object_object_add(state, "area_box", box_json(box));
         if (shown && shown->source.width && shown->source.height)
             json_object_object_add(state, "picture_box", box_json(place(box, shown->display_width, shown->source.height)));
@@ -484,19 +482,12 @@ static void write_state(void) {
 }
 
 static void update_canvas(void) {
-    int width = canvas_width, height = canvas_height;
     struct window *window;
-    if (resolution > 0) {
-        width = widescreen_width(resolution);
-        height = resolution;
-    } else if (active) {
-        struct wlr_box box = area();
-        width = box.width;
-        height = box.height;
-    }
-    if (width == canvas_width && height == canvas_height) return;
-    canvas_width = width;
-    canvas_height = height;
+    if (!active) return;
+    struct wlr_box box = area();
+    if (box.width == canvas_width && box.height == canvas_height) return;
+    canvas_width = box.width;
+    canvas_height = box.height;
     wl_list_for_each(window, &windows, link)
         if (window->toplevel->base->initialized) size_window(window);
     redraw();
@@ -1393,7 +1384,6 @@ static bool visible_to(const struct wl_client *client, const struct wl_global *g
 static void load_settings(void) {
     json_object *settings = json_object_from_file(SETTINGS_FILE), *field;
     snprintf(pinned, sizeof pinned, "%s", json_object_object_get_ex(settings, "display", &field) ? json_object_get_string(field) : "");
-    resolution = json_object_object_get_ex(settings, "resolution", &field) ? json_object_get_int(field) : 0;
     snprintf(chosen_mode, sizeof chosen_mode, "%s", json_object_object_get_ex(settings, "mode", &field) ? json_object_get_string(field) : "");
     retro = json_object_object_get_ex(settings, "picture", &field) && !strcmp(json_object_get_string(field), RETRO_PICTURE);
     json_object_put(settings);

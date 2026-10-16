@@ -58,8 +58,8 @@ FROM gpu AS retroarch
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y alsa-lib pipewire-jack-audio-connection-kit-libs fontconfig dbus-libs libXi libXrandr libXinerama libXxf86vm libXScrnSaver libXext libXrender libXcursor libXfixes libv4l systemd-libs libxkbcommon libwayland-egl libwayland-cursor sdl2-compat libusb1 jq
 COPY --from=retroarch-download /retroarch /retroarch
 RUN for bundled in /retroarch/lib/*; do ! [ -e "/usr/lib64/${bundled##*/}" ] || rm "$bundled"; done
-COPY retroarch.cfg vulkan.cfg enhanced.jq refresh.jq /retroarch/
-COPY option.jq system.jq /usr/lib/jq/
+COPY retroarch.cfg vulkan.cfg refresh.jq /retroarch/
+COPY option.jq system.jq resolution.jq /usr/lib/jq/
 COPY retroarch-launch /retroarch/launch
 COPY --from=retroarch-frame-size /frame-size.so /retroarch/
 RUN touch /retroarch/core.opt /retroarch/vulkan.opt
@@ -88,10 +88,11 @@ COPY snes-system.jq /usr/lib/jq/system.jq
 
 # n64 Nintendo 64
 FROM retroarch AS n64
-LABEL anyconsole.launch="z64 n64 v64" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Nintendo - Nintendo 64"
+LABEL anyconsole.launch="z64 n64 v64" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Nintendo - Nintendo 64" anyconsole.resolution="{\"height\":480,\"scales\":[1,2,4,8]}"
 COPY --from=cores /cores/parallel_n64_libretro.so /retroarch/core.so
 COPY n64.opt /retroarch/core.opt
 COPY n64-vulkan.opt /retroarch/vulkan.opt
+COPY n64-resolution.jq /usr/lib/jq/resolution.jq
 
 # genesis Sega Genesis
 FROM retroarch AS genesis
@@ -134,10 +135,11 @@ COPY --from=cores /cores/stella_libretro.so /retroarch/core.so
 # ps1 PlayStation
 FROM retroarch AS ps1
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gawk
-LABEL anyconsole.launch="m3u chd cue pbp" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"forced\":[\"swanstation_Controller1_ForceAnalog\",\"swanstation_Controller2_ForceAnalog\",\"swanstation_Controller3_ForceAnalog\",\"swanstation_Controller4_ForceAnalog\"]}}" anyconsole.bios="/system" anyconsole.thumbnails="Sony - PlayStation"
+LABEL anyconsole.launch="m3u chd cue pbp" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"forced\":[\"swanstation_Controller1_ForceAnalog\",\"swanstation_Controller2_ForceAnalog\",\"swanstation_Controller3_ForceAnalog\",\"swanstation_Controller4_ForceAnalog\"]}}" anyconsole.bios="/system" anyconsole.thumbnails="Sony - PlayStation" anyconsole.resolution="{\"height\":240,\"scales\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]}"
 COPY --from=cores /cores/swanstation_libretro.so /retroarch/core.so
 COPY ps1.opt /retroarch/core.opt
 COPY ps1-system.jq /usr/lib/jq/system.jq
+COPY ps1-resolution.jq /usr/lib/jq/resolution.jq
 COPY analog-state.awk ps1-analog.awk analog-log /retroarch/
 ARG RETRO_DEVICE_ANALOG=5 RETRO_DEVICE_TYPE_SHIFT=8 SWANSTATION_DUALSHOCK_SUBCLASS=0 SWANSTATION_LIBRARY_NAME=SwanStation
 RUN mkdir -p "/retroarch/remaps/$SWANSTATION_LIBRARY_NAME" \
@@ -146,24 +148,26 @@ ENTRYPOINT ["/retroarch/analog-log", "/retroarch/ps1-analog.awk", "/retroarch/la
 
 # gamecube Nintendo GameCube
 FROM retroarch AS gamecube
-LABEL anyconsole.launch="m3u rvz gcm iso ciso gcz wia tgc dol elf" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Nintendo - GameCube"
+LABEL anyconsole.launch="m3u rvz gcm iso ciso gcz wia tgc dol elf" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Nintendo - GameCube" anyconsole.resolution="{\"height\":528,\"scales\":[1,2,3,4,5,6]}"
 COPY --from=cores /cores/dolphin_libretro.so /retroarch/core.so
 COPY --from=dolphin /system /system
 COPY gamecube-system.jq /usr/lib/jq/system.jq
+COPY gamecube-resolution.jq /usr/lib/jq/resolution.jq
 
 # psp PlayStation Portable
 FROM retroarch AS psp
-LABEL anyconsole.launch="iso cso pbp" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Sony - PlayStation Portable"
+LABEL anyconsole.launch="iso cso pbp" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Sony - PlayStation Portable" anyconsole.resolution="{\"height\":272,\"scales\":[1,2,3,4,5,6,7,8,9,10]}"
 COPY --from=cores /cores/ppsspp_libretro.so /retroarch/core.so
 COPY --from=ppsspp /system /system
-COPY psp-enhanced.jq /retroarch/enhanced.jq
 COPY psp-system.jq /usr/lib/jq/system.jq
+COPY psp-resolution.jq /usr/lib/jq/resolution.jq
 
 # n3ds Nintendo 3DS
 FROM retroarch AS n3ds
-LABEL anyconsole.launch="3ds cci cxi 3dsx zcci" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/saves/Azahar/sysdata" anyconsole.thumbnails="Nintendo - Nintendo 3DS"
+LABEL anyconsole.launch="3ds cci cxi 3dsx zcci" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/saves/Azahar/sysdata" anyconsole.thumbnails="Nintendo - Nintendo 3DS" anyconsole.resolution="{\"height\":240,\"scales\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]}"
 COPY --from=azahar /cores/azahar_libretro.so /retroarch/core.so
 COPY n3ds-system.jq /usr/lib/jq/system.jq
+COPY n3ds-resolution.jq /usr/lib/jq/resolution.jq
 
 FROM gpu AS x11
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y xorg-x11-server-Xwayland xwayland-run xorg-x11-xauth libglvnd-opengl alsa-plugins-pulseaudio python3-pysdl2 libgpg-error jq
@@ -193,7 +197,7 @@ RUN /addresses /redream > /addresses.flags \
 
 # dreamcast Sega Dreamcast
 FROM x11-rewind AS dreamcast
-LABEL anyconsole.launch="m3u gdi chd cdi cue" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.rewind="true" anyconsole.thumbnails="Sega - Dreamcast"
+LABEL anyconsole.launch="m3u gdi chd cdi cue" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.rewind="true" anyconsole.thumbnails="Sega - Dreamcast" anyconsole.resolution="{\"height\":480,\"scales\":[1,2,3,4,5,6,7,8]}"
 COPY --from=redream-download /redream/redream /opt/redream/redream
 COPY --from=redream-commands /commands.so /opt/redream/
 COPY redream/ /opt/redream/
@@ -231,7 +235,7 @@ RUN patchelf --add-needed /opt/rpcs3/config-reload.so /rpcs3/usr/bin/rpcs3 \
 FROM x11 AS ps3
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y matchbox-window-manager yq inotify-tools
 COPY with-window-manager /usr/local/bin/
-LABEL anyconsole.launch="sfo" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.install="/opt/rpcs3/install" anyconsole.thumbnails="Sony - PlayStation 3"
+LABEL anyconsole.launch="sfo" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.install="/opt/rpcs3/install" anyconsole.thumbnails="Sony - PlayStation 3" anyconsole.resolution="{\"height\":720,\"exact\":true}"
 COPY --from=rpcs3-config-reload /rpcs3 /opt/rpcs3
 RUN ln -s /opt/rpcs3/usr/share/rpcs3 /usr/share/rpcs3
 COPY rpcs3/ /opt/rpcs3/
@@ -247,7 +251,7 @@ RUN appimage /pcsx2
 FROM x11-rewind AS ps2
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y fontconfig freetype harfbuzz libcom_err libSM libICE matchbox-window-manager gawk
 COPY with-window-manager /usr/local/bin/
-LABEL anyconsole.launch="chd iso cso" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"button\":\"guide\"}}" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true" anyconsole.thumbnails="Sony - PlayStation 2"
+LABEL anyconsole.launch="chd iso cso" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"button\":\"guide\"}}" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true" anyconsole.thumbnails="Sony - PlayStation 2" anyconsole.resolution="{\"height\":448,\"scales\":[1,2,3,4,5,6,7,8,9,10,11,12]}"
 COPY --from=pcsx2-download /pcsx2 /opt/pcsx2
 COPY pcsx2/ analog-state.awk analog-log /opt/pcsx2/
 COPY ps2-system.jq /usr/lib/jq/system.jq

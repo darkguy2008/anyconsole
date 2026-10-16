@@ -237,6 +237,23 @@ enhanced() {
   saved_settings | jq -c --arg picture "$ENHANCED_PICTURE" --argjson config "$1" 'if .picture == $picture then $config[$picture] // {} else {} end'
 }
 
+rescale() {
+  rule=$(label "$1" "$RESOLUTION_LABEL")
+  saved_settings | jq --arg platform "$1" --argjson rule "${rule:-null}" '
+    ((.resolution | objects) // {})[$platform] // 0
+    | if . == 0 or $rule == null then 1 elif $rule.exact then . / $rule.height else . as $pick | [$rule.scales[] | select(. * $rule.height <= $pick)] | max // 1 end' > "$2/$RESOLUTION_FILE.partial"
+  mv "$2/$RESOLUTION_FILE.partial" "$2/$RESOLUTION_FILE"
+}
+
+upscalable() {
+  set -- $(engines | sed "s|^|$GAME_IMAGE/|")
+  [ $# -gt 0 ] || { echo '{}'; return; }
+  docker image inspect "$@" | jq -c --arg prefix "$GAME_IMAGE/" --arg resolution "$RESOLUTION_LABEL" --arg system "$SYSTEM_LABEL" '
+    map((.Config.Labels // {}) as $labels | select($labels | has($resolution))
+      | {(.RepoTags[0] | ltrimstr($prefix) | split(":")[0]): {name: ($labels[$system] // "" | split(" - ") | last), height: ($labels[$resolution] | fromjson | .height)}})
+    | add // {}'
+}
+
 hold_idle_latency() {
   latency=$(cat $IDLE_LATENCIES 2>/dev/null | sort -n | grep -vxm1 0) || return 0
   exec 3>/dev/cpu_dma_latency
@@ -255,12 +272,13 @@ run() {
   video=
   route_touchpad "$(label_of "$image" "$TOUCHPAD_LABEL")"
   ! printf '%s' "$display" | jq -e .vulkan >/dev/null || video=$(label_of "$image" "$VULKAN_LABEL")
+  rescale "$2" "$4"
   hold_idle_latency
   exec docker run --rm -i --label "$GAME_LABEL=$1/$2" $SANDBOX $(platform_access "$2") $shared \
     --device /dev/dri --device-cgroup-rule 'c 13:* rw' -v "$PAD_NODES:/dev/input:ro" \
-    -v "$3:/run/wayland" -v "$4:/states" -v "${DISPLAY_FILE%/*}:/display:ro" -e DISPLAY_STATE="/display/${DISPLAY_FILE##*/}" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
+    -v "$3:/run/wayland" -v "$4:/states" -e WAYLAND_DISPLAY=/run/wayland/wayland-0 -e XDG_RUNTIME_DIR=/tmp \
     -e CANVAS="$(printf '%s' "$display" | jq -r .canvas)" -e PADS="$PADS" -e PAD_NAME="$PAD_NAME" -e MOTION_NAME="$MOTION_NAME" -e MICROPHONE="$MICROPHONE_NODE" -e SCREEN="$(screen_state "$1" "$2")" \
-    -e GAME_CONFIG="$config" -e ANALOG_STATE="/states/$ANALOG_FILE" -e ENHANCED="$(enhanced "$config")" -e RESUME_SLOT="$6" -e GAME_LANGUAGE="$7" \
+    -e GAME_CONFIG="$config" -e ANALOG_STATE="/states/$ANALOG_FILE" -e RESOLUTION_STATE="/states/$RESOLUTION_FILE" -e ENHANCED="$(enhanced "$config")" -e RESUME_SLOT="$6" -e GAME_LANGUAGE="$7" \
     -v "$ZONEINFO_DIR:$ZONEINFO_DIR:ro" -e TZ="$(saved_settings | jq -r '."time-zone" // ""')" \
     -e REFRESH="$(printf '%s' "$config" | jq -r --argjson display "$display" --argjson mhz "$MHZ_PER_HZ" '.refresh // ($display.refresh / $mhz)')" \
     -v "$XDG_RUNTIME_DIR/pulse/native:/run/pulse/native" -e PULSE_SERVER=unix:/run/pulse/native \
@@ -284,7 +302,7 @@ close() { containers "$1" "$2" | xargs -r docker stop >/dev/null; }
 stop() { containers | xargs -r docker rm -f >/dev/null; }
 
 case "${1:-}" in
-  refresh|prepare|install|uninstall|run|pause|resume|close|stop|labels|update) command=$1; shift; $command "$@" ;;
+  refresh|prepare|install|uninstall|run|rescale|pause|resume|close|stop|labels|upscalable|update) command=$1; shift; $command "$@" ;;
   *) cat >&2 <<'USAGE'
 usage: games <command>
   refresh                         mount every store in /data/stores and list its games
@@ -292,11 +310,13 @@ usage: games <command>
   install <store> <slug> <platform>  prepare the platform's engine and copy the game from a store, printing "<step> [percent]"
   uninstall <slug> <platform>     delete an installed game, keeping every profile's saves, and the engine with the platform's last game
   run <slug> <platform> <wayland dir> <states dir> <profile> <slot> <language>  play an installed game in its sandbox with the profile's saves and that system language, starting from the states dir's state in that slot unless it is empty
+  rescale <platform> <states dir>  write the platform's render scale for its Game resolution into the states dir (1 if its engine can't upscale)
   pause <slug> <platform>         freeze a running game
   resume <slug> <platform>        unfreeze a running game and show its second screen if chosen
   close <slug> <platform>         stop a running game, killing it if it hasn't quit by docker's stop timeout
   stop                            remove every running game container
   labels <platform>               print the labels of the platform's image as JSON
+  upscalable                      print every downloaded engine that can render above its native resolution as JSON {platform: {name, height}}
   update                          while no game runs, bring every downloaded engine to its published version
 USAGE
     exit 1 ;;

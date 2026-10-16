@@ -11,16 +11,15 @@ pad_config() {
 }
 
 write_config() {
-  height=$(jq -r '.canvas | split("x")[1]' "$DISPLAY_STATE")
-  scale=$((height * PERCENT / ${OUTPUT#*x}))
+  scale=$(jq -n --argjson scale "$(cat "$RESOLUTION_STATE")" --argjson percent $PERCENT '$scale * $percent | round')
   [ "$scale" != "${written:-}" ] || return 0
   scale=$scale yq '.Video["Resolution Scale"] = env(scale)' "$BASE_CONFIG" > "$RPCS3_CONFIG.partial"
   mv "$RPCS3_CONFIG.partial" "$RPCS3_CONFIG"
   written=$scale
 }
 
-follow_display() {
-  inotifywait -m -e moved_to "${DISPLAY_STATE%/*}" 2>&1 | while read -r event; do
+follow_resolution() {
+  inotifywait -m -e moved_to "${RESOLUTION_STATE%/*}" 2>&1 | while read -r event; do
     echo "$event" >&2
     write_config
   done
@@ -34,6 +33,6 @@ pad_config > "$CONFIG/input_configs/global/Default.yml"
 { cat /opt/rpcs3/config.yml; system-settings; } > "$BASE_CONFIG"
 OUTPUT=$(yq .Video.Resolution "$BASE_CONFIG")
 write_config
-follow_display &
+follow_resolution &
 awk -v output="$OUTPUT" 'BEGIN { split(output, size, "x"); print "Setting aspect ratio to " size[1] / size[2] }' >&2
 exec xwayland-run -geometry "$CANVAS" -- with-window-manager /opt/rpcs3/AppRun --no-gui --fullscreen --config "$RPCS3_CONFIG" "${1%/*}"

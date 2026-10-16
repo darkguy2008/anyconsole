@@ -1,7 +1,6 @@
 #!/bin/sh
 set -eu
 . /etc/anyconsole.conf
-SYSTEM_LABEL=anyconsole.thumbnails
 SOURCE=https://thumbnails.libretro.com
 KIND=Named_Boxarts
 LOCK=/run/thumbnails.lock

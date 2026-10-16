@@ -21,6 +21,9 @@ SSH_ALIVE_SECONDS=1
 POLL_INTERVAL=$(awk "BEGIN { print 1 / $POLLS_PER_SECOND }")
 STEP_SECONDS=15
 PS2_BOOT_SECONDS=40
+PSP_WIDTH=480
+PSP_HEIGHT=272
+PSP_SHOWN_HEIGHT=270
 CRAB_PRIDE_FLAG_PRESSES="rightshoulder rightshoulder start"
 BOOT_SECONDS=180
 INSTALL_SECONDS=1200
@@ -285,25 +288,11 @@ open_store() {
   expect '.screen == "store"'
 }
 
-change_resolution_in_settings() {
-  choose Settings
-  expect '.screen == "settings"'
-  highlight "Game resolution"
-  tap dpright
-  expect "any(.rows[]; .label == \"Apply\") and (.settings.resolution // 0) == 0 and .display.canvas == $AREA_SIZE"
-  choose Apply
-  expect '.settings.resolution == 720 and .display.canvas == "1280x720" and all(.rows[]; .label != "Apply")'
-  highlight "Game resolution"
-  tap dpright
-  choose Apply
-  expect '.settings.resolution == 1080 and .display.canvas == "1920x1080" and .display.filter == "linear"'
-  snapshot settings
-  api POST settings "resolution 0" >/dev/null
-  expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
-  ! api POST settings "resolution 1" 2>/dev/null || { log FAIL "accepted a resolution outside RESOLUTIONS" >&2; exit 1; }
-  log ok "rejected a resolution outside RESOLUTIONS"
-  tap b
-  expect '.screen == "home"'
+reject_bad_resolutions() {
+  for value in "psp 1" "1080" "p/s 720" "psp 1080 1080"; do
+    ! api POST settings "resolution $value" 2>/dev/null || { log FAIL "accepted the Game resolution \"$value\"" >&2; exit 1; }
+  done
+  log ok "rejected Game resolutions without a platform or outside RESOLUTIONS"
 }
 
 stage_mode() {
@@ -339,8 +328,6 @@ switch_gpu_after_games() {
   expect ".display.pending == \"$second\" and any(.notifications[]; startswith(\"Close and restart your games\")) and .display.shown == \"$1\""
   guest games stop
   expect ".display.pending == null and .display.display == \"$second\" and $AREA_SIZE == \"${SECOND_DISPLAY_WIDTH}x$SECOND_DISPLAY_HEIGHT\" and .screen == \"home\""
-  api POST settings "resolution 720" >/dev/null
-  expect '.display.canvas == "1280x720" and .display.filter == "pixel"'
   api POST settings "display" >/dev/null
   expect ".settings.display == \"\" and .display.display == \"$second\""
 }
@@ -357,18 +344,12 @@ remember_guide_position() {
   expect '.guide | not'
 }
 
-apply_resolution_from_guide() {
+no_resolution_row_in_guide() {
   tap guide
-  expect '.guide and .screen == "guide"'
-  highlight "Game resolution"
-  tap dpright
-  expect '(.settings.resolution // 0) == 0 and any(.rows[]; .label == "Apply")'
-  choose Apply
-  expect '.settings.resolution == 720 and .display.canvas == "1280x720" and all(.rows[]; .label != "Apply")'
-  api POST settings "resolution 0" >/dev/null
-  expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
+  expect '.guide and .screen == "guide" and all(.rows[]; .label != "Game resolution")'
   tap guide
   expect '.guide | not'
+  log ok "the guide offers no Game resolution for a platform that can't upscale"
 }
 
 open_rewind_row() {
@@ -503,17 +484,13 @@ retro_picture() {
 }
 
 retro_shrinks_to_tv() {
-  api POST settings "resolution 1080" >/dev/null
   api POST settings "picture retro" >/dev/null
-  install_and_play "$1" "$2"
   expect "$(status_of "$1" running) and .display.retro != null"
   expect "(.display.frame | $SIZE_NUMBERS) as [\$width, \$height] | (.display.retro | $SIZE_NUMBERS) as [\$signal_width, \$signal_height]
     | \$height > $TV_LINES and \$signal_height == $TV_LINES and \$signal_width == (\$width * $TV_LINES / \$height | floor)"
   log ok "Retro shrinks $1's $(state | jq -r '.display | "\(.frame) frame to a \(.retro)"') TV picture before filtering"
-  close_game "$1" "$2"
   api POST settings "picture original" >/dev/null
-  api POST settings "resolution 0" >/dev/null
-  expect ".settings.picture == \"original\" and .display.canvas == $AREA_SIZE"
+  expect '.settings.picture == "original"'
 }
 
 close_game() {
@@ -999,16 +976,10 @@ test_symlinks() {
   log ok "every symlink on the root filesystem resolves"
 }
 
-ignores_resolution() {
-  api POST settings "resolution 1080" && holds '.display.canvas == "1920x1080"' && capture_settled "$1-1080" &&
-    api POST settings "resolution 0" && holds ".display.canvas == $AREA_SIZE" && capture_settled "$1-auto" &&
-    cmp -s "$OUT/$1-1080.png" "$OUT/$1-auto.png"
-}
-
 test_display() {
   kiosk_log_lacks '^xkbcommon: ERROR' "the compositor could not load its keyboard layout"
   log ok "the compositor loads its keyboard layout"
-  change_resolution_in_settings
+  reject_bad_resolutions
   stage_display_mode_until_saved
   expect_reply $STEP_SECONDS 200 '.ok and .state.screen == "settings"' --arg action picture --arg step 1
   expect '.settings.picture == "retro" and .display.retro == null'
@@ -1020,8 +991,6 @@ test_display() {
   log ok "Settings switches Display Mode through the API"
   tap b
   expect '.screen == "home"'
-  wait_for $STEP_SECONDS ignores_resolution menus
-  log ok "the menus draw at the display's own pixels whatever the Game resolution"
 }
 
 probe_skin() { guest "mkdir -p $USER_SKINS_DIR/probe && cat > $USER_SKINS_DIR/probe/skin.js"; }
@@ -1148,22 +1117,10 @@ test_nes() {
   wait_for $STEP_SECONDS guest "[ -d $(saves_of alter-ego/nes) ]"
   log ok "Player 1 plays with its own saves"
   snapshot alter-ego
-  api POST settings "resolution 1080" >/dev/null
-  expect ".display.canvas == \"1920x1080\" and .display.frame == \"$(core_geometry alter-ego/nes)\" and ($(status_of alter-ego/nes running))"
-  snapshot alter-ego-1080
-  api POST settings "resolution 0" >/dev/null
-  expect ".display.canvas == $AREA_SIZE and .display.frame == \"$(core_geometry alter-ego/nes)\" and ($(status_of alter-ego/nes running))"
   wait_for $STEP_SECONDS guest ". /etc/profile; pw-dump | jq -e '[.[] | select(.info.props[\"media.class\"]? == \"Stream/Output/Audio\" and .info.state == \"running\")] | length == 1'"
   log ok "the game plays sound into PipeWire"
   remember_guide_position
-  apply_resolution_from_guide
-  tap guide
-  expect '.guide and .screen == "guide"'
-  highlight Dashboard
-  wait_for $STEP_SECONDS ignores_resolution guide
-  log ok "the guide shows the game where it plays whatever the Game resolution"
-  tap guide
-  expect '.guide | not'
+  no_resolution_row_in_guide
   blow_into_microphone
   change_analog
   second_player_joins_and_leaves alter-ego/nes
@@ -1255,7 +1212,6 @@ test_dreamcast() {
   rewind_dreamcast gravity-wave-twin-stick-shooter/dreamcast
   ! has_redream_license || save_states gravity-wave-twin-stick-shooter/dreamcast redream_read_loaded_state
   close_game gravity-wave-twin-stick-shooter/dreamcast "Gravity Wave"
-  retro_shrinks_to_tv gravity-wave-twin-stick-shooter/dreamcast "Gravity Wave"
 }
 
 test_atari() {
@@ -1382,25 +1338,41 @@ test_stores() {
   expect '.stores[0].online and all(.games[]; (.stores | length) == 1)'
 }
 
-test_enhanced() {
+psp_scale_holds() {
+  [ "$(guest "docker exec $(game_container "$1") cat /states/resolution")" = "$2" ] &&
+    core_options_hold "$1" "{\"ppsspp_internal_resolution\": \"$((PSP_WIDTH * $2))x$((PSP_HEIGHT * $2))\"}" &&
+    holds ".display.frame == \"$((PSP_WIDTH * $2))x$((PSP_SHOWN_HEIGHT * $2))\""
+}
+
+test_resolution() {
   key=mini-mine-rt/psp
   install_and_play $key "Mini Mine RT"
   expect '.rewind.states >= 1'
-  restart_into $key 'Loading state' expect_reply $STEP_SECONDS 200 ".ok and .state.settings.picture == \"enhanced\" and (.state | $(closed_and_running $key))" --arg action picture --arg step -1
-  [ "$(container_env $key ENHANCED)" = '{"scale":2}' ] || { log FAIL "$key did not get its enhanced options" >&2; exit 1; }
-  wait_for $STEP_SECONDS core_options_hold $key '{"ppsspp_internal_resolution": "960x544"}'
-  log ok "Enhanced restarts $key at twice its resolution and loads the state it left"
-  restart_into $key 'Loading state' api POST settings "picture original"
-  [ "$(container_env $key ENHANCED)" = '{}' ] && guest "! docker exec $(game_container $key) grep -q ppsspp_internal_resolution /tmp/core.opt" ||
-    { log FAIL "$key kept its enhanced options in Original" >&2; exit 1; }
-  log ok "Original restarts $key at its native resolution and loads the state it left"
+  tap guide
+  expect '.guide and .screen == "guide"'
+  highlight "Game resolution"
+  expect "($(row_value "Game resolution")) == \"Auto (272p)\""
+  restart_into $key 'Loading state' tap dpright
+  expect '.settings.resolution.psp == 720'
+  wait_for $STEP_SECONDS psp_scale_holds $key 2
+  log ok "720p restarts $key from the guide at 2x, the biggest scale whose 544 lines fit, and loads the state it left"
+  expect_reply $STEP_SECONDS 200 '.ok and .state.screen == "resolutions"' --arg action open-resolutions
+  expect "($(row_value "PlayStation Portable")) == \"720p\" and all(.rows[]; .label != \"Nintendo Entertainment System\")"
+  log ok "Settings lists the Game resolution of each installed platform that can upscale"
+  expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of $key running)) and (.state.dashboard | not)" --arg action resume --arg game $key
+  restart_into $key 'Loading state' api POST settings "resolution psp 1440"
+  wait_for $STEP_SECONDS psp_scale_holds $key 5
+  log ok "1440p restarts $key at 5x"
+  retro_shrinks_to_tv $key
   container=$(container_of $key)
-  api POST settings "picture retro" >/dev/null
-  expect ".settings.picture == \"retro\" and .display.retro != null"
-  [ "$(container_of $key)" = "$container" ] || { log FAIL "Retro restarted $key" >&2; exit 1; }
-  log ok "switching between Original and Retro keeps $key running"
+  api POST settings "picture enhanced" >/dev/null
+  expect '.settings.picture == "enhanced"'
+  [ "$(container_of $key)" = "$container" ] || { log FAIL "Enhanced restarted $key, which has no enhanced block" >&2; exit 1; }
+  log ok "Display Mode keeps $key running when it has no enhanced block"
   api POST settings "picture original" >/dev/null
-  expect '.settings.picture == "original"'
+  restart_into $key 'Loading state' api POST settings "resolution psp 0"
+  wait_for $STEP_SECONDS guest "[ \"\$(docker exec $(game_container $key) cat /states/resolution)\" = 1 ] && ! docker exec $(game_container $key) grep -q ppsspp_internal_resolution /tmp/core.opt"
+  log ok "Auto restarts $key at its native resolution"
   close_game $key "Mini Mine RT"
 }
 
@@ -1502,6 +1474,10 @@ test_ps2() {
   expect ".display.frame == \"$(picture_frame 4 3)\""
   wait_for $STEP_SECONDS ps2_patch_enabled $key "$PS2_STANDARD_PATCH"
   log ok "Original restarts $key in its 4:3 window with its standard patch and loads the state it left"
+  restart_into $key 'Loading GS' api POST settings "resolution ps2 1080"
+  wait_for $STEP_SECONDS guest "docker exec $(game_container $key) grep -qx 'upscale_multiplier = 2' /engine/PCSX2/inis/PCSX2.ini"
+  log ok "1080p restarts $key with PCSX2 at 2x, the biggest scale whose 896 lines fit"
+  restart_into $key 'Loading GS' api POST settings "resolution ps2 0"
   ps2_nvm_holds $PS2_ENGLISH $TEST_ZONE_MINUTES
   api POST settings "game-language" >/dev/null
   api POST settings "time-zone" >/dev/null
@@ -1523,15 +1499,14 @@ test_gpu() {
   api POST settings "display $first" >/dev/null
   expect ".display.display == \"$first\""
   api POST settings "display" >/dev/null
-  api POST settings "resolution 0" >/dev/null
-  expect ".settings.display == \"\" and .display.display == \"$first\" and .settings.resolution == 0 and .display.canvas == $AREA_SIZE"
+  expect ".settings.display == \"\" and .display.display == \"$first\" and .display.canvas == $AREA_SIZE"
 }
 
 test_reboot() {
   ensure_installed alter-ego/nes "Alter Ego"
   ensure_installed commander-keen/msdos "Commander Keen"
-  api POST settings "resolution 720" >/dev/null
-  expect '.settings.resolution == 720'
+  api POST settings "resolution psp 720" >/dev/null
+  expect '.settings.resolution.psp == 720'
   expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of alter-ego/nes running))" --arg action play --arg game alter-ego/nes
   expect '.rewind.states >= 1'
   guest reboot
@@ -1540,11 +1515,11 @@ test_reboot() {
   log ok "the states of a game the reboot interrupted are kept"
   wait_for $STEP_SECONDS guest "grep -qF ' $KERNEL_ARGS' /proc/cmdline"
   log ok "the kernel booted with $KERNEL_ARGS"
-  expect ".screen == \"attract\" and ($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed)) and .settings.resolution == 720"
+  expect ".screen == \"attract\" and ($(status_of alter-ego/nes installed)) and ($(status_of commander-keen/msdos installed)) and .settings.resolution.psp == 720"
   expect_reply $STEP_SECONDS 409 '.error == "Could not start Alter Ego: log in a player first"' --arg action play --arg game alter-ego/nes
   sign_in_from_attract
-  api POST settings "resolution 0" >/dev/null
-  expect ".settings.resolution == 0 and .display.canvas == $AREA_SIZE"
+  api POST settings "resolution psp 0" >/dev/null
+  expect '.settings.resolution.psp == 0'
 }
 
 open_store_by_action() { expect_reply $STEP_SECONDS 200 .ok --arg action open-store; }
@@ -1582,7 +1557,7 @@ test_thumbnails() {
   log ok "one fetch downloads every boxart it asks for"
 }
 
-TESTS="capture symlinks display audio controllers nes atari ps1 genesis snes actions dreamcast msdos msx2 stores gpu logout reboot skins engines thumbnails enhanced ps2 language time_zone"
+TESTS="capture symlinks display audio controllers nes atari ps1 genesis snes actions dreamcast msdos msx2 stores gpu logout reboot skins engines thumbnails resolution ps2 language time_zone"
 names=${*:-$TESTS}
 for name in $names; do
   case " $TESTS " in
@@ -1599,7 +1574,7 @@ run_tests() {
   push_test_bios
   preload_fakepad
   sign_in_from_attract
-  expect ".screen == \"home\" and .dashboard and (.rows | length) == 2 and (.display.displays | length) == 2 and .display.canvas == $AREA_SIZE and .display.filter == \"nearest\""
+  expect ".screen == \"home\" and .dashboard and (.rows | length) == 2 and (.display.displays | length) == 2 and .display.canvas == $AREA_SIZE"
   api POST stores "$TEST_STORE_URL" >/dev/null
   expect '.stores[0].online and ([.games[].key] | index("alter-ego/nes") != null)'
   for name; do

@@ -58,7 +58,7 @@ case "${1:-status}" in
     reply=$(action action=log-out profile="$2") || { echo "$reply"; exit 1; }
     if [ "$(echo "$reply" | jq -r .state.screen)" = logout ]; then action action=confirm-log-out profile="$2"; else echo "$reply"; fi ;;
   volume) api POST volume "$2" ;;
-  set) api POST settings "$2 ${3:-}" ;;
+  set) shift; api POST settings "$*" ;;
   skin)
     [ "${2:-}" = push ] && [ -f "${3:-}/skin.js" ] || exec "$0" help
     route=$(ssh_route)
@@ -112,7 +112,7 @@ usage: console [box address] <command>
   volume <percent>  set the output volume
   set display [label]  show the console on this display from state (none = Auto)
   set mode [mode]  drive the display at this mode from state's .display.modes, e.g. 3840x2160@60000 (none = Auto)
-  set resolution <height>  render games and menus at this 16:9 height (0 = Auto)
+  set resolution <platform> <height>  render that platform's games at the biggest scale that fits this height (0 = Auto, the platform's own)
   set sleep <minutes>  disconnect idle Bluetooth controllers after this long (0 = never)
   set skin <name>  draw the menus with this skin folder from /data/skins or the built-in skins
   skin push <folder>  copy a skin folder (with skin.js) to /data/skins/<folder name>; the console reloads it on every push

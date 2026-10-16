@@ -82,8 +82,8 @@ add_download kumi-daiko-beatoff "Kumi-Daiko Beatoff 64" n64 "$GITHUB/ptimonen/n6
 add_zipped cracky "Cracky" wsc "$INUFUTO/16bit/wsc/cracky_bin.zip" '*.wsc'
 add_zipped cracky-msx "Cracky MSX" msx2 "$INUFUTO/8bit/msx/cracky_rom.zip" '*.rom' '{"hold": {"key": "KEY_LEFTCTRL", "ms": 15000}}'
 add_zipped gc-controller-test "GC Controller Test" gamecube "$GITHUB/corenting/GC-Controller-Test/releases/download/v1.2/gc-1-2.zip" '*.dol'
-add_download mini-mine-rt "Mini Mine RT" psp "$GITHUB/Saymond/PSP-apps/releases/download/v2.0/EBOOT.PBP" '{"enhanced": {"scale": 2}}' '{"es": "Mini Mina RT"}'
+add_download mini-mine-rt "Mini Mine RT" psp "$GITHUB/Saymond/PSP-apps/releases/download/v2.0/EBOOT.PBP" '{}' '{"es": "Mini Mina RT"}'
 [ ! -d "$TEST_BIOS/ps1" ] || add_cue_disc a-small-journey "A Small Journey" ps1 "$ARCHIVE/asj-1.0/asj-1.0.zip"
-[ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo "Cubes Demo" ps2 "$CUBES_DEMO" '{"enhanced": {"widescreen": true, "scale": 2}}'
+[ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo "Cubes Demo" ps2 "$CUBES_DEMO" '{"enhanced": {"widescreen": true}}'
 [ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo-europe "Cubes Demo Europe" ps2 "$CUBES_DEMO" '{"region": "europe"}'
 add_download gravity-wave-twin-stick-shooter "Gravity Wave" dreamcast "$GITHUB/richstokes/dreamcast-homebrew/releases/download/continuous/gravity-wave.cdi" "{\"pad\": $TWIN_STICK}"

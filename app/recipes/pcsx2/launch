@@ -14,7 +14,6 @@ PICTURE_ASPECT=$PICTURE_WIDTH:$PICTURE_HEIGHT
 WIDESCREEN_ASPECT_RATIO="Auto 4:3/3:2"
 WIDESCREEN_PATCH="Widescreen 16:9"
 STANDARD_PATCH="Standard 4:3"
-NATIVE_SCALE=1
 
 pad() {
   printf '[Pad%s]\nType = DualShock2\n' "$1"
@@ -54,7 +53,7 @@ UseVSyncForTiming = true
 SkipDuplicateFrames = false
 AspectRatio = $aspect_ratio
 FMVAspectRatioSwitch = $PICTURE_ASPECT
-upscale_multiplier = $(enhanced scale $NATIVE_SCALE)
+upscale_multiplier = $(cat "$RESOLUTION_STATE")
 OsdMessagesPos = $OSD_MESSAGES_NONE
 [EmuCore/Speedhacks]
 vuThread = true

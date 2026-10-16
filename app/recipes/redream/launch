@@ -33,4 +33,4 @@ else
   echo "no $LICENSE: rewind needs redream premium" >&2
   cat <&3 > /dev/null &
 fi
-exec xwayland-run -geometry "${width}x$height" -- env $preload /engine/redream --width="$width" --height="$height" "$@"
+exec xwayland-run -geometry "${width}x$height" -- env $preload /engine/redream --width="$width" --height="$height" --res="$(cat "$RESOLUTION_STATE")" "$@"

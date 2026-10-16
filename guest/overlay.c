@@ -109,26 +109,26 @@
 
 extern int _nl_msg_cat_cntr;
 
-enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, MICROPHONES, CONTROLLERS, CONTROLLER, SETTINGS, WHOIS, LOG_OUT, ATTRACT, DELETE_DIALOG, OVERWRITE_DIALOG };
+enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, MICROPHONES, CONTROLLERS, CONTROLLER, SETTINGS, PLATFORM_RESOLUTIONS, WHOIS, LOG_OUT, ATTRACT, DELETE_DIALOG, OVERWRITE_DIALOG };
 enum plane { DASHBOARD_PLANE, GUIDE_PLANE, PICKER_PLANE, DIALOG_PLANE };
 static const char *const planes[] = {[DASHBOARD_PLANE] = "dashboard", [GUIDE_PLANE] = "guide", [PICKER_PLANE] = "picker", [DIALOG_PLANE] = "dialog"};
 static const struct { const char *name, *title; enum plane plane; } screens[] = {
     [HOME] = {"home", N_("Home")}, [STORE] = {"store", N_("Store")}, [GAME] = {"game", ""},
     [GUIDE] = {"guide", N_("Guide"), GUIDE_PLANE}, [OUTPUTS] = {"outputs", N_("Output"), GUIDE_PLANE}, [MICROPHONES] = {"microphones", N_("Microphone"), GUIDE_PLANE},
-    [CONTROLLERS] = {"controllers", N_("Controllers"), GUIDE_PLANE}, [CONTROLLER] = {"controller", "", GUIDE_PLANE}, [SETTINGS] = {"settings", N_("Settings")},
+    [CONTROLLERS] = {"controllers", N_("Controllers"), GUIDE_PLANE}, [CONTROLLER] = {"controller", "", GUIDE_PLANE}, [SETTINGS] = {"settings", N_("Settings")}, [PLATFORM_RESOLUTIONS] = {"resolutions", N_("Game resolution")},
     [WHOIS] = {"whois", "", PICKER_PLANE}, [LOG_OUT] = {"logout", "", GUIDE_PLANE}, [ATTRACT] = {"attract", ""},
     [DELETE_DIALOG] = {"delete-state", "", DIALOG_PLANE}, [OVERWRITE_DIALOG] = {"overwrite-state", "", DIALOG_PLANE},
 };
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
-              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, ANALOG, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN, CLEAR_THUMBNAILS,
+              CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_MODE, OPEN_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, ANALOG, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN, CLEAR_THUMBNAILS,
               SAVE_STATES, DELETE_STATE, OVERWRITE_STATE, CHOOSE_PICTURE, CHOOSE_LANGUAGE, CHOOSE_GAME_LANGUAGE, CHOOSE_TIME_ZONE, CHOOSE_CITY };
 static const char *const actions[] = {
     [NOTHING] = "nothing", [OPEN_STORE] = "open-store", [OPEN_SETTINGS] = "open-settings", [OPEN_GAME] = "open-game", [PLAY] = "play", [RESUME] = "resume",
     [CLOSE] = "close", [UNINSTALL] = "uninstall", [INSTALL] = "install", [SHOW_DASHBOARD] = "dashboard", [VOLUME] = "volume", [OPEN_OUTPUTS] = "open-outputs",
     [OPEN_MICROPHONES] = "open-microphones", [SET_DEVICE] = "set-device", [OPEN_CONTROLLERS] = "open-controllers", [PAIR] = "pair",
     [OPEN_CONTROLLER] = "open-controller", [FORGET] = "forget", [RELOAD] = "reload", [RESTART] = "restart", [POWER_OFF] = "power-off",
-    [CHOOSE_DISPLAY] = "display", [CHOOSE_DISPLAY_MODE] = "display-mode", [APPLY_RESOLUTIONS] = "apply-resolutions", [CHOOSE_RESOLUTION] = "resolution",
+    [CHOOSE_DISPLAY] = "display", [CHOOSE_DISPLAY_MODE] = "display-mode", [APPLY_MODE] = "apply-mode", [OPEN_RESOLUTIONS] = "open-resolutions", [CHOOSE_RESOLUTION] = "resolution",
     [CHOOSE_SLEEP] = "sleep", [REWIND] = "rewind", [LOGIN] = "login", [EMULATE] = "emulate", [ANALOG] = "analog", [LOG_OUT_PLAYER] = "log-out",
     [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen", [CHOOSE_SKIN] = "skin",
     [CLEAR_THUMBNAILS] = "clear-thumbnails", [SAVE_STATES] = "save-states", [DELETE_STATE] = "delete-state", [OVERWRITE_STATE] = "overwrite-state",
@@ -191,7 +191,8 @@ static struct game games[GAMES_MAX];
 static int game_count, active = -1;
 static char stores[STORES_MAX][PATH_MAX];
 static int store_count;
-static pid_t refresher, monitor, thumbnail_fetcher, thumbnail_refresher, thumbnail_clearer;
+static pid_t refresher, monitor, thumbnail_fetcher, thumbnail_refresher, thumbnail_clearer, upscalable_probe;
+static int upscalable_output, upscalable_wanted;
 static char **wanted_thumbnails;
 static int wanted_thumbnail_count, sent_thumbnail_count;
 static int refresh_pending, monitor_output = -1;
@@ -201,7 +202,7 @@ static int dashboard_depth = 1, guide_depths[PROFILES + 1], guide_shown, dashboa
 static struct row rows[ROWS_MAX];
 static struct device outputs[DEVICES_MAX], microphones[DEVICES_MAX];
 static char default_output[TEXT_MAX], default_microphone[TEXT_MAX], microphone_pad[TEXT_MAX], chosen_controller[TEXT_MAX], staged_mode[TEXT_MAX];
-static int output_count, microphone_count, volume = -1, microphone_volume = -1, microphone_muted, mode_staged, staged_resolution, resolution_staged;
+static int output_count, microphone_count, volume = -1, microphone_volume = -1, microphone_muted, mode_staged;
 static int players[PADS], player_count, menu_told = -1, focus = NO_DEVICE, picker = NO_DEVICE, input_device = NO_DEVICE, previewed = NO_DEVICE, previewed_seat, repeating_device, guide_profile, applied_game = UNAPPLIED;
 static struct member members[INPUT_DEVICES_MAX];
 static int member_count;
@@ -227,7 +228,7 @@ static struct gbm_device *gbm;
 static int window_count, resolutions[RESOLUTIONS_MAX], resolution_count, sleep_choices[SLEEP_CHOICES_MAX], sleep_choice_count;
 static char boot_governor[TEXT_MAX];
 static int boosted = -1;
-static json_object *settings, *display_state, *controllers_state, *audio_nodes, *audio_devices;
+static json_object *settings, *display_state, *controllers_state, *audio_nodes, *audio_devices, *upscalable;
 
 static struct wl_display *display;
 static struct wl_compositor *compositor;
@@ -627,9 +628,27 @@ static void scan(const char *directory, int store) {
     if (slugs) closedir(slugs);
 }
 
+static void probe_upscalable(void) {
+    if (upscalable_probe || !upscalable_wanted) return;
+    upscalable_wanted = 0;
+    upscalable_probe = spawn_reading((char *[]){"games", "upscalable", NULL}, &upscalable_output, log_file);
+    if (upscalable_probe < 0) upscalable_probe = 0;
+}
+
+static void read_upscalable(void) {
+    json_object_put(upscalable);
+    upscalable = json_object_from_fd(upscalable_output);
+    if (!upscalable) upscalable = json_object_new_object();
+    close(upscalable_output);
+    upscalable_probe = 0;
+    probe_upscalable();
+}
+
 static void rescan_installed(void) {
     for (int i = 0; i < game_count; i++) games[i].installed = 0;
     scan(GAMES_DIR, -1);
+    upscalable_wanted = 1;
+    probe_upscalable();
 }
 
 static void rescan(void) {
@@ -833,8 +852,6 @@ static int int_at(json_object *object, const char *name) {
     return json_object_object_get_ex(object, name, &field) ? json_object_get_int(field) : 0;
 }
 
-static int chosen_resolution(void) { return resolution_staged ? staged_resolution : int_at(settings, "resolution"); }
-
 static const char *display_value(void) {
     static char value[TEXT_MAX];
     const char *pinned = string_at(settings, "display", NULL);
@@ -858,10 +875,17 @@ static const char *display_mode_value(void) {
     return *chosen_mode() ? mode_text(chosen_mode()) : value;
 }
 
-static const char *resolution_value(void) {
+static int chosen_resolution(const char *platform) { return int_at(list_at(settings, "resolution"), platform); }
+
+static const char *resolution_value(const char *platform) {
     static char value[TEXT_MAX];
-    if (chosen_resolution()) snprintf(value, sizeof value, "%dp", chosen_resolution());
-    else snprintf(value, sizeof value, _(AUTO), string_at(display_state, "canvas", NULL));
+    char native[TEXT_MAX];
+    json_object *details = NULL;
+    json_object_object_get_ex(upscalable, platform, &details);
+    snprintf(native, sizeof native, "%dp", int_at(details, "height"));
+    int chosen = chosen_resolution(platform);
+    if (chosen) snprintf(value, sizeof value, "%dp", chosen);
+    else snprintf(value, sizeof value, _(AUTO), native);
     return value;
 }
 
@@ -885,22 +909,21 @@ static void cycle_display_mode(int step) {
     mode_staged = strcmp(staged_mode, string_at(settings, "mode", NULL)) != 0;
 }
 
-static void cycle_resolution(int step) {
+static void cycle_resolution(int game, int step) {
+    char value[TEXT_MAX];
+    const char *platform = games[game].platform;
     int current = 0;
     for (int i = 0; i < resolution_count; i++)
-        if (resolutions[i] == chosen_resolution()) current = i + 1;
+        if (resolutions[i] == chosen_resolution(platform)) current = i + 1;
     int next = cycle(current, resolution_count, step);
-    staged_resolution = next ? resolutions[next - 1] : 0;
-    resolution_staged = staged_resolution != int_at(settings, "resolution");
+    snprintf(value, sizeof value, "%s %d", platform, next ? resolutions[next - 1] : 0);
+    start((char *[]){"settings", "resolution", value, NULL});
 }
 
-static void discard_staged(void) { mode_staged = resolution_staged = 0; }
+static void discard_staged(void) { mode_staged = 0; }
 
 static void apply_staged(void) {
-    char value[TEXT_MAX];
-    snprintf(value, sizeof value, "%d", staged_resolution);
     if (mode_staged) start((char *[]){"settings", "mode", staged_mode, NULL});
-    if (resolution_staged) start((char *[]){"settings", "resolution", value, NULL});
     discard_staged();
 }
 
@@ -1498,10 +1521,23 @@ static int rewindable(void) { return in_game() && games[active].rewinds; }
 
 static int add_picture_row(int count) { return add_row(count, CHOOSE_PICTURE, 0, _("Display Mode"), "%s", _(pictures[chosen_picture()].label)); }
 
-static int add_resolution_rows(int count) {
+static int add_display_mode_rows(int count) {
     count = add_row(count, CHOOSE_DISPLAY_MODE, 0, _("Display resolution"), "%s", display_mode_value());
-    count = add_row(count, CHOOSE_RESOLUTION, 0, _("Game resolution"), "%s", resolution_value());
-    return mode_staged || resolution_staged ? add_row(count, APPLY_RESOLUTIONS, 0, _("Apply"), "") : count;
+    return mode_staged ? add_row(count, APPLY_MODE, 0, _("Apply"), "") : count;
+}
+
+static int upscalable_game(const char *platform) {
+    for (int i = 0; i < game_count; i++)
+        if (games[i].installed && (!platform || !strcmp(games[i].platform, platform)) && json_object_object_get_ex(upscalable, games[i].platform, NULL)) return i;
+    return -1;
+}
+
+static int add_platform_resolution_rows(int count) {
+    json_object_object_foreach(upscalable, platform, details) {
+        int game = upscalable_game(platform);
+        if (game >= 0) count = add_row(count, CHOOSE_RESOLUTION, game, string_at(details, "name", NULL), "%s", resolution_value(platform));
+    }
+    return count;
 }
 
 static int build(struct view *view) {
@@ -1541,10 +1577,11 @@ static int build(struct view *view) {
             else if (guide_profile && !games[active].analog) count = add_row(count, EMULATE, 0, _("Emulate"), "%s", emulate_value());
             if (games[active].second_screen) count = add_row(count, SECOND_SCREEN, 0, _("Second screen"), "%s", games[active].screen_shown ? _("Inset") : _("Off"));
             count = add_picture_row(count);
+            if (json_object_object_get_ex(upscalable, games[active].platform, NULL)) count = add_row(count, CHOOSE_RESOLUTION, active, _("Game resolution"), "%s", resolution_value(games[active].platform));
             break;
         }
         if (tab_of(view) == SYSTEM_TAB) {
-            count = add_resolution_rows(count);
+            count = add_display_mode_rows(count);
             count = add_row(count, RELOAD, 0, _("Reload"), "");
             count = add_row(count, RESTART, 0, _("Restart"), "");
             count = add_row(count, POWER_OFF, 0, _("Power off"), "");
@@ -1597,7 +1634,8 @@ static int build(struct view *view) {
         break;
     case SETTINGS:
         count = add_row(count, CHOOSE_DISPLAY, 0, _("Display"), "%s", display_value());
-        count = add_resolution_rows(count);
+        count = add_display_mode_rows(count);
+        if (upscalable_game(NULL) >= 0) count = add_row(count, OPEN_RESOLUTIONS, 0, _("Game resolution"), "");
         count = add_picture_row(count);
         count = add_row(count, CHOOSE_SLEEP, 0, _("Controller sleep"), "%s", sleep_value());
         count = add_row(count, CHOOSE_SKIN, 0, _("Skin"), "%s", skin_name());
@@ -1606,6 +1644,9 @@ static int build(struct view *view) {
         count = add_row(count, CHOOSE_TIME_ZONE, 0, _("Time zone"), "%s", area_value());
         if (chosen_zone >= 0) count = add_row(count, CHOOSE_CITY, 0, _("City"), "%s", city_value());
         count = add_row(count, CLEAR_THUMBNAILS, 0, _("Clear thumbnails"), "");
+        break;
+    case PLATFORM_RESOLUTIONS:
+        count = add_platform_resolution_rows(count);
         break;
     }
     for (int i = 0; i < count; i++)
@@ -1938,8 +1979,8 @@ static void load_saved(void) {
     resume(active);
 }
 
-static void restart_enhanced(void) {
-    if (!rewindable() || !games[active].enhanced || games[active].restart || games[active].closing) return;
+static void restart_active(void) {
+    if (!rewindable() || games[active].restart || games[active].closing) return;
     games[active].restart = SAVING;
     games[active].restart_slot = save_state();
     resume(active);
@@ -1951,13 +1992,21 @@ static int running_games(void) {
     return count;
 }
 
+static void rescale_active(void) {
+    char states[PATH_MAX];
+    start((char *[]){"games", "rescale", games[active].platform, rewind_path(states, active, "/" STATES), NULL});
+    restart_active();
+}
+
 static void apply_settings(void) {
-    int was_enhanced = chosen_picture() == ENHANCED;
+    const char *platform = active >= 0 && games[active].pid ? games[active].platform : NULL;
+    int was_enhanced = chosen_picture() == ENHANCED, was_resolution = platform ? chosen_resolution(platform) : 0;
     char was_language[NAME_MAX + 1], was_game_language[NAME_MAX + 1];
     snprintf(was_language, sizeof was_language, "%s", ui_language());
     snprintf(was_game_language, sizeof was_game_language, "%s", effective_game_language());
     read_settings();
-    if ((chosen_picture() == ENHANCED) != was_enhanced) restart_enhanced();
+    if ((chosen_picture() == ENHANCED) != was_enhanced && in_game() && games[active].enhanced) restart_active();
+    if (platform && chosen_resolution(platform) != was_resolution) rescale_active();
     if (strcmp(ui_language(), was_language)) rescan();
     if (strcmp(effective_game_language(), was_game_language) && running_games())
         notify(_("Restart your games to play them in %s"), language_names[language_index(effective_game_language())]);
@@ -2244,10 +2293,11 @@ static void act(struct row *row, int profile) {
         discard_staged();
         push(SETTINGS, -1);
         break;
-    case APPLY_RESOLUTIONS:
+    case APPLY_MODE:
         apply_staged();
         view->action = CHOOSE_DISPLAY_MODE;
         break;
+    case OPEN_RESOLUTIONS: push(PLATFORM_RESOLUTIONS, -1); break;
     case OPEN_GAME: push(GAME, row->arg); break;
     case PLAY:
         game->owner = profile;
@@ -2301,12 +2351,12 @@ static void change_volume(char *node, const char *direction) {
     start((char *[]){"wpctl", "set-volume", "-l", VOLUME_LIMIT, node, step, NULL});
 }
 
-static void adjust(enum action action, int step) {
+static void adjust(enum action action, int arg, int step) {
     if (action == VOLUME) change_volume("@DEFAULT_AUDIO_SINK@", step < 0 ? "-" : "+");
     if (action == MICROPHONE_VOLUME) change_volume("@DEFAULT_AUDIO_SOURCE@", step < 0 ? "-" : "+");
     if (action == CHOOSE_DISPLAY) cycle_display(step);
     if (action == CHOOSE_DISPLAY_MODE) cycle_display_mode(step);
-    if (action == CHOOSE_RESOLUTION) cycle_resolution(step);
+    if (action == CHOOSE_RESOLUTION) cycle_resolution(arg, step);
     if (action == CHOOSE_SLEEP) cycle_sleep(step);
     if (action == CHOOSE_SKIN) cycle_skin(step);
     if (action == CHOOSE_PICTURE) cycle_picture(step);
@@ -2375,7 +2425,7 @@ static void navigate(int device, enum command command) {
     case DOWN: if (view->selected < count - 1) view->selected++; break;
     case PAGE_UP: view->selected = 0; break;
     case PAGE_DOWN: if (count) view->selected = count - 1; break;
-    case LEFT: case RIGHT: if (row) adjust(row->action, command == LEFT ? -1 : 1); break;
+    case LEFT: case RIGHT: if (row) adjust(row->action, row->arg, command == LEFT ? -1 : 1); break;
     case CONFIRM: case X_BUTTON: case Y_BUTTON: if (row) press_row(row, command, profile_of(device)); break;
     case BACK: case GUIDE_BUTTON:
         if (picker != NO_DEVICE) picker = NO_DEVICE;
@@ -2913,6 +2963,10 @@ static void reap(void) {
             monitor = 0;
             close(monitor_output);
         }
+        if (pid == upscalable_probe) {
+            read_upscalable();
+            changed = 1;
+        }
         for (int i = 0; i < game_count; i++) {
             if (games[i].pid == pid) ended(i, failed);
             if (!games[i].pid && games[i].restart == CLOSING) play(i);
@@ -3176,7 +3230,7 @@ static void run_request(struct request *request, json_object *wanted) {
     view = top();
     if (view->screen == found) select_row(view, index);
     request->game = view->game;
-    if (json_object_object_get_ex(wanted, "step", NULL)) adjust(rows[index].action, int_at(wanted, "step"));
+    if (json_object_object_get_ex(wanted, "step", NULL)) adjust(rows[index].action, rows[index].arg, int_at(wanted, "step"));
     else if (!press_row(&rows[index], command, profile)) refuse(request, "%s takes no %s", actions[rows[index].action], commands[command]);
     if (request->game < 0) request->game = active;
 }
@@ -3261,6 +3315,7 @@ int main(void) {
     directory_of(SETTINGS_FILE, settings_directory);
     directory_of(CONTROLLERS_FILE, controllers_directory);
     resolution_count = numbers(RESOLUTIONS, resolutions, RESOLUTIONS_MAX);
+    upscalable = json_object_new_object();
     sleep_choice_count = numbers(SLEEP_MINUTES, sleep_choices, SLEEP_CHOICES_MAX);
     mkfifo(OVERLAY_FIFO, S_IRUSR | S_IWUSR);
     watcher = inotify_init1(IN_CLOEXEC);
@@ -3321,6 +3376,11 @@ int main(void) {
         if (watched[WAYLAND].revents & POLLIN) wl_display_read_events(display);
         else wl_display_cancel_read(display);
         if (wl_display_dispatch_pending(display) < 0) { fprintf(stderr, "overlay: lost the compositor\n"); return 1; }
+        for (int i = 0; i < job_count; i++) {
+            if (watched[FIXED + JOB_FDS * i].revents) read_job(jobs[i]);
+            if (watched[FIXED + JOB_FDS * i + 1].revents) read_errors(jobs[i]);
+        }
+        if (watched[MONITOR].revents) read_monitor();
         uint64_t expirations;
         struct signalfd_siginfo signal_info;
         if (watched[CHANGES].revents) read_changes(runtime_watch, display_watch, controllers_watch);
@@ -3334,11 +3394,6 @@ int main(void) {
         if (watched[SAVE].revents && read(save_timer, &expirations, sizeof expirations) > 0) sample_screen();
         if (watched[SKIN].revents && read(skin_timer, &expirations, sizeof expirations) > 0) run_skin_timers();
         if (watched[DECODED].revents && read(watched[DECODED].fd, &expirations, sizeof expirations) > 0) paint_needed = 1;
-        if (watched[MONITOR].revents) read_monitor();
-        for (int i = 0; i < job_count; i++) {
-            if (watched[FIXED + JOB_FDS * i].revents) read_job(jobs[i]);
-            if (watched[FIXED + JOB_FDS * i + 1].revents) read_errors(jobs[i]);
-        }
         if (watched[LISTENER].revents) accept_requests(watched[LISTENER].fd);
         for (int i = served_count - 1; i >= 0; i--) {
             struct request *request = &requests[served[i]];

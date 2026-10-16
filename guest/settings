@@ -3,16 +3,21 @@ set -eu
 . /etc/anyconsole.conf
 case "${1:-} ${2:-}" in
   "display "*|"mode "*) ;;
-  "resolution "*) case " 0 $RESOLUTIONS " in *" $2 "*) ;; *) echo "resolution must be 0 (Auto) or one of: $RESOLUTIONS" >&2; exit 1 ;; esac ;;
+  "resolution "*)
+    platform=${2%% *} height=${2#* }
+    case "$platform $height" in "$2") ;; *) false ;; esac && case $platform in *[!a-z0-9]*) false ;; esac && case " 0 $RESOLUTIONS " in *" $height "*) ;; *) false ;; esac ||
+      { echo "resolution must be \"<platform> <height>\", the height 0 (Auto) or one of: $RESOLUTIONS" >&2; exit 1; } ;;
   "sleep "*) case " $SLEEP_MINUTES " in *" $2 "*) ;; *) echo "sleep must be one of (minutes, 0 = never): $SLEEP_MINUTES" >&2; exit 1 ;; esac ;;
   "picture "*) case "$2" in original|retro|enhanced) ;; *) echo "picture must be original, retro or enhanced" >&2; exit 1 ;; esac ;;
   "language "*|"game-language "*) case "$2" in .*|*/*) false ;; "$SOURCE_LANGUAGE") ;; "") [ "$1" = game-language ] ;; *) [ -f "$LOCALE_DIR/$2/LC_MESSAGES/$TEXT_DOMAIN.mo" ] ;; esac || { echo "no language named $2 in $LOCALE_DIR" >&2; exit 1; } ;;
   "time-zone "*) [ -z "$2" ] || awk -F '\t' -v zone="$2" '!/^#/ && $3 == zone { found = 1 } END { exit !found }' "$ZONE_TABLE" || { echo "no time zone named $2 in $ZONE_TABLE" >&2; exit 1; } ;;
   "skin "*) case "$2" in ""|.*|*/*) false ;; *) [ -f "$USER_SKINS_DIR/$2/skin.js" ] || [ -f "$SKINS_DIR/$2/skin.js" ] ;; esac || { echo "no skin named $2 in $USER_SKINS_DIR or $SKINS_DIR" >&2; exit 1; } ;;
-  *) echo "usage: settings display [label] | settings mode [mode] | settings resolution <height> | settings sleep <minutes> | settings picture original|retro|enhanced | settings skin <name> | settings language <language> | settings game-language [language] | settings time-zone [zone]" >&2; exit 1 ;;
+  *) echo "usage: settings display [label] | settings mode [mode] | settings resolution \"<platform> <height>\" | settings sleep <minutes> | settings picture original|retro|enhanced | settings skin <name> | settings language <language> | settings game-language [language] | settings time-zone [zone]" >&2; exit 1 ;;
 esac
 exec 9>"$SETTINGS_FILE.lock"
 flock 9
 { cat "$SETTINGS_FILE" 2>/dev/null || echo '{}'; } |
-  jq --arg name "$1" --arg value "${2:-}" '.[$name] = (if $name | IN("display", "mode", "picture", "skin", "language", "game-language", "time-zone") then $value else $value | tonumber end)' > "$SETTINGS_FILE.partial"
+  jq --arg name "$1" --arg value "${2:-}" '
+    if $name == "resolution" then ($value | split(" ")) as [$platform, $height] | .resolution = ((.resolution | objects) // {}) + {($platform): ($height | tonumber)}
+    else .[$name] = (if $name | IN("display", "mode", "picture", "skin", "language", "game-language", "time-zone") then $value else $value | tonumber end) end' > "$SETTINGS_FILE.partial"
 mv "$SETTINGS_FILE.partial" "$SETTINGS_FILE"
