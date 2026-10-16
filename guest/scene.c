@@ -24,7 +24,6 @@
 #include "shader.h"
 #include "skin.h"
 
-#define DESIGN_HEIGHT 1080.0f
 #define TYPE_MAX 32
 #define SDF_SIZE 48
 #define SDF_SPREAD 8
@@ -319,7 +318,7 @@ void scene_init(struct wl_display *display) {
 void scene_attach(struct wl_surface *surface, int width, int height) {
     surface_width = width;
     surface_height = height;
-    unit = height / DESIGN_HEIGHT;
+    unit = (float)height / DESIGN_HEIGHT;
     layout_dirty = 1;
     if (egl_window) {
         wl_egl_window_resize(egl_window, width, height, 0, 0);
@@ -1269,6 +1268,11 @@ static void draw_texture(GLuint texture, float x, float y, float width, float he
     glDrawArrays(GL_TRIANGLE_STRIP, 0, CORNERS);
 }
 
+static void blur_size(int level, int *width, int *height) {
+    *width = level ? (int)lroundf(surface_width / unit) >> level : surface_width;
+    *height = level ? DESIGN_HEIGHT >> level : surface_height;
+}
+
 static void prepare_blur_targets(void) {
     if (blur_width == surface_width && blur_height == surface_height) return;
     if (!blur_textures[0]) {
@@ -1276,8 +1280,9 @@ static void prepare_blur_targets(void) {
         glGenFramebuffers(BLUR_LEVELS + 1, blur_framebuffers);
     }
     for (int level = 0; level <= BLUR_LEVELS; level++) {
-        attach_texture(blur_textures[level], blur_framebuffers[level], surface_width >> level, surface_height >> level, GL_RGBA8, GL_UNSIGNED_BYTE, GL_LINEAR,
-            GL_CLAMP_TO_EDGE);
+        int width, height;
+        blur_size(level, &width, &height);
+        attach_texture(blur_textures[level], blur_framebuffers[level], width, height, GL_RGBA8, GL_UNSIGNED_BYTE, GL_LINEAR, GL_CLAMP_TO_EDGE);
     }
     blur_width = surface_width;
     blur_height = surface_height;
@@ -1285,10 +1290,13 @@ static void prepare_blur_targets(void) {
 
 static void blur_pass(int from, int to, const int area[RECT_FLOATS]) {
     static const float upright[RECT_FLOATS] = {0, 1, 1, -1};
-    int width = surface_width >> to, height = surface_height >> to, round = (1 << to) - 1, bottom = surface_height - area[1] - area[3];
+    int width, height, bottom = surface_height - area[1] - area[3], scaled[RECT_FLOATS];
+    blur_size(to, &width, &height);
+    float across = (float)width / surface_width, down = (float)height / surface_height;
+    intersect((int[RECT_FLOATS]){0, 0, width, height}, area[0] * across, bottom * down, area[2] * across, area[3] * down, scaled);
     glBindFramebuffer(GL_FRAMEBUFFER, blur_framebuffers[to]);
     glViewport(0, 0, width, height);
-    glScissor(area[0] >> to, bottom >> to, ((area[0] + area[2] + round) >> to) - (area[0] >> to), ((bottom + area[3] + round) >> to) - (bottom >> to));
+    glScissor(scaled[0], scaled[1], scaled[2], scaled[3]);
     bound = NULL;
     use(&box_program, quad_buffer, AXES);
     glUniform2f(box_program.viewport, width, height);
@@ -1299,7 +1307,8 @@ static void draw_backdrop(struct node *node, struct transform *at, float width, 
     GLint target;
     int surface[RECT_FLOATS] = {0, 0, surface_width, surface_height}, area[RECT_FLOATS];
     float region[RECT_FLOATS] = {at->x / surface_width, 1 - at->y / surface_height, width / surface_width, -height / surface_height};
-    intersect(surface, at->x - BLUR_REACH, at->y - BLUR_REACH, width + 2 * BLUR_REACH, height + 2 * BLUR_REACH, area);
+    float reach = BLUR_REACH * unit;
+    intersect(surface, at->x - reach, at->y - reach, width + 2 * reach, height + 2 * reach, area);
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &target);
     prepare_blur_targets();
     glDisable(GL_BLEND);

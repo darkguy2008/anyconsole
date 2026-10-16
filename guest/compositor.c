@@ -688,7 +688,7 @@ static struct wlr_texture *blurred(struct wlr_texture *scene, struct wlr_buffer 
     struct wlr_texture *step = scene, *steps[2 * BLUR_LEVELS] = {0};
     for (int i = 0; i < 2 * BLUR_LEVELS - 1 && step; i++) {
         int level = i < BLUR_LEVELS ? i + 1 : 2 * BLUR_LEVELS - 1 - i;
-        step = steps[i] = scaled_copy(&chains[i], step, canvas_width >> level, canvas_height >> level, &held[i]);
+        step = steps[i] = scaled_copy(&chains[i], step, widescreen_width(DESIGN_HEIGHT) >> level, DESIGN_HEIGHT >> level, &held[i]);
     }
     for (int i = 0; i < 2 * BLUR_LEVELS - 2; i++)
         if (steps[i]) wlr_texture_destroy(steps[i]);
