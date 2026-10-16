@@ -35,6 +35,7 @@ DEFAULT_TIME_ZONE = 0x70
 LANGUAGE_BITS = 0x1F
 INITIALIZED = 0x80
 BYTE = 0xFF
+PARTIAL = ".partial"
 
 
 def romver(path):
@@ -71,7 +72,9 @@ def write_nvm(path, major, minor, region_params, default_config, language):
         data[config + LANGUAGE] = (data[config + LANGUAGE] & ~LANGUAGE_BITS) | language
     data[config + FLAGS] |= INITIALIZED
     data[config + CHECKSUM] = sum(data[config:config + CHECKSUM]) & BYTE
-    nvm.write_bytes(data)
+    partial = nvm.with_name(nvm.name + PARTIAL)
+    partial.write_bytes(data)
+    partial.replace(nvm)
 
 
 settings = json.load(sys.stdin)
