@@ -993,6 +993,12 @@ test_symlinks() {
   log ok "every symlink on the root filesystem resolves"
 }
 
+menus_ignore_resolution() {
+  api POST settings "resolution 1080" && holds '.display.canvas == "1920x1080"' && capture_settled menus-1080 &&
+    api POST settings "resolution 0" && holds ".display.canvas == $AREA_SIZE" && capture_settled menus-auto &&
+    cmp -s $OUT/menus-1080.png $OUT/menus-auto.png
+}
+
 test_display() {
   kiosk_log_lacks '^xkbcommon: ERROR' "the compositor could not load its keyboard layout"
   log ok "the compositor loads its keyboard layout"
@@ -1008,6 +1014,8 @@ test_display() {
   log ok "Settings switches Display Mode through the API"
   tap b
   expect '.screen == "home"'
+  wait_for $STEP_SECONDS menus_ignore_resolution
+  log ok "the menus draw at the display's own pixels whatever the Game resolution"
 }
 
 probe_skin() { guest "mkdir -p $USER_SKINS_DIR/probe && cat > $USER_SKINS_DIR/probe/skin.js"; }

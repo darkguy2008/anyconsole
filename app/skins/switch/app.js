@@ -198,7 +198,7 @@ function Settings({ state, view, theme }) {
   const chosen = view.rows[view.selected];
   return html`
     <view style=${{ ...fill, backgroundColor: theme.background, flexDirection: 'row' }}>
-      <view style=${{ width: 640, marginBottom: 2 * edge + barHeight, backgroundColor: theme.sidebar, paddingTop: 72, paddingHorizontal: 40, gap: 8 }}>
+      <view style=${{ width: 640, paddingBottom: 2 * edge + barHeight, backgroundColor: theme.sidebar, paddingTop: 72, paddingHorizontal: 40, gap: 8 }}>
         <view style=${{ flexDirection: 'row', alignItems: 'center', gap: 16, paddingBottom: 40 }}>
           <${Icon} name="settings" size=${52} />
           <text style=${{ fontSize: 44, fontWeight: 800 }}>${translate('System Settings')}</text>

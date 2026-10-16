@@ -1444,6 +1444,22 @@ static void track(struct node *node) {
     follow_motion(node, TRACK, node->tracked, RECT_FLOATS, goals);
 }
 
+static float leading(YGNodeRef yoga, int vertical) { return vertical ? YGNodeLayoutGetTop(yoga) : YGNodeLayoutGetLeft(yoga); }
+
+static float extent(YGNodeRef yoga, int vertical) { return vertical ? YGNodeLayoutGetHeight(yoga) : YGNodeLayoutGetWidth(yoga); }
+
+static float trailing(YGNodeRef yoga, int vertical) { return leading(yoga, vertical) + extent(yoga, vertical); }
+
+static float row_start(struct node *node, int axis, float earliest) {
+    float padding = YGNodeLayoutGetPadding(node->yoga, axis ? YGEdgeTop : YGEdgeLeft);
+    for (int i = 0; i < node->count; i++) {
+        struct node *child = node->children[i];
+        float start = leading(child->yoga, axis) - padding;
+        if (!child->values[TRACK][0].set && start >= earliest) return start;
+    }
+    return earliest;
+}
+
 static void follow(struct node *node) {
     struct node *followed = content_child(node, index_value(node, FOLLOW));
     if (!followed) return;
@@ -1456,16 +1472,10 @@ static void follow(struct node *node) {
     for (int axis = 0; axis < AXES; axis++) {
         goals[axis] = node->scroll[axis].set ? node->scroll[axis].target : 0;
         if (start[axis] < goals[axis]) goals[axis] = start[axis];
-        if (end[axis] > goals[axis] + view[axis]) goals[axis] = end[axis] - view[axis];
+        if (end[axis] > goals[axis] + view[axis]) goals[axis] = row_start(node, axis, end[axis] - view[axis]);
     }
     follow_motion(node, FOLLOW, node->scroll, AXES, goals);
 }
-
-static float leading(YGNodeRef yoga, int vertical) { return vertical ? YGNodeLayoutGetTop(yoga) : YGNodeLayoutGetLeft(yoga); }
-
-static float extent(YGNodeRef yoga, int vertical) { return vertical ? YGNodeLayoutGetHeight(yoga) : YGNodeLayoutGetWidth(yoga); }
-
-static float trailing(YGNodeRef yoga, int vertical) { return leading(yoga, vertical) + extent(yoga, vertical); }
 
 int scene_page(struct node *list, int selected, int direction) {
     struct node *from = content_child(list, selected);
