@@ -1,21 +1,20 @@
 #!/bin/sh
 set -eu
 . /etc/anyconsole.conf
-SYSTEM_LABEL=anyconsole.thumbnails
-SOURCE=https://thumbnails.libretro.com
-KIND=Named_Boxarts
+SOURCE_LABEL=anyconsole.thumbnails
+NAME_FIELD={name}
 LOCK=/run/thumbnails.lock
 PARTIAL=.part
 
 TAB=$(printf '\t')
 
 urls() {
-  jq -nr --arg engines "$PUBLISHED_ENGINES" --arg label "$SYSTEM_LABEL" --arg dir "$THUMBNAILS_DIR" --arg source "$SOURCE" --arg kind "$KIND" '
-    (reduce inputs as $index ({}; .[input_filename | ltrimstr("\($engines)/") | rtrimstr(".json")] = $index.manifests[0].annotations[$label])) as $systems
+  jq -nr --arg engines "$PUBLISHED_ENGINES" --arg label "$SOURCE_LABEL" --arg dir "$THUMBNAILS_DIR" --arg extension "$THUMBNAIL_EXTENSION" --arg field "$NAME_FIELD" '
+    (reduce inputs as $index ({}; .[input_filename | ltrimstr("\($engines)/") | rtrimstr(".json")] = $index.manifests[0].annotations[$label])) as $sources
     | $ARGS.positional[]
     | (ltrimstr("\($dir)/") | split("/")) as $parts
-    | if startswith("\($dir)/") and ($parts | length) == 2 and $systems[$parts[0]] then "\(.)\t\($source)/\($systems[$parts[0]] | @uri)/\($kind)/\($parts[1] | @uri)"
-      else "\(.) has no libretro boxart\n" | stderr | empty end' "$PUBLISHED_ENGINES"/*.json --args "$@"
+    | if startswith("\($dir)/") and ($parts | length) == 2 and $sources[$parts[0]] then "\(.)\t\($sources[$parts[0]] | split($field) | join($parts[1] | rtrimstr($extension) | @uri))"
+      else "\(.) has no boxart source\n" | stderr | empty end' "$PUBLISHED_ENGINES"/*.json --args "$@"
 }
 
 fetch() {
@@ -81,8 +80,8 @@ case "${1:-}" in
   fetch|refresh|clear) command=$1; shift; $command "$@" ;;
   *) cat >&2 <<'USAGE'
 usage: thumbnails <command>
-  fetch <path>...   download the libretro boxart each cache path names, from the system its platform's engine declares
-  refresh           delete cached boxart no manifest names anymore, then download the ones libretro changed
+  fetch <path>...   download the boxart each cache path names, from the source its platform's engine declares
+  refresh           delete cached boxart no manifest names anymore, then download the ones their source changed
   clear             delete every cached boxart, so each downloads again when shown
 USAGE
     exit 1 ;;
