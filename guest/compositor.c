@@ -497,7 +497,6 @@ static void update_canvas(void) {
     if (width == canvas_width && height == canvas_height) return;
     canvas_width = width;
     canvas_height = height;
-    forget_still();
     wl_list_for_each(window, &windows, link)
         if (window->toplevel->base->initialized) size_window(window);
     redraw();
@@ -762,7 +761,7 @@ static void blit(struct wlr_gles2_texture_attribs attributes, GLint filter, int 
     glBindTexture(attributes.target, 0);
 }
 
-static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct wlr_texture *game, int game_width, struct wlr_texture *interface) {
+static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct wlr_texture *game, int game_width) {
     struct wlr_output *output = active->output;
     if (!wlr_output_configure_primary_swapchain(output, state, &output->swapchain)) return 0;
     struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain);
@@ -782,11 +781,6 @@ static int draw_pixel(struct wlr_output_state *state, struct wlr_box box, struct
     blit(attributes, GL_LINEAR, game->width, game->height, (GLfloat)game->width / picture.width, (GLfloat)game->height / picture.height, corners);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glFlush();
-    if (interface) {
-        struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, buffer, NULL);
-        draw_interface(pass, box, interface);
-        wlr_render_pass_submit(pass);
-    }
     wlr_output_state_set_buffer(state, buffer);
     wlr_buffer_unlock(buffer);
     return 1;
@@ -955,12 +949,12 @@ static struct wlr_texture *freeze(struct wlr_texture *surface) {
     struct wlr_buffer *held = NULL;
     int width;
     struct wlr_texture *game = game_picture(surface, &held, &width);
-    struct wlr_box canvas = {0, 0, canvas_width, canvas_height};
-    still_buffer = acquire(&still_chain, canvas_width, canvas_height);
+    struct wlr_box whole = {0, 0, area().width, area().height};
+    still_buffer = acquire(&still_chain, whole.width, whole.height);
     if (still_buffer) {
-        enum filter filter = game ? choose_filter(place(canvas, width, game->height), game->width, game->height) : NEAREST;
+        enum filter filter = game ? choose_filter(place(whole, width, game->height), game->width, game->height) : NEAREST;
         struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, still_buffer, NULL);
-        draw_scene(pass, canvas, canvas, game, width, NULL, scale_mode(filter));
+        draw_scene(pass, whole, whole, game, width, NULL, scale_mode(filter));
         wlr_render_pass_submit(pass);
         still = wlr_texture_from_buffer(renderer, still_buffer);
     }
@@ -974,13 +968,13 @@ static void paint(struct wlr_output_state *state) {
     struct wlr_texture *surface = shown ? wlr_surface_get_texture(shown->toplevel->base->surface) : NULL, *game;
     struct wlr_texture *interface = overlay_visible() ? wlr_surface_get_texture(overlay->surface) : NULL;
     struct wlr_buffer *held = NULL;
-    int width = canvas_width;
+    int width = box.width;
     if (interface) game = freeze(surface);
     else game = game_picture(surface, &held, &width);
     if (interface && overlay_blur() && still && !still_soft) still_soft = blurred(still, still_blur);
     enum filter filter = game && !interface ? choose_filter(place(box, width, game->height), game->width, game->height)
-                                            : choose_filter(box, canvas_width, canvas_height);
-    if (!(filter == PIXEL && game && draw_pixel(state, box, game, width, interface))) {
+                                            : NEAREST;
+    if (!(filter == PIXEL && game && draw_pixel(state, box, game, width))) {
         struct wlr_render_pass *pass = wlr_output_begin_render_pass(output, state, NULL);
         draw_scene(pass, (struct wlr_box){0, 0, output->width, output->height}, box, game, width, interface, scale_mode(filter));
         wlr_render_pass_submit(pass);
