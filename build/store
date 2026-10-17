@@ -11,6 +11,7 @@ ARCHIVE=https://archive.org/download
 PS2_BOOT_FILE=TEST_000.01
 CUBES_DEMO=$GITHUB/glampert/ps2-homebrew/raw/602441a6877a3136709d6320664340d52e3027a1/source/demos/bin/cubes_demo.elf
 PS2_RAM_BELOW_PROGRAMS=000FFFF0
+RPCS3_SAMPLES=$GITHUB/RPCS3/rpcs3/raw/2ba2f75bcea7ef6bdd687046c7fcfb790faf9853/bin/test
 TWIN_STICK='{"-lefty": "y", "+lefty": "a", "-leftx": "x", "+leftx": "b", "rightx": "leftx", "righty": "lefty"}'
 
 add_game() {
@@ -86,4 +87,5 @@ add_download mini-mine-rt "Mini Mine RT" psp "$GITHUB/Saymond/PSP-apps/releases/
 [ ! -d "$TEST_BIOS/ps1" ] || add_cue_disc a-small-journey "A Small Journey" ps1 "$ARCHIVE/asj-1.0/asj-1.0.zip"
 [ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo "Cubes Demo" ps2 "$CUBES_DEMO" '{"enhanced": {"widescreen": true}}'
 [ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo-europe "Cubes Demo Europe" ps2 "$CUBES_DEMO" '{"region": "europe"}'
+[ ! -d "$TEST_BIOS/ps3" ] || add_download gcm-cube "GCM Cube" ps3 "$RPCS3_SAMPLES/gs_gcm_cube.elf"
 add_download gravity-wave-twin-stick-shooter "Gravity Wave" dreamcast "$GITHUB/richstokes/dreamcast-homebrew/releases/download/continuous/gravity-wave.cdi" "{\"pad\": $TWIN_STICK}"

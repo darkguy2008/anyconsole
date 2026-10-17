@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+LOG=$XDG_CACHE_HOME/rpcs3/RPCS3.log
+STOPPED="SYS: Stopping emulator..."
+FATAL="·F "
+
+rm -f "$LOG"
+QT_QPA_PLATFORM=offscreen /opt/rpcs3/AppRun --headless "%RPCS3_VFS%:$1" >&2 &
+rpcs3=$!
+tail --pid=$rpcs3 -n +1 -F "$LOG" 2>/dev/null | awk -v rpcs3=$rpcs3 -v stopped="$STOPPED" -v fatal="$FATAL" '
+  index($0, fatal) == 1 { print > "/dev/stderr"; failed = 1 }
+  index($0, stopped) { finished = 1 }
+  failed || finished { system("kill " rpcs3); exit }
+  END { exit failed || !finished }'

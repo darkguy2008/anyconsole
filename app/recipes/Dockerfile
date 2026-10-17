@@ -235,7 +235,7 @@ RUN patchelf --add-needed /opt/rpcs3/config-reload.so /rpcs3/usr/bin/rpcs3 \
 FROM x11 AS ps3
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y matchbox-window-manager yq inotify-tools 7zip
 COPY with-window-manager /usr/local/bin/
-LABEL anyconsole.launch="sfo iso" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.install="/opt/rpcs3/install" anyconsole.thumbnails="https://raw.githubusercontent.com/aldostools/Resources/main/COV/{name}.JPG" anyconsole.resolution="{\"height\":720,\"exact\":true}"
+LABEL anyconsole.launch="sfo iso elf" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.prepare="/opt/rpcs3/prepare" anyconsole.install="/opt/rpcs3/install" anyconsole.thumbnails="https://raw.githubusercontent.com/aldostools/Resources/main/COV/{name}.JPG" anyconsole.resolution="{\"height\":720,\"exact\":true}"
 COPY --from=rpcs3-config-reload /rpcs3 /opt/rpcs3
 RUN ln -s /opt/rpcs3/usr/share/rpcs3 /usr/share/rpcs3
 COPY rpcs3/ /opt/rpcs3/

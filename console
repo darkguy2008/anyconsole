@@ -122,7 +122,7 @@ usage: console [box address] <command>
   push       deploy a new release, then update and reboot it
   image      build disk + USB installer in this worktree's workspace on the build host, fetch installer.img
   flash      write installer.img to an external disk (erases it)
-  test [name...]  build, then split the named tests over TEST_VMS QEMU VMs on slots of their own, each installed from the USB image (default: all, see TESTS and TEST_VMS in build/test)
+  test [name...]  build, then split the named tests over TEST_VMS QEMU VMs on slots of their own, each installed from the USB image (default: TESTS in build/test; ON_REQUEST tests such as ps3 run only when named)
   start      boot this worktree's QEMU test VM on the build host and print its VNC address
   link on|off  connect or unplug the VM's network cable
   ssh [cmd]  shell into the running console
