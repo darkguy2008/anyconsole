@@ -705,6 +705,14 @@ static unsigned short combo_partner(const struct control *c) {
     return c->code == BTN_SELECT ? BTN_START : c->code == BTN_START ? BTN_SELECT : 0;
 }
 
+static int pad_has_guide(const struct device *device) {
+    for (int j = 0; j < INPUT_DEVICES_MAX; j++) {
+        const struct device *other = &device_table[j];
+        if (other->id && other->guide && (other == device || (device->pad != NO_PAD && other->pad == device->pad))) return 1;
+    }
+    return 0;
+}
+
 static void pad_input(struct device *device, int i, int value) {
     if (i < 0) return;
     const struct control *c = &controls[i];
@@ -714,7 +722,7 @@ static void pad_input(struct device *device, int i, int value) {
         if (value) return;
         device->swallowed = NULL;
         menu(device, "guide", 0);
-    } else if (value && combo_partner(c) && device->raw[control_index(EV_KEY, combo_partner(c))]) {
+    } else if (value && combo_partner(c) && device->raw[control_index(EV_KEY, combo_partner(c))] && !pad_has_guide(device)) {
         device->swallowed = c;
         menu(device, "guide", 1);
     } else if (device->raw[i] != value) {

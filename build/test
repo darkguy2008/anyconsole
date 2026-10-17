@@ -34,8 +34,11 @@ SECOND_DISPLAY_HEIGHT=1080
 FAKEPAD_IMAGE=anyconsole-fakepad
 FAKEPAD_NAME="PS4 Controller"
 FAKEPAD_CROSS=2
+FAKEPAD_CIRCLE=3
 FAKEPAD_L1=5
 FAKEPAD_R1=6
+FAKEPAD_SHARE=9
+FAKEPAD_OPTIONS=10
 PLAYSTATION_FACES='{"confirm": "cross", "back": "circle", "x": "square", "y": "triangle"}'
 KEYBOARD_FACES='{"confirm": "Enter", "back": "Esc", "x": "Space", "y": "Tab"}'
 REMOTE_PAD="$REMOTE_PAD_NAME 1"
@@ -715,6 +718,20 @@ hotplug_wired_controller() {
   snapshot controllers
   tap b
   tap guide
+  expect '.guide | not'
+  fakepad usb press
+  fakepad usb release
+  expect ".guide and .screen == \"guide\" and .rows[.selected].label == \"Controllers\" and .session.input == $wired"
+  fakepad usb press $FAKEPAD_SHARE
+  fakepad usb press $FAKEPAD_OPTIONS
+  fakepad usb release $FAKEPAD_OPTIONS
+  fakepad usb release $FAKEPAD_SHARE
+  expect '.guide and .screen == "controllers"'
+  log ok "Share+Options on a pad with a PS button pressed Options instead of closing the guide"
+  fakepad usb press $FAKEPAD_CIRCLE
+  fakepad usb release $FAKEPAD_CIRCLE
+  fakepad usb press
+  fakepad usb release
   expect '.guide | not'
   fakepad usb unplug
   expect "(.controllers.controllers | length) == 0 and any(.notifications[]; . == \"Disconnected $FAKEPAD_NAME\")"
