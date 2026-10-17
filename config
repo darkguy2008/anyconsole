@@ -20,10 +20,11 @@ OVMF_DIR=build/out
 OVMF_CODE=$OVMF_DIR/OVMF_CODE.fd
 OVMF_VARS=$OVMF_DIR/OVMF_VARS.fd
 TEST_BIOS=$HOST_DIR/bios
+FETCH_RETRIES=3
 
 fetch() {
   directory=$1 name=$2 url=$3
-  if curl -fsSL -R --remove-on-error -z "$directory/$name" -o "$directory/$name.part" "$url"; then
+  if curl -fsSL -R --retry $FETCH_RETRIES --remove-on-error -z "$directory/$name" -o "$directory/$name.part" "$url"; then
     [ ! -f "$directory/$name.part" ] || mv "$directory/$name.part" "$directory/$name"
   else
     [ -f "$directory/$name" ]
