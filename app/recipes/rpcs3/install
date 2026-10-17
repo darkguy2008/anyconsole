@@ -19,5 +19,6 @@ install_packages() {
   rm -rf "$STAGING" /game/*.pkg
 }
 
+mkdir -p "${RPCS3_CONFIG%/*}"
 install_firmware
 install_packages
