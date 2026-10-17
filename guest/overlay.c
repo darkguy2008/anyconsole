@@ -140,7 +140,7 @@ enum tab { GAME_TAB, DEVICES_TAB, SYSTEM_TAB };
 static const char *const tabs[] = {[GAME_TAB] = N_("Game"), [DEVICES_TAB] = N_("I/O"), [SYSTEM_TAB] = N_("System")};
 enum picture { ORIGINAL, RETRO, ENHANCED, PICTURES };
 static const struct { const char *name, *label; } pictures[PICTURES] = {[ORIGINAL] = {"original", N_("Original")}, [RETRO] = {"retro", N_("Retro")}, [ENHANCED] = {"enhanced", N_("Enhanced")}};
-enum restart { PLAYING, SAVING, CLOSING };
+enum restart { PLAYING, SAVING, CLOSING, BOOTING, PROBING, RELEASING };
 enum command { NONE, UP, DOWN, PAGE_UP, PAGE_DOWN, LEFT, RIGHT, CONFIRM, BACK, GUIDE_BUTTON, X_BUTTON, Y_BUTTON };
 static const char *const commands[] = {[NONE] = "other", [UP] = "up", [DOWN] = "down", [PAGE_UP] = "page-up", [PAGE_DOWN] = "page-down",
                                        [LEFT] = "left", [RIGHT] = "right", [CONFIRM] = "confirm", [BACK] = "back", [GUIDE_BUTTON] = "guide",
@@ -157,7 +157,7 @@ struct game {
     json_object *emulate, *analog;
     double thumbnail_aspect;
     time_t thumbnail_time, used;
-    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, owner, second_screen, screen_shown, error_output, enhanced, restart_slot, booted, dial_absolute;
+    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, owner, second_screen, screen_shown, error_output, enhanced, restart_slot, restart_again, booted, dial_absolute;
     struct port ports[PADS];
     size_t job_length, error_length;
     enum task task;
@@ -423,10 +423,12 @@ static void keep_interrupted_rewinds(void) {
     free(entries);
 }
 
-static int is_state(const struct dirent *entry) {
-    const char *extension = strrchr(entry->d_name, '.');
+static int is_state_name(const char *name) {
+    const char *extension = strrchr(name, '.');
     return extension && !strncmp(extension, STATE_EXTENSION, strlen(STATE_EXTENSION)) && isdigit((unsigned char)extension[strlen(STATE_EXTENSION)]);
 }
+
+static int is_state(const struct dirent *entry) { return is_state_name(entry->d_name); }
 
 static int slot(const char *state) { return atoi(strrchr(state, '.') + strlen(STATE_EXTENSION)); }
 
@@ -1320,6 +1322,7 @@ static const char *status(int index) {
         snprintf(text, sizeof text, "%s %d%%", _(game->job_text), game->percent);
         return text;
     }
+    if (game->restart) return _("restarting");
     if (game->pid && !game_window(index)) return _(tasks[LAUNCHING]);
     if (game->pid) return game->paused ? _("paused") : _("running");
     return game->installed ? _("installed") : "";
@@ -1336,6 +1339,19 @@ static void write_json(const char *path, json_object *object) {
     snprintf(partial, sizeof partial, "%s" PARTIAL, path);
     if (json_object_to_file_ext(partial, object, JSON_C_TO_STRING_PLAIN) < 0 || rename(partial, path) < 0) perror(path);
 }
+
+static void hold_picture(int index) {
+    json_object *hold = json_object_new_object();
+    json_object_object_add(hold, "game", json_object_new_string(key(index)));
+    write_json(PICTURE_HOLD_FILE, hold);
+    json_object_put(hold);
+}
+
+static void release_picture(void) {
+    if (unlink(PICTURE_HOLD_FILE) < 0 && errno != ENOENT) perror(PICTURE_HOLD_FILE);
+}
+
+static int picture_held(int index) { return !strcmp(string_at(display_state, "held", NULL), key(index)); }
 
 static const char *choices_path(int profile, const char *file) {
     static char path[PATH_MAX];
@@ -1724,7 +1740,9 @@ static void show_game(int index) {
     if (game_window(index)) zwlr_foreign_toplevel_handle_v1_activate(game_window(index)->handle, seat);
 }
 
-static int launching(void) { return active >= 0 && !game_window(active); }
+static int launching(void) { return active >= 0 && !game_window(active) && !games[active].restart; }
+
+static int restarting(void) { return active >= 0 && games[active].restart; }
 
 static int bind_socket(const char *path, int flags) {
     struct sockaddr_un address = {.sun_family = AF_UNIX};
@@ -1799,7 +1817,9 @@ static void ended(int index, int status) {
     rmdir(directory);
     game->pid = 0;
     if (game->restart == CLOSING) return;
+    if (game->restart) release_picture();
     game->restart = PLAYING;
+    game->restart_again = 0;
     if (!game->closing && status) {
         fail(index, _("%s stopped"), game->title);
         inotify_rm_watch(watcher, game->states_watch);
@@ -1968,7 +1988,7 @@ static int start_capture(int index) {
 }
 
 static void sample_screen(void) {
-    if (!rewindable() || games[active].paused || games[active].closing || capture.session || notification_count) return;
+    if (!rewindable() || games[active].paused || games[active].closing || restarting() || capture.session || notification_count) return;
     capture.save = start_capture(active);
 }
 
@@ -2011,10 +2031,13 @@ static void load_saved(void) {
 }
 
 static void restart_active(void) {
-    if (!rewindable() || games[active].restart || games[active].closing) return;
-    games[active].restart = SAVING;
-    games[active].restart_slot = save_state();
-    resume(active);
+    struct game *game = &games[active];
+    if (!rewindable() || game->closing) return;
+    if (game->restart >= BOOTING) game->restart_again = 1;
+    if (game->restart) return;
+    hold_picture(active);
+    game->restart = SAVING;
+    game->restart_slot = save_state();
 }
 
 static int running_games(void) {
@@ -2093,14 +2116,17 @@ static void play(int index) {
     char directory[PATH_MAX], states[PATH_MAX], owner[TEXT_MAX], resume_slot[TEXT_MAX] = "";
     int commands[2];
     struct game *game = &games[index];
+    int resuming = game->restart == CLOSING;
     if (!listen_socket(index, directory, sizeof directory)) { fail(index, _("Could not start %s"), game->title); return; }
     if (pipe2(commands, O_CLOEXEC) < 0) { perror("pipe"); close(game->context); fail(index, _("Could not start %s"), game->title); return; }
     int output = game_log(index);
     prepare_rewinds(index, states);
-    if (game->restart == CLOSING) snprintf(resume_slot, sizeof resume_slot, "%d", newest_slot());
-    game->restart = PLAYING;
-    memset(guide_depths, 0, sizeof guide_depths);
-    save_slot = 0;
+    if (resuming) snprintf(resume_slot, sizeof resume_slot, "%d", game->restart_slot);
+    game->restart = resuming ? BOOTING : PLAYING;
+    if (!resuming) {
+        memset(guide_depths, 0, sizeof guide_depths);
+        save_slot = 0;
+    }
     game->paused = game->closing = game->booted = game->dial_absolute = 0;
     for (int seat = 0; seat < PADS; seat++) game->ports[seat] = (struct port){.analog = -1, .forced = 1};
     show_game(index);
@@ -2114,7 +2140,7 @@ static void play(int index) {
         ended(index, 1);
         return;
     }
-    resume(index);
+    if (!resuming) resume(index);
 }
 
 static void close_game(int index) {
@@ -2410,7 +2436,7 @@ static void adjust(enum action action, int arg, int step) {
 static void open_guide(void) {
     rewind_back = 0;
     discard_staged();
-    if (!rewindable() || (!capture.session && !start_capture(active))) {
+    if (!rewindable() || restarting() || (!capture.session && !start_capture(active))) {
         guide_shown = 1;
         return;
     }
@@ -2518,7 +2544,7 @@ double skin_now(void) {
 
 static int menu_wanted(void) { return attract() || interactive() || launching(); }
 
-static int surface_wanted(void) { return menu_wanted() || notification_count; }
+static int surface_wanted(void) { return menu_wanted() || notification_count || restarting(); }
 
 static void hide(void) {
     if (!layer) return;
@@ -2673,12 +2699,16 @@ static json_object *view_object(enum plane plane, struct view *view, int *count)
     return object;
 }
 
-static json_object *launch_object(void) {
+static json_object *progress_object(int percent) {
     json_object *object = json_object_new_object();
-    int done = games[active].job ? (games[active].percent > 0 ? games[active].percent : 0) : (LAUNCH_STEPS - 1) * PERCENT;
     json_object_object_add(object, "game", json_object_new_string(key(active)));
-    json_object_object_add(object, "percent", json_object_new_int(done / LAUNCH_STEPS));
+    json_object_object_add(object, "percent", json_object_new_int(percent));
     return object;
+}
+
+static json_object *launch_object(void) {
+    int done = games[active].job ? (games[active].percent > 0 ? games[active].percent : 0) : (LAUNCH_STEPS - 1) * PERCENT;
+    return progress_object(done / LAUNCH_STEPS);
 }
 
 static json_object *views_object(enum action *choosing) {
@@ -2787,6 +2817,7 @@ static json_object *state_object(int count) {
     json_object_object_add(state, "views", views);
     json_object_object_add(state, "hints", hints);
     json_object_object_add(state, "launching", launching() ? launch_object() : NULL);
+    json_object_object_add(state, "restarting", restarting() ? progress_object(PERCENT * games[active].restart / RELEASING) : NULL);
     json_object_object_add(state, "splash", json_object_new_string(SPLASH_IMAGE));
     json_object_object_add(state, "skin", json_object_new_string(loaded_skin));
     json_object_object_add(state, "rewind", history);
@@ -2922,7 +2953,20 @@ static void settle(void) {
         current_screen = NULL;
     }
     for (int i = 0; i < game_count; i++) {
-        int pause = i != active || interactive();
+        struct game *game = &games[i];
+        if (game->restart == BOOTING && game_window(i)) {
+            send_command(i, "SAVE_STATE");
+            game->restart = PROBING;
+        }
+        if (game->restart == RELEASING && !picture_held(i)) game->restart = PLAYING;
+        if (!game->restart && game->restart_again && i == active) {
+            game->restart_again = 0;
+            restart_active();
+        }
+    }
+    for (int i = 0; i < game_count; i++) {
+        int restart_running = games[i].restart && (games[i].restart != SAVING || picture_held(i));
+        int pause = i != active || (interactive() && !restart_running);
         if (!games[i].pid || !game_window(i) || games[i].closing || games[i].paused == pause || games[i].freezer) continue;
         freeze(i, pause);
     }
@@ -3021,17 +3065,28 @@ static void reap(void) {
     }
 }
 
+static void advance_restart(int index, int saved) {
+    struct game *game = &games[index];
+    if (saved <= game->restart_slot) return;
+    if (game->restart == SAVING) {
+        game->restart = CLOSING;
+        game->restart_slot = saved;
+        close_game(index);
+    } else if (game->restart == PROBING) {
+        game->restart = RELEASING;
+        release_picture();
+    }
+}
+
 static int read_game_change(struct inotify_event *event) {
     for (int i = 0; i < game_count; i++) {
         if (event->wd == games[i].states_watch) {
-            int analog = !strcmp(event->name, ANALOG_FILE);
-            if (analog) read_analog(i);
-            if (i != active || analog) return 1;
-            refresh_rewinds();
-            if (games[i].restart == SAVING && newest_slot() > games[i].restart_slot) {
-                games[i].restart = CLOSING;
-                close_game(i);
+            if (!strcmp(event->name, ANALOG_FILE)) {
+                read_analog(i);
+                return 1;
             }
+            if (i == active) refresh_rewinds();
+            if (is_state_name(event->name)) advance_restart(i, slot(event->name));
             return 1;
         }
     }
@@ -3385,6 +3440,7 @@ int main(void) {
     watched[DECODED] = (struct pollfd){.fd = scene_start_decoder(), .events = POLLIN};
     watched[LISTENER] = (struct pollfd){.fd = bind_socket(OVERLAY_SOCKET, SOCK_NONBLOCK), .events = POLLIN};
     keep_interrupted_rewinds();
+    release_picture();
     find_languages();
     find_time_zones();
     read_stores();

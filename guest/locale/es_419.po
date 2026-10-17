@@ -80,6 +80,9 @@ msgstr "desinstalando"
 msgid "launching"
 msgstr "iniciando"
 
+msgid "restarting"
+msgstr "reiniciando"
+
 msgid "%b %d %H:%M"
 msgstr "%d/%m %H:%M"
 
