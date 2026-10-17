@@ -3174,19 +3174,20 @@ static void refuse(struct request *request, const char *format, ...) {
     va_end(arguments);
 }
 
-static int matches(json_object *wanted, const struct row *row) {
+static int matches(json_object *wanted, const struct row *row, int game) {
     char arg[TEXT_MAX];
     snprintf(arg, sizeof arg, "%d", row->arg);
     const char *actual[] = {actions[row->action], row->label, row->value, arg};
+    if (game >= 0 && row->action == OPEN_GAME && row->arg != game) return 0;
     for (unsigned i = 0; i < sizeof criteria / sizeof *criteria; i++)
         if (json_object_object_get_ex(wanted, criteria[i], NULL) && strcmp(string_at(wanted, criteria[i], NULL), actual[i])) return 0;
     return 1;
 }
 
-static int find_row(json_object *wanted, struct view *view) {
+static int find_row(json_object *wanted, struct view *view, int game) {
     int count = build(view);
     for (int i = 0; i < count; i++)
-        if (matches(wanted, &rows[i])) return i;
+        if (matches(wanted, &rows[i], game)) return i;
     return -1;
 }
 
@@ -3227,13 +3228,13 @@ static void run_request(struct request *request, json_object *wanted) {
             if (!strcmp(key(i), string_at(wanted, "game", NULL))) game = i;
         if (game < 0) { refuse(request, "unknown game %s", string_at(wanted, "game", NULL)); return; }
     }
-    index = game >= 0 && view->game >= 0 && view->game != game ? -1 : find_row(wanted, view);
+    index = game >= 0 && view->game >= 0 && view->game != game ? -1 : find_row(wanted, view, game);
     for (enum screen screen = HOME; index < 0 && screen < sizeof screens / sizeof *screens; screen++) {
         if (screen == GAME && game < 0) continue;
         enum tab last = screen == GUIDE ? SYSTEM_TAB : first_tab();
         for (enum tab tab = first_tab(); index < 0 && tab <= last; tab++) {
             candidate = (struct view){.screen = screen, .game = game, .tab = tab};
-            index = find_row(wanted, &candidate);
+            index = find_row(wanted, &candidate, game);
             if (index < 0) continue;
             found = screen;
             open_screen(screen, game, tab, profile, int_at(wanted, "device"));

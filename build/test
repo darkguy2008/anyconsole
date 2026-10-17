@@ -1228,6 +1228,9 @@ test_actions() {
   expect_reply $STEP_SECONDS 200 ".ok and .state.active == \"lan-master/nes\" and (.state | $(status_of lan-master/nes running))" \
     --arg action play --arg game lan-master/nes
   expect_reply $STEP_SECONDS 200 '.ok and .state.dashboard and .state.games[.state.rows[.state.selected].arg].key == "lan-master/nes"' --arg action dashboard
+  other=$(state | jq -r '[.games[].key | select(. != "lan-master/nes")] | last')
+  expect_reply $STEP_SECONDS 200 ".ok and .state.screen == \"game\" and .state.views[-1].game == \"$other\"" --arg action open-game --arg game "$other"
+  log ok "open-game opens the game it names, not the first one on Home"
   guest "docker top $(game_container lan-master/nes) -o pid | tail -n +2 | xargs kill -STOP"
   close_by_action lan-master/nes
   log ok "Close ended a game that stopped answering signals"
