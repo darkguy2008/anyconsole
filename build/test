@@ -955,6 +955,14 @@ redream_read_loaded_state() { guest "for state in $REWIND_DIR/$(game_name "$1")/
 
 has_redream_license() { [ -f "$TEST_BIOS/$REDREAM_LICENSE" ]; }
 
+rewind_one_state() {
+  open_rewind_row "$1"
+  tap dpleft
+  expect '.rewind.back == 1'
+  tap a
+  expect "(.guide | not) and .rewind.back == 0 and ($(status_of "$1" running))"
+}
+
 rewind_dreamcast() {
   if ! has_redream_license; then
     log skip "rewinding $1: no redream premium key at $TEST_BIOS/$REDREAM_LICENSE on the build host"
@@ -965,11 +973,7 @@ rewind_dreamcast() {
   vmus="$(saves_of "$1")/vmu*.bin"
   saved=$(guest "md5sum $vmus")
   guest "for vmu in $vmus; do printf x >> \$vmu; done"
-  open_rewind_row "$1"
-  tap dpleft
-  expect '.rewind.back == 1'
-  tap a
-  expect "(.guide | not) and .rewind.back == 0 and ($(status_of "$1" running))"
+  rewind_one_state "$1"
   wait_for $STEP_SECONDS redream_read_loaded_state "$1"
   [ "$(guest "md5sum $vmus")" = "$saved" ] || { log FAIL "rewinding did not put back the VMUs the state was saved with" >&2; diagnose; exit 1; }
   log ok "rewinding put back the VMUs the state was saved with"
@@ -977,6 +981,15 @@ rewind_dreamcast() {
   wait_for $STEP_SECONDS screen_moves
   expect "$(status_of "$1" running)"
   log ok "redream saved a state, read it back for rewind and kept running"
+}
+
+rewind_psp() {
+  rewind_one_state "$1"
+  wait_for $STEP_SECONDS loaded_a_state "$1" "Loading state from .*_1\\.ppst"
+  wait_for $STEP_SECONDS screen_moves
+  guest "! grep -q 'Load state failure' $(game_log "$1")" || { log FAIL "PPSSPP could not load the rewind state" >&2; diagnose; exit 1; }
+  expect "$(status_of "$1" running)"
+  log ok "PPSSPP loaded a rewind state and kept running"
 }
 
 kept_rewinds() { guest "ls $KEPT_REWIND_DIR/*-$(game_name "$1")/states/*.state[0-9]*"; }
@@ -1438,6 +1451,7 @@ test_resolution() {
   expect '.rewind.states >= 1'
   wait_for $STEP_SECONDS saved_in_background $key
   log ok "PPSSPP's own save gave way to the forked background save, so its emulator thread skipped the compression"
+  rewind_psp $key
   tap guide
   expect '.guide and .screen == "guide"'
   highlight "Game resolution"
