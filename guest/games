@@ -213,6 +213,7 @@ install() {
   copy "$STORE_MOUNTS/$1/$2/$3/rom/" "$GAMES_DIR/$2/.$3/rom/"
   hook=$(label_of "$image" "$INSTALL_LABEL")
   [ -z "$hook" ] || { step installing; docker run --rm $SANDBOX $(platform_access "$3") -v "$GAMES_DIR/$2/.$3/rom:/game" --entrypoint "$hook" "$GAME_IMAGE/$3" >&2; }
+  launch_file "$GAMES_DIR/$2/.$3/rom" >/dev/null
   mv "$GAMES_DIR/$2/.$3" "$GAMES_DIR/$2/$3"
 }
 
