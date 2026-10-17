@@ -1482,7 +1482,7 @@ test_language() {
   expect '.screen == "home"'
   install_and_play $key "Mini Mine RT"
   [ "$(container_env $key GAME_LANGUAGE)" = es_ES ] || { log FAIL "$key did not get Game language es_ES" >&2; exit 1; }
-  wait_for $STEP_SECONDS core_options_hold $key '{"ppsspp_language": "spanish"}'
+  wait_for $STEP_SECONDS core_options_hold $key '{"ppsspp_language": "Spanish"}'
   log ok "Game language reaches $key as its PPSSPP system language"
   api POST settings "game-language" >/dev/null
   expect 'any(.notifications[]; . == "Restart your games to play them in English")'
