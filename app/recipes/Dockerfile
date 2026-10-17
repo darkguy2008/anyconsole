@@ -237,12 +237,19 @@ FROM fetch AS ppsspp-download
 ADD --checksum=sha256:661c098e6b7f7610171a57b7c533ce8bba6f2312b71e76d61e850461973eba21 https://github.com/hrydgard/ppsspp/releases/download/v1.20.4/PPSSPP-v1.20.4-anylinux-x86_64.AppImage /app.AppImage
 RUN appimage /ppsspp
 
+FROM fedora AS ppsspp-background-save
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gcc patchelf
+COPY --from=ppsspp-download /ppsspp /ppsspp
+COPY ppsspp/background-save.c /
+RUN patchelf --add-needed /opt/ppsspp/background-save.so /ppsspp/shared/bin/PPSSPPSDL \
+ && gcc -O2 -Wall -Wextra -Werror -shared -fPIC -o /ppsspp/background-save.so /background-save.c
+
 # psp PlayStation Portable
 FROM x11-rewind AS psp
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y matchbox-window-manager xdotool
 LABEL anyconsole.launch="iso cso pbp prx" anyconsole.analog="{\"sticks\":true}" anyconsole.vulkan="--vulkan" anyconsole.rewind="true" anyconsole.thumbnails="https://thumbnails.libretro.com/Sony%20-%20PlayStation%20Portable/Named_Boxarts/{name}.png" anyconsole.resolution="{\"height\":272,\"scales\":[1,2,3,4,5,6,7,8,9,10]}"
 COPY with-window-manager /usr/local/bin/
-COPY --from=ppsspp-download /ppsspp /opt/ppsspp
+COPY --from=ppsspp-background-save /ppsspp /opt/ppsspp
 COPY ppsspp/ /opt/ppsspp/
 COPY psp-system.jq /usr/lib/jq/system.jq
 ENV XDG_CONFIG_HOME=/engine

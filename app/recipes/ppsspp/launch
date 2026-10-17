@@ -5,6 +5,7 @@ PSP_WIDTH=480
 PSP_HEIGHT=272
 SAVE_SLOT=0
 LOAD_SLOT=1
+STATE_SUFFIX=_%s.ppst
 SLOTS=2
 NOTIFICATIONS_NONE=-1
 LOG_INFO=4
@@ -45,4 +46,5 @@ ln -sfT /states "$MEMSTICK/PPSSPP_STATE"
 settings > "$MEMSTICK/SYSTEM/ppsspp.ini"
 cp /opt/ppsspp/controls.ini "$MEMSTICK/SYSTEM/"
 [ -z "$RESUME_SLOT" ] || set -- --state="$(printf %s /states/*.state"$RESUME_SLOT")" "$@"
+export STATE_SUFFIX BACKGROUND_SAVE="$(printf "$STATE_SUFFIX" "$SAVE_SLOT")"
 exec xwayland-run -geometry "$((PSP_WIDTH * scale))x$((PSP_HEIGHT * scale))" -- with-window-manager /opt/ppsspp/session $SAVE_SLOT $LOAD_SLOT "$@"
