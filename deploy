@@ -17,6 +17,7 @@ push_to_host() {
 logged() {
   log=$1
   shift
+  mkdir -p "${log%/*}"
   "$@" > "$log" 2>&1 || { tail -n 40 "$log" >&2; exit 1; }
 }
 
@@ -24,7 +25,6 @@ build_release() {
   date -u > app/changelog
   printf '#!/bin/sh\necho "feature %s online"\n' "$1" > "app/feature-$1"
   chmod +x "app/feature-$1"
-  mkdir -p "${ROOTFS_LOG%/*}"
   logged "$ROOTFS_LOG" sh build/host sh build/rootfs
 }
 

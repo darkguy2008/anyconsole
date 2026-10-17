@@ -59,6 +59,7 @@ RPCS3_LOGS=$ENGINES/ps3/engine/cache/rpcs3
 GCM_CUBE=gcm-cube/ps3
 GCM_CUBE_DRAWING="local_size ="
 FIRMWARE_COMPILED='LLVM: Compiling module .*\.sprx/'
+RPCS3_HOME_MENU_OPENED="opened home menu with result 0"
 PS2_CONFIG_BLOCK=$((0x2C0))
 PS2_LANGUAGE_BITS=0x1F
 PS2_INITIALIZED=0x80
@@ -1641,6 +1642,34 @@ PYTHON
 
 gcm_cube_spins() { screen_moves && shows_magenta before && shows_magenta after; }
 
+highlight_top() {
+  python3 -I - "$OUT/$1.png" <<'PYTHON'
+import sys
+from collections import Counter
+from PIL import Image
+image = Image.open(sys.argv[1]).convert("L")
+left_edge = [image.getpixel((0, y)) for y in range(image.height)]
+panel = Counter(left_edge).most_common(1)[0][0]
+brightest = max(left_edge)
+if brightest == panel:
+    sys.exit("no highlighted row at the left edge")
+print(left_edge.index(brightest))
+PYTHON
+}
+
+highlight_shown() { capture "$1" && highlight_top "$1"; }
+highlight_below() { capture moved && [ "$(highlight_top moved)" -gt "$1" ]; }
+
+home_menu_follows_left_stick() {
+  send "1 back 1" "1 start 1"
+  wait_for $STEP_SECONDS guest "grep -qF '$RPCS3_HOME_MENU_OPENED' $RPCS3_LOGS/RPCS3.log"
+  send "1 start 0" "1 back 0"
+  wait_for $STEP_SECONDS highlight_shown home-menu
+  send "1 lefty $AXIS_MAX"
+  wait_for $STEP_SECONDS highlight_below "$(highlight_top home-menu)"
+  send "1 lefty $AXIS_CENTER"
+}
+
 test_ps3() {
   has_test_bios ps3 "PS3 firmware" || return 0
   install_and_play $GCM_CUBE "GCM Cube"
@@ -1649,6 +1678,8 @@ test_ps3() {
   log ok "$GCM_CUBE reached its draw loop with the firmware compiled before launch"
   wait_for $STEP_SECONDS gcm_cube_spins
   log ok "RPCS3 draws $GCM_CUBE's spinning cube"
+  home_menu_follows_left_stick
+  log ok "the left stick moves the selection in RPCS3's Home menu"
   leave_game $GCM_CUBE
 }
 

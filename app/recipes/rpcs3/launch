@@ -45,6 +45,7 @@ find /game -maxdepth 1 \( -iname '*.edat' -o -iname '*.rap' \) -exec ln -sf {} "
 disc_key "$1"
 cp --update=none /opt/rpcs3/gui.ini "$CONFIG/GuiConfigs/CurrentSettings.ini"
 pad_config > "$CONFIG/input_configs/global/Default.yml"
+cp /opt/rpcs3/evdev_positive_axis.yml "$CONFIG/"
 { cat /opt/rpcs3/config.yml; system-settings; } > "$BASE_CONFIG"
 OUTPUT=$(yq .Video.Resolution "$BASE_CONFIG")
 write_config
