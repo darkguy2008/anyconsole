@@ -239,8 +239,10 @@ LABEL anyconsole.launch="sfo iso" anyconsole.analog="{\"sticks\":true}" anyconso
 COPY --from=rpcs3-config-reload /rpcs3 /opt/rpcs3
 RUN ln -s /opt/rpcs3/usr/share/rpcs3 /usr/share/rpcs3
 COPY rpcs3/ /opt/rpcs3/
+ADD https://api.rpcs3.net/config/?api=v1 /opt/rpcs3/config_database.dat
 COPY ps3-system.jq /usr/lib/jq/system.jq
-ENV XDG_CONFIG_HOME=/engine/config XDG_CACHE_HOME=/engine/cache QT_QPA_PLATFORM=xcb RPCS3_CONFIG=/tmp/config.yml
+ENV XDG_CONFIG_HOME=/engine/config XDG_CACHE_HOME=/engine/cache QT_QPA_PLATFORM=xcb
+ENV RPCS3_CONFIG=$XDG_CONFIG_HOME/rpcs3/config.yml
 ENTRYPOINT ["/opt/rpcs3/launch"]
 
 FROM fetch AS pcsx2-download

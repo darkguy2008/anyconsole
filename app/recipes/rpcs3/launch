@@ -3,6 +3,7 @@ set -eu
 CONFIG=$XDG_CONFIG_HOME/rpcs3
 USER_HOME=$CONFIG/dev_hdd0/home/00000001
 BASE_CONFIG=$CONFIG/anyconsole-base.yml
+GAME_DATABASE=/opt/rpcs3/config_database.dat
 DISC_KEYS=/bios/REDUMP_DKEY.7z
 DISC_KEY_DIR=$CONFIG/data/redump
 SFO=PARAM.SFO
@@ -27,6 +28,10 @@ write_config() {
   written=$scale
 }
 
+game_database() {
+  yq -p json -o json 'load(strenv(RPCS3_CONFIG)) as $ours | .games[].config |= (from_yaml * $ours | to_yaml)' "$GAME_DATABASE" > "$CONFIG/GuiConfigs/config_database.dat"
+}
+
 follow_resolution() {
   inotifywait -m -e moved_to "${RESOLUTION_STATE%/*}" 2>&1 | while read -r event; do
     echo "$event" >&2
@@ -43,6 +48,7 @@ pad_config > "$CONFIG/input_configs/global/Default.yml"
 { cat /opt/rpcs3/config.yml; system-settings; } > "$BASE_CONFIG"
 OUTPUT=$(yq .Video.Resolution "$BASE_CONFIG")
 write_config
+game_database
 follow_resolution &
 awk -v output="$OUTPUT" 'BEGIN { split(output, size, "x"); print "Setting aspect ratio to " size[1] / size[2] }' >&2
-exec xwayland-run -geometry "$CANVAS" -- with-window-manager /opt/rpcs3/AppRun --no-gui --fullscreen --config "$RPCS3_CONFIG" "${1%/"$SFO"}"
+exec xwayland-run -geometry "$CANVAS" -- with-window-manager /opt/rpcs3/AppRun --no-gui --fullscreen "${1%/"$SFO"}"
