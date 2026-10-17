@@ -52,6 +52,11 @@ add_cue_disc() {
   cp "$(find "$SCRATCH/$file" -iname '*.bin')" "$TEST_STORE/$1/$3/rom/"
 }
 
+add_iso_disc() {
+  add_download "$1" "$2" "$3" "$4" "$5"
+  printf 'FILE "%s.iso" BINARY\r\n  TRACK 01 MODE1/2048\r\n    INDEX 01 00:00:00\r\n' "$2" > "$TEST_STORE/$1/$3/rom/$2.cue"
+}
+
 pcsx2_crc() { python3 -I -c 'import struct, sys; data = open(sys.argv[1], "rb").read(); crc = 0
 for (word,) in struct.iter_unpack("<I", data[: len(data) // 4 * 4]): crc ^= word
 print(f"{crc:08X}")' "$1"; }
@@ -76,11 +81,14 @@ add_zipped christmas-craze "Christmas Craze" snes "$SHIRU/snes/christmas_craze.z
 add_download snes-pride "SNESPride" snes "https://codeberg.org/Telinc1/SNESPride/releases/download/v1.0.0/SNESPride.sfc" '{"region": "usa"}'
 add_download gentris "Gentris" genesis "$GITHUB/Stephane-D/SGDK/raw/2eac605a7744a6eb4f61824bb24ccab39b8bd8b8/sample/game/gentris/out/release/rom.bin" '{"options": {"genesis_plus_gx_audio_filter": "low-pass"}}'
 add_download libbet "Libbet and the Magic Floor" gb "$GITHUB/pinobatch/libbet/releases/download/v0.08/libbet.gb"
+add_download ucity "uCity" gbc "$GITHUB/AntonioND/ucity/releases/download/v1.3/ucity.gbc"
 add_zipped the-hat-chooses-the-wizard "The Hat Chooses the Wizard" gba "$GITHUB/agbrs/agb/releases/download/v0.25.0/examples.zip" 'the-hat-chooses-the-wizard.gba'
 add_download legendary-spear "Legendary Spear" atari2600 "$GITHUB/DChristianson/legendary-spear/releases/download/v1.1/LegendarySpear_NTSC.bin"
 add_download kumi-daiko-beatoff "Kumi-Daiko Beatoff 64" n64 "$GITHUB/ptimonen/n64-riistahillo/releases/download/1.0/Kumi-Daiko-Beatoff-64.n64"
 add_zipped cracky "Cracky" wsc "$INUFUTO/16bit/wsc/cracky_bin.zip" '*.wsc'
 add_zipped cracky-msx "Cracky MSX" msx2 "$INUFUTO/8bit/msx/cracky_rom.zip" '*.rom' '{"hold": {"key": "KEY_LEFTCTRL", "ms": 15000}}'
+add_zipped uxnds "Uxnds" nds "$GITHUB/asiekierka/uxnds/releases/download/v0.5.3/uxnds053.zip" 'uxnds.nds'
+[ ! -d "$TEST_BIOS/saturn" ] || add_iso_disc twelve-snakes "Twelve Snakes" saturn "$GITHUB/slinga-homebrew/Twelve-Snakes/releases/download/2.0.5/twelve-snakes.iso" '{"region": "japan"}'
 add_zipped gc-controller-test "GC Controller Test" gamecube "$GITHUB/corenting/GC-Controller-Test/releases/download/v1.2/gc-1-2.zip" '*.dol'
 add_download mini-mine-rt "Mini Mine RT" psp "$GITHUB/Saymond/PSP-apps/releases/download/v2.0/EBOOT.PBP" '{}' '{"es": "Mini Mina RT"}'
 add_download system-param "System Param" psp "$GITHUB/hrydgard/pspautotests/raw/a9b26db62a895c93f87550d37bf3833819bdc49f/tests/utility/systemparam/systemparam.prx"

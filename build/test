@@ -24,6 +24,8 @@ PS2_BOOT_SECONDS=40
 PS3_BOOT_SECONDS=30
 PSP_WIDTH=480
 PSP_HEIGHT=272
+NDS_SCREEN_WIDTH=256
+NDS_SCREEN_HEIGHT=192
 PPSSPP_INI=$ENGINES/psp/engine/ppsspp/PSP/SYSTEM/ppsspp.ini
 CRAB_PRIDE_FLAG_PRESSES="rightshoulder rightshoulder start"
 BOOT_SECONDS=180
@@ -1340,6 +1342,25 @@ test_genesis() {
   close_game gentris/genesis Gentris
 }
 
+test_nds() {
+  install_and_play uxnds/nds Uxnds
+  ratio=$(sed -n 's/^melonds_hybrid_ratio = "\(.*\)"$/\1/p' app/recipes/nds.opt)
+  hybrid="$(((ratio + 1) * NDS_SCREEN_WIDTH))x$((ratio * NDS_SCREEN_HEIGHT))"
+  expect ".display.frame == \"$hybrid\""
+  log ok "melonDS DS draws the big top screen beside both small screens in one $hybrid picture"
+  core_picture uxnds/nds
+  close_game uxnds/nds Uxnds
+}
+
+test_saturn() {
+  has_test_bios saturn "Saturn BIOS" || return 0
+  install_and_play twelve-snakes/saturn "Twelve Snakes"
+  core_picture twelve-snakes/saturn
+  wait_for $STEP_SECONDS core_options_hold twelve-snakes/saturn '{"beetle_saturn_region": "Japan"}'
+  log ok "the manifest's region reaches twelve-snakes/saturn as its console region"
+  close_game twelve-snakes/saturn "Twelve Snakes"
+}
+
 press_until_redrawn() {
   wait_for $STEP_SECONDS capture_settled pressed
   send "${PAD:-1} $1 1"
@@ -1697,7 +1718,7 @@ test_thumbnails() {
   log ok "one fetch downloads every boxart it asks for"
 }
 
-TESTS="capture symlinks display audio controllers nes atari ps1 genesis snes actions dreamcast msdos msx2 stores all_games gpu logout reboot skins engines thumbnails resolution ps2 language time_zone"
+TESTS="capture symlinks display audio controllers nes atari ps1 genesis nds saturn snes actions dreamcast msdos msx2 stores all_games gpu logout reboot skins engines thumbnails resolution ps2 language time_zone"
 ON_REQUEST="ps3"
 names=${*:-$TESTS}
 for name in $names; do
