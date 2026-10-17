@@ -20,6 +20,9 @@ msgstr "Inicio"
 msgid "Store"
 msgstr "Tienda"
 
+msgid "All games"
+msgstr "Todos los juegos"
+
 msgid "Guide"
 msgstr "Guía"
 

@@ -83,6 +83,7 @@
 #define STATES "states"
 #define STATE_EXTENSION ".state"
 #define SCREEN_EXTENSION ".screen.png"
+#define RECENT_GAMES 12
 #define REWIND_TREE_DEPTH 2
 #define SECONDS_PER_MINUTE 60
 #define LINUX_DMABUF_VERSION 3
@@ -109,11 +110,11 @@
 
 extern int _nl_msg_cat_cntr;
 
-enum screen { HOME, STORE, GAME, GUIDE, OUTPUTS, MICROPHONES, CONTROLLERS, CONTROLLER, SETTINGS, PLATFORM_RESOLUTIONS, WHOIS, LOG_OUT, ATTRACT, DELETE_DIALOG, OVERWRITE_DIALOG };
+enum screen { HOME, ALL_GAMES, STORE, GAME, GUIDE, OUTPUTS, MICROPHONES, CONTROLLERS, CONTROLLER, SETTINGS, PLATFORM_RESOLUTIONS, WHOIS, LOG_OUT, ATTRACT, DELETE_DIALOG, OVERWRITE_DIALOG };
 enum plane { DASHBOARD_PLANE, GUIDE_PLANE, PICKER_PLANE, DIALOG_PLANE };
 static const char *const planes[] = {[DASHBOARD_PLANE] = "dashboard", [GUIDE_PLANE] = "guide", [PICKER_PLANE] = "picker", [DIALOG_PLANE] = "dialog"};
 static const struct { const char *name, *title; enum plane plane; } screens[] = {
-    [HOME] = {"home", N_("Home")}, [STORE] = {"store", N_("Store")}, [GAME] = {"game", ""},
+    [HOME] = {"home", N_("Home")}, [ALL_GAMES] = {"all-games", N_("All games")}, [STORE] = {"store", N_("Store")}, [GAME] = {"game", ""},
     [GUIDE] = {"guide", N_("Guide"), GUIDE_PLANE}, [OUTPUTS] = {"outputs", N_("Output"), GUIDE_PLANE}, [MICROPHONES] = {"microphones", N_("Microphone"), GUIDE_PLANE},
     [CONTROLLERS] = {"controllers", N_("Controllers"), GUIDE_PLANE}, [CONTROLLER] = {"controller", "", GUIDE_PLANE}, [SETTINGS] = {"settings", N_("Settings")}, [PLATFORM_RESOLUTIONS] = {"resolutions", N_("Game resolution")},
     [WHOIS] = {"whois", "", PICKER_PLANE}, [LOG_OUT] = {"logout", "", GUIDE_PLANE}, [ATTRACT] = {"attract", ""},
@@ -122,7 +123,7 @@ static const struct { const char *name, *title; enum plane plane; } screens[] = 
 enum action { NOTHING, OPEN_STORE, OPEN_SETTINGS, OPEN_GAME, PLAY, RESUME, CLOSE, UNINSTALL, INSTALL, SHOW_DASHBOARD, VOLUME,
               OPEN_OUTPUTS, OPEN_MICROPHONES, SET_DEVICE, OPEN_CONTROLLERS, PAIR, OPEN_CONTROLLER, FORGET, RELOAD, RESTART, POWER_OFF,
               CHOOSE_DISPLAY, CHOOSE_DISPLAY_MODE, APPLY_MODE, OPEN_RESOLUTIONS, CHOOSE_RESOLUTION, CHOOSE_SLEEP, REWIND, LOGIN, EMULATE, ANALOG, LOG_OUT_PLAYER, CONFIRM_LOG_OUT, MICROPHONE_VOLUME, SECOND_SCREEN, CHOOSE_SKIN, CLEAR_THUMBNAILS,
-              SAVE_STATES, DELETE_STATE, OVERWRITE_STATE, CHOOSE_PICTURE, CHOOSE_LANGUAGE, CHOOSE_GAME_LANGUAGE, CHOOSE_TIME_ZONE, CHOOSE_CITY };
+              SAVE_STATES, DELETE_STATE, OVERWRITE_STATE, CHOOSE_PICTURE, CHOOSE_LANGUAGE, CHOOSE_GAME_LANGUAGE, CHOOSE_TIME_ZONE, CHOOSE_CITY, OPEN_ALL_GAMES };
 static const char *const actions[] = {
     [NOTHING] = "nothing", [OPEN_STORE] = "open-store", [OPEN_SETTINGS] = "open-settings", [OPEN_GAME] = "open-game", [PLAY] = "play", [RESUME] = "resume",
     [CLOSE] = "close", [UNINSTALL] = "uninstall", [INSTALL] = "install", [SHOW_DASHBOARD] = "dashboard", [VOLUME] = "volume", [OPEN_OUTPUTS] = "open-outputs",
@@ -133,7 +134,7 @@ static const char *const actions[] = {
     [CONFIRM_LOG_OUT] = "confirm-log-out", [MICROPHONE_VOLUME] = "microphone-volume", [SECOND_SCREEN] = "second-screen", [CHOOSE_SKIN] = "skin",
     [CLEAR_THUMBNAILS] = "clear-thumbnails", [SAVE_STATES] = "save-states", [DELETE_STATE] = "delete-state", [OVERWRITE_STATE] = "overwrite-state",
     [CHOOSE_PICTURE] = "picture", [CHOOSE_LANGUAGE] = "language", [CHOOSE_GAME_LANGUAGE] = "game-language",
-    [CHOOSE_TIME_ZONE] = "time-zone", [CHOOSE_CITY] = "city"};
+    [CHOOSE_TIME_ZONE] = "time-zone", [CHOOSE_CITY] = "city", [OPEN_ALL_GAMES] = "open-all-games"};
 static const char *const criteria[] = {"action", "label", "value", "arg"};
 enum tab { GAME_TAB, DEVICES_TAB, SYSTEM_TAB };
 static const char *const tabs[] = {[GAME_TAB] = N_("Game"), [DEVICES_TAB] = N_("I/O"), [SYSTEM_TAB] = N_("System")};
@@ -155,7 +156,7 @@ struct game {
     char slug[NAME_MAX + 1], platform[NAME_MAX + 1], thumbnail[NAME_MAX + 1], title[TEXT_MAX], job_text[TEXT_MAX], job_line[TEXT_MAX], job_error[TEXT_MAX], error_line[TEXT_MAX];
     json_object *emulate, *analog;
     double thumbnail_aspect;
-    time_t thumbnail_time;
+    time_t thumbnail_time, used;
     int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, owner, second_screen, screen_shown, error_output, enhanced, restart_slot, booted, dial_absolute;
     struct port ports[PADS];
     size_t job_length, error_length;
@@ -601,6 +602,17 @@ static const char *localized_title(json_object *manifest) {
     return *title ? title : string_at(manifest, "title", NULL);
 }
 
+static void game_file(int index, const char *name, char *path) {
+    snprintf(path, PATH_MAX, GAMES_DIR "/%s/%s", key(index), name);
+}
+
+static time_t last_used(int index) {
+    char path[PATH_MAX];
+    struct stat status;
+    game_file(index, LAST_USED_FILE, path);
+    return stat(path, &status) ? 0 : status.st_mtime;
+}
+
 static void scan(const char *directory, int store) {
     DIR *slugs = opendir(directory);
     for (struct dirent *slug; slugs && (slug = readdir(slugs));) {
@@ -619,7 +631,10 @@ static void scan(const char *directory, int store) {
             if (strcmp(games[index].thumbnail, thumbnail)) games[index].thumbnail_time = 0;
             snprintf(games[index].title, sizeof games[index].title, "%s", *title ? title : slug->d_name);
             snprintf(games[index].thumbnail, sizeof games[index].thumbnail, "%s", thumbnail);
-            if (store < 0) games[index].installed = 1;
+            if (store < 0) {
+                games[index].installed = 1;
+                games[index].used = last_used(index);
+            }
             else games[index].stores |= 1u << store;
         }
         if (platforms) closedir(platforms);
@@ -1265,12 +1280,18 @@ static int by_title(const void *left, const void *right) {
     return order ? order : strcmp(a->platform, b->platform);
 }
 
-static int sorted(int *order, int store_view) {
+static int by_recency(const void *left, const void *right) {
+    const struct game *a = &games[*(const int *)left], *b = &games[*(const int *)right];
+    if (a->used != b->used) return a->used > b->used ? -1 : 1;
+    return by_title(left, right);
+}
+
+static int sorted(int *order, enum screen screen) {
     int count = 0;
     for (int i = 0; i < game_count; i++)
-        if (store_view ? games[i].stores != 0 : games[i].installed || games[i].job) order[count++] = i;
-    qsort(order, count, sizeof *order, by_title);
-    return count;
+        if (screen == STORE ? games[i].stores != 0 : games[i].installed || games[i].job) order[count++] = i;
+    qsort(order, count, sizeof *order, screen == HOME ? by_recency : by_title);
+    return screen == HOME && count > RECENT_GAMES ? RECENT_GAMES : count;
 }
 
 static int add_row(int count, enum action action, int arg, const char *label, const char *format, ...) {
@@ -1478,14 +1499,10 @@ static void apply_modes(void) {
     if (active >= 0) converge_analog(active);
 }
 
-static void screen_path(int index, char *path) {
-    snprintf(path, PATH_MAX, GAMES_DIR "/%s/" SCREEN_FILE, key(index));
-}
-
 static void toggle_second_screen(void) {
     char path[PATH_MAX];
     struct game *game = &games[active];
-    screen_path(active, path);
+    game_file(active, SCREEN_FILE, path);
     game->screen_shown = !game->screen_shown;
     if (!game->screen_shown) unlink(path);
     else close(open(path, O_WRONLY | O_CREAT | O_CLOEXEC, S_IRUSR | S_IWUSR));
@@ -1558,10 +1575,12 @@ static int build(struct view *view) {
     struct game *game = view->game >= 0 ? &games[view->game] : NULL;
     switch (view->screen) {
     case HOME:
+    case ALL_GAMES:
     case STORE:
-        for (int i = 0, total = sorted(order, view->screen == STORE); i < total; i++)
+        for (int i = 0, total = sorted(order, view->screen); i < total; i++)
             count = add_row(count, OPEN_GAME, order[i], games[order[i]].title, "%s  %s", games[order[i]].platform, status(order[i]));
         if (view->screen == HOME) {
+            count = add_row(count, OPEN_ALL_GAMES, 0, _("All games"), "");
             count = add_row(count, OPEN_STORE, 0, _("Store"), "");
             count = add_row(count, OPEN_SETTINGS, 0, _("Settings"), "");
         }
@@ -2045,7 +2064,7 @@ static void read_labels(int index) {
     json_object *labels = json_object_from_file(path), *manifest, *platform = NULL, *overrides = NULL;
     game->rewinds = *string_at(labels, REWIND_LABEL, NULL);
     game->second_screen = *string_at(labels, SCREEN_LABEL, NULL);
-    screen_path(index, path);
+    game_file(index, SCREEN_FILE, path);
     game->screen_shown = !access(path, F_OK);
     json_object_put(game->analog);
     game->analog = json_tokener_parse(string_at(labels, ANALOG_LABEL, NULL));
@@ -2126,8 +2145,17 @@ static int owner_seated(int index) {
     return 0;
 }
 
+static void mark_used(int index) {
+    char path[PATH_MAX];
+    game_file(index, LAST_USED_FILE, path);
+    close(open(path, O_WRONLY | O_CREAT | O_CLOEXEC, S_IRUSR | S_IWUSR));
+    utimensat(AT_FDCWD, path, NULL, 0);
+    games[index].used = time(NULL);
+}
+
 static void launch(int index) {
     if (!owner_seated(index)) return;
+    mark_used(index);
     start_job(index, LAUNCHING, (char *[]){"games", "prepare", games[index].platform, NULL});
     if (games[index].job) resume(index);
 }
@@ -2191,6 +2219,7 @@ static void job_done(int index, int status) {
         return;
     }
     rescan_installed();
+    if (!status && game->task == INSTALLING) mark_used(index);
     if (!status) notify(game->task == INSTALLING ? _("Installed %s") : _("Uninstalled %s"), game->title);
     else fail(index, game->task == INSTALLING ? _("Install failed: %s%s") : _("Uninstall failed: %s%s"), game->title, detail);
 }
@@ -2294,6 +2323,7 @@ static void act(struct row *row, int profile) {
         break;
     case CONFIRM_LOG_OUT: logout(guide_profile); break;
     case OPEN_STORE: push(STORE, -1); refresh(); break;
+    case OPEN_ALL_GAMES: push(ALL_GAMES, -1); break;
     case OPEN_SETTINGS:
         discard_staged();
         push(SETTINGS, -1);
@@ -2312,6 +2342,7 @@ static void act(struct row *row, int profile) {
     case CLOSE: close_game(view->game); break;
     case UNINSTALL: start_job(view->game, UNINSTALLING, (char *[]){"games", "uninstall", game->slug, game->platform, NULL}); break;
     case INSTALL:
+        game->used = time(NULL);
         snprintf(store, sizeof store, "%d", row->arg + 1);
         start_job(view->game, INSTALLING, (char *[]){"games", "install", store, game->slug, game->platform, NULL});
         break;

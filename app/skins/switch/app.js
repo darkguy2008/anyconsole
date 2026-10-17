@@ -20,7 +20,7 @@ const faceIcons = { cross: 'close', circle: 'circle', square: 'square', triangle
 const steps = { up: -storeColumns, down: storeColumns, left: -1, right: 1 };
 const actionIcons = {
   'open-store': 'storefront', 'open-settings': 'settings', play: 'play_arrow', resume: 'play_arrow', close: 'close', uninstall: 'delete',
-  install: 'download', dashboard: 'home', volume: 'volume_up', 'open-outputs': 'speaker', 'open-microphones': 'mic', 'microphone-volume': 'mic',
+  'open-all-games': 'apps', install: 'download', dashboard: 'home', volume: 'volume_up', 'open-outputs': 'speaker', 'open-microphones': 'mic', 'microphone-volume': 'mic',
   'open-controllers': 'sports_esports', reload: 'refresh', restart: 'restart_alt', 'power-off': 'power_settings_new', 'log-out': 'logout',
   rewind: 'history', emulate: 'keyboard', analog: 'joystick', picture: 'tv', 'second-screen': 'picture_in_picture', 'display-mode': 'monitor', 'open-resolutions': 'aspect_ratio', resolution: 'aspect_ratio',
   pair: 'bluetooth_searching', forget: 'link_off', 'confirm-log-out': 'logout', login: 'person', 'save-states': 'save',
@@ -67,13 +67,17 @@ function fillsSquare(aspect) {
   return aspect && Math.max(aspect, 1 / aspect) <= maxFillRatio;
 }
 
+function tileFrame(size) {
+  return { width: size, height: size, borderRadius: tileRadius, shadowColor: '#00000040', shadowBlur: 10, shadowOffsetY: 4 };
+}
+
 function Tile({ game, size, theme }) {
   const art = game.thumbnailCached;
   const filled = fillsSquare(game.thumbnailAspect);
   const backdrop = art && !filled;
   return html`
-    <view style=${{ width: size, height: size, borderRadius: tileRadius, overflow: 'hidden', backgroundColor: hsl(hue(game.title), 0.45, theme.tileLightness),
-      padding: 24, justifyContent: 'space-between', color: '#ffffff', shadowColor: '#00000040', shadowBlur: 10, shadowOffsetY: 4 }}>
+    <view style=${{ ...tileFrame(size), overflow: 'hidden', backgroundColor: hsl(hue(game.title), 0.45, theme.tileLightness),
+      padding: 24, justifyContent: 'space-between', color: '#ffffff' }}>
       <text style=${{ fontSize: size / 8, fontWeight: 800, lineHeight: 1.1, opacity: art ? 0 : 1 }}>${game.title}</text>
       <text style=${{ fontSize: size / 16, fontWeight: 700, opacity: art ? 0 : 0.8 }}>${game.platform.toUpperCase()}</text>
       ${backdrop && html`<image src=${game.thumbnail} style=${{ ...fill, borderRadius: tileRadius, blur: coverBlur }} objectFit="cover" />`}
@@ -81,6 +85,17 @@ function Tile({ game, size, theme }) {
       ${game.thumbnail && html`<image src=${game.thumbnail} style=${{ ...fill, borderRadius: tileRadius, margin: filled ? 0 : size / artMarginDivisor }}
         objectFit=${filled ? 'cover' : 'contain'} />`}
     </view>`;
+}
+
+function LibraryTile({ size, theme }) {
+  return html`
+    <view style=${{ ...tileFrame(size), backgroundColor: theme.surface, alignItems: 'center', justifyContent: 'center' }}>
+      <${Icon} name=${actionIcons['open-all-games']} size=${size / 3} color=${accent} />
+    </view>`;
+}
+
+function tiled(row) {
+  return row?.action === 'open-game' || row?.action === 'open-all-games';
 }
 
 function games(state, view) {
@@ -118,8 +133,7 @@ function Button({ face, label, theme }) {
 }
 
 function Home({ state, view, theme, lastTile }) {
-  const list = games(state, view);
-  const tiles = list.filter(Boolean), buttons = view.rows.slice(tiles.length);
+  const tiles = view.rows.filter(tiled), buttons = view.rows.slice(tiles.length);
   const inTiles = view.selected < tiles.length;
   const chosen = inTiles ? tiles[view.selected] : null;
   const shownTile = inTiles ? view.selected : lastTile;
@@ -127,10 +141,11 @@ function Home({ state, view, theme, lastTile }) {
     <view style=${fill}>
       <${TopBar} state=${state} theme=${theme} />
       <text style=${{ position: 'absolute', left: 104, right: 104, top: 168, fontSize: 36, fontWeight: 800, color: accent, textOverflow: 'marquee',
-        opacity: chosen ? 1 : 0 }} transition=${{ opacity: 150 }}>${chosen ? chosen.title : ''}</text>
+        opacity: chosen ? 1 : 0 }} transition=${{ opacity: 150 }}>${chosen ? chosen.label : ''}</text>
       <view style=${{ position: 'absolute', left: 0, right: 0, top: 230, height: 470, flexDirection: 'row', gap: 28, paddingHorizontal: 104,
         alignItems: 'center', overflow: 'hidden' }} follow=${shownTile} plane=${inTiles ? view.plane : null}>
-        ${tiles.map(game => html`<${Tile} key=${game.key} game=${game} size=${400} theme=${theme} />`)}
+        ${tiles.map(row => row.action === 'open-game' ? html`<${Tile} key=${state.games[row.arg].key} game=${state.games[row.arg]} size=${400} theme=${theme} />`
+          : html`<${LibraryTile} key=${row.action} size=${400} theme=${theme} />`)}
         <${Frame} index=${shownTile} radius=${14} theme=${theme} active=${inTiles} />
       </view>
       <view style=${{ position: 'absolute', left: 0, right: 0, top: 760, flexDirection: 'row', justifyContent: 'center', gap: 40 }}>
@@ -232,8 +247,9 @@ function Settings({ state, view, theme }) {
     </view>`;
 }
 
+const screens = { home: Home, 'all-games': Store, store: Store, game: GamePage, settings: Settings, resolutions: Settings };
+
 function Dashboard({ state, view, theme, lastTile }) {
-  const screens = { home: Home, store: Store, game: GamePage, settings: Settings, resolutions: Settings };
   const Screen = screens[view.screen] ?? Store;
   return html`<${Screen} state=${state} view=${view} theme=${theme} lastTile=${lastTile} />`;
 }
@@ -397,14 +413,14 @@ function navigate(name, state, lastTile) {
     return true;
   };
   if (view.screen === 'home' && name in { ...moves, up: 1, down: 1 }) {
-    const tiles = view.rows.filter(row => row.action === 'open-game').length;
+    const tiles = view.rows.filter(tiled).length;
     const inTiles = selected < tiles;
     if (name in moves) return move(inTiles ? Math.min(Math.max(selected + moves[name], 0), tiles - 1) : Math.max(selected + moves[name], tiles));
     if (name === 'down' && inTiles) return move(tiles < count ? tiles : selected);
     if (name === 'up' && !inTiles) return move(tiles ? lastTile : selected);
     return true;
   }
-  if (view.screen === 'store' && name in steps) return move(Math.min(Math.max(selected + steps[name], 0), count - 1));
+  if (screens[view.screen] === Store && name in steps) return move(Math.min(Math.max(selected + steps[name], 0), count - 1));
   if (view.screen === 'whois' && name in moves) return move(selected + moves[name]);
   if (name === 'up' || name === 'down' || name === 'page-up' || name === 'page-down') sound('hover');
   if (name === 'left' || name === 'right') sound('press');
@@ -416,7 +432,7 @@ function navigate(name, state, lastTile) {
 
 function useNavigation(view) {
   const lastTile = useRef(0);
-  if (view && view.screen === 'home' && view.rows[view.selected]?.action === 'open-game') lastTile.current = view.selected;
+  if (view && view.screen === 'home' && tiled(view.rows[view.selected])) lastTile.current = view.selected;
   useCommand(useCallback((name, state) => navigate(name, state, lastTile.current), []));
   return lastTile.current;
 }
