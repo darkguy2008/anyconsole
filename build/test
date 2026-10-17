@@ -1388,6 +1388,37 @@ test_stores() {
   expect '.stores[0].online and all(.games[]; (.stores | length) == 1)'
 }
 
+played_goes_first() {
+  expect_reply $STEP_SECONDS 200 ".ok and .state.active == \"$1\"" --arg action play --arg game "$1"
+  close_by_action "$1"
+  expect_reply $STEP_SECONDS 200 '.ok and .state.screen == "all-games"' --arg action open-all-games
+  tap b
+  expect ".screen == \"home\" and .games[.rows[0].arg].key == \"$1\""
+}
+
+test_all_games() {
+  ensure_installed alter-ego/nes "Alter Ego"
+  ensure_installed commander-keen/msdos "Commander Keen"
+  played_goes_first alter-ego/nes
+  played_goes_first commander-keen/msdos
+  log ok "Home lists the game played last first"
+  choose "All games"
+  expect '.screen == "all-games" and all(.rows[]; .action == "open-game") and [.rows[].label] == ([.games[] | select(.status != "") | .title] | sort_by(ascii_downcase))'
+  log ok "All games lists every installed game by title"
+  api POST settings "skin switch-black" >/dev/null
+  expect '.skin == "switch-black"'
+  tap dpright
+  expect '.screen == "all-games" and .selected == 1'
+  log ok "switch-black moves along its All games grid with left and right"
+  tap b
+  expect '.screen == "home" and .rows[.selected].action == "open-all-games"'
+  tap dpleft
+  expect '.rows[.selected].action == "open-game" and .selected == ([.rows[] | select(.action == "open-game")] | length) - 1'
+  tap dpright
+  expect '.rows[.selected].action == "open-all-games"'
+  log ok "switch-black shows All games as the last tile in its row of games"
+}
+
 psp_scale_holds() {
   [ "$(guest "docker exec $(game_container "$1") cat /states/resolution")" = "$2" ] &&
     core_options_hold "$1" "{\"ppsspp_internal_resolution\": \"$((PSP_WIDTH * $2))x$((PSP_HEIGHT * $2))\"}" &&
@@ -1627,7 +1658,7 @@ test_thumbnails() {
   log ok "one fetch downloads every boxart it asks for"
 }
 
-TESTS="capture symlinks display audio controllers nes atari ps1 genesis snes actions dreamcast msdos msx2 stores gpu logout reboot skins engines thumbnails resolution ps2 language time_zone"
+TESTS="capture symlinks display audio controllers nes atari ps1 genesis snes actions dreamcast msdos msx2 stores all_games gpu logout reboot skins engines thumbnails resolution ps2 language time_zone"
 ON_REQUEST="ps3"
 names=${*:-$TESTS}
 for name in $names; do
@@ -1645,7 +1676,7 @@ run_tests() {
   push_test_bios
   preload_fakepad
   sign_in_from_attract
-  expect ".screen == \"home\" and .dashboard and (.rows | length) == 2 and (.display.displays | length) == 2 and .display.canvas == $AREA_SIZE"
+  expect ".screen == \"home\" and .dashboard and [.rows[].action] == [\"open-all-games\", \"open-store\", \"open-settings\"] and (.display.displays | length) == 2 and .display.canvas == $AREA_SIZE"
   api POST stores "$TEST_STORE_URL" >/dev/null
   expect '.stores[0].online and ([.games[].key] | index("alter-ego/nes") != null)'
   for name; do
