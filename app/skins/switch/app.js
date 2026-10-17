@@ -8,7 +8,7 @@ const accent = '#00c3e3';
 const storeColumns = 5;
 const pulseMilliseconds = 900;
 const artMarginDivisor = 16;
-const fillCropPerSide = 0.02;
+const maxFillRatio = 5 / 4;
 const backdropDim = '#000000b3';
 const coverBlur = 0.05;
 const tileRadius = 6;
@@ -64,7 +64,7 @@ function Frame({ index, radius, theme, active, inset = -10 }) {
 }
 
 function fillsSquare(aspect) {
-  return aspect && (Math.max(aspect, 1 / aspect) - 1) / 2 < fillCropPerSide;
+  return aspect && Math.max(aspect, 1 / aspect) <= maxFillRatio;
 }
 
 function Tile({ game, size, theme }) {
