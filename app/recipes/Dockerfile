@@ -36,10 +36,6 @@ FROM unzip AS dolphin
 ADD --checksum=sha256:782f390a0818fd9d70e13ad82ee11d9ea16e3979e1de2c4d2b9dfffc155d8c17 $SYSTEM/Dolphin.zip .
 RUN 7z x -o/system Dolphin.zip >/dev/null
 
-FROM unzip AS ppsspp
-ADD --checksum=sha256:e93a625c61062ce0032dce034129c14230f5982b492b9f146099340c3b81f4f8 $SYSTEM/PPSSPP.zip .
-RUN 7z x -o/system PPSSPP.zip >/dev/null
-
 FROM unzip AS azahar
 ADD --checksum=sha256:2223444b74de2c922bae1efcfed60002f696b3c2aaf4fc73fc03e66a395dc26e https://github.com/azahar-emu/azahar/releases/download/2126.2/azahar-libretro-linux-x86_64-2126.2.zip .
 RUN 7z e azahar-libretro-linux-x86_64-2126.2.zip >/dev/null
@@ -154,14 +150,6 @@ COPY --from=dolphin /system /system
 COPY gamecube-system.jq /usr/lib/jq/system.jq
 COPY gamecube-resolution.jq /usr/lib/jq/resolution.jq
 
-# psp PlayStation Portable
-FROM retroarch AS psp
-LABEL anyconsole.launch="iso cso pbp" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="https://thumbnails.libretro.com/Sony%20-%20PlayStation%20Portable/Named_Boxarts/{name}.png" anyconsole.resolution="{\"height\":272,\"scales\":[1,2,3,4,5,6,7,8,9,10]}"
-COPY --from=cores /cores/ppsspp_libretro.so /retroarch/core.so
-COPY --from=ppsspp /system /system
-COPY psp-system.jq /usr/lib/jq/system.jq
-COPY psp-resolution.jq /usr/lib/jq/resolution.jq
-
 # n3ds Nintendo 3DS
 FROM retroarch AS n3ds
 LABEL anyconsole.launch="3ds cci cxi 3dsx zcci" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/saves/Azahar/sysdata" anyconsole.thumbnails="https://thumbnails.libretro.com/Nintendo%20-%20Nintendo%203DS/Named_Boxarts/{name}.png" anyconsole.resolution="{\"height\":240,\"scales\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]}"
@@ -244,6 +232,21 @@ COPY ps3-system.jq /usr/lib/jq/system.jq
 ENV XDG_CONFIG_HOME=/engine/config XDG_CACHE_HOME=/engine/cache QT_QPA_PLATFORM=xcb
 ENV RPCS3_CONFIG=$XDG_CONFIG_HOME/rpcs3/config.yml
 ENTRYPOINT ["/opt/rpcs3/launch"]
+
+FROM fetch AS ppsspp-download
+ADD --checksum=sha256:661c098e6b7f7610171a57b7c533ce8bba6f2312b71e76d61e850461973eba21 https://github.com/hrydgard/ppsspp/releases/download/v1.20.4/PPSSPP-v1.20.4-anylinux-x86_64.AppImage /app.AppImage
+RUN appimage /ppsspp
+
+# psp PlayStation Portable
+FROM x11-rewind AS psp
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y matchbox-window-manager xdotool
+LABEL anyconsole.launch="iso cso pbp prx" anyconsole.analog="{\"sticks\":true}" anyconsole.vulkan="--vulkan" anyconsole.rewind="true" anyconsole.thumbnails="https://thumbnails.libretro.com/Sony%20-%20PlayStation%20Portable/Named_Boxarts/{name}.png" anyconsole.resolution="{\"height\":272,\"scales\":[1,2,3,4,5,6,7,8,9,10]}"
+COPY with-window-manager /usr/local/bin/
+COPY --from=ppsspp-download /ppsspp /opt/ppsspp
+COPY ppsspp/ /opt/ppsspp/
+COPY psp-system.jq /usr/lib/jq/system.jq
+ENV XDG_CONFIG_HOME=/engine
+ENTRYPOINT ["/opt/ppsspp/launch"]
 
 FROM fetch AS pcsx2-download
 ADD --checksum=sha256:0c46bb6a88aa2782b10853a7b07cf3387ba99cbef2b966372cd2315b8571abea https://github.com/PCSX2/pcsx2/releases/download/v2.8.2/pcsx2-v2.8.2-linux-appimage-x64-Qt.AppImage /app.AppImage

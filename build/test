@@ -24,7 +24,7 @@ PS2_BOOT_SECONDS=40
 PS3_BOOT_SECONDS=30
 PSP_WIDTH=480
 PSP_HEIGHT=272
-PSP_SHOWN_HEIGHT=270
+PPSSPP_INI=/engine/ppsspp/PSP/SYSTEM/ppsspp.ini
 CRAB_PRIDE_FLAG_PRESSES="rightshoulder rightshoulder start"
 BOOT_SECONDS=180
 INSTALL_SECONDS=1200
@@ -519,6 +519,8 @@ close_game() {
 }
 
 game_container() { echo "\$(docker ps -q --filter label=$GAME_LABEL=$1)"; }
+
+ppsspp_setting_holds() { guest "docker exec $(game_container "$1") grep -qx '$2' $PPSSPP_INI"; }
 
 core_options_hold() {
   for file in core vulkan; do
@@ -1421,8 +1423,8 @@ test_all_games() {
 
 psp_scale_holds() {
   [ "$(guest "docker exec $(game_container "$1") cat /states/resolution")" = "$2" ] &&
-    core_options_hold "$1" "{\"ppsspp_internal_resolution\": \"$((PSP_WIDTH * $2))x$((PSP_HEIGHT * $2))\"}" &&
-    holds ".display.frame == \"$((PSP_WIDTH * $2))x$((PSP_SHOWN_HEIGHT * $2))\""
+    ppsspp_setting_holds "$1" "InternalResolution = $2" &&
+    holds ".display.frame == \"$((PSP_WIDTH * $2))x$((PSP_HEIGHT * $2))\""
 }
 
 test_resolution() {
@@ -1452,7 +1454,7 @@ test_resolution() {
   log ok "Display Mode keeps $key running when it has no enhanced block"
   api POST settings "picture original" >/dev/null
   restart_into $key 'Loading state' api POST settings "resolution psp 0"
-  wait_for $STEP_SECONDS guest "[ \"\$(docker exec $(game_container $key) cat /states/resolution)\" = 1 ] && ! docker exec $(game_container $key) grep -q ppsspp_internal_resolution /tmp/core.opt"
+  wait_for $STEP_SECONDS psp_scale_holds $key 1
   log ok "Auto restarts $key at its native resolution"
   close_game $key "Mini Mine RT"
 }
@@ -1480,14 +1482,16 @@ test_language() {
   expect ".settings.language == \"en\" and .views[0].title == \"Settings\" and ($(row_value Language)) == \"English\" and $(game_has $key title "Mini Mine RT")"
   tap b
   expect '.screen == "home"'
-  install_and_play $key "Mini Mine RT"
+  key=system-param/psp
+  install_and_play $key "System Param"
   [ "$(container_env $key GAME_LANGUAGE)" = es_ES ] || { log FAIL "$key did not get Game language es_ES" >&2; exit 1; }
-  wait_for $STEP_SECONDS core_options_hold $key '{"ppsspp_language": "Spanish"}'
-  log ok "Game language reaches $key as its PPSSPP system language"
+  language=$(jq -nr -L app/recipes 'include "psp-system"; system("es_ES"; "")')
+  wait_for $STEP_SECONDS guest "grep -q '(INT_LANGUAGE): $(printf %08x "${language#*= }")' '$(game_log $key)'"
+  log ok "Game language reaches $key as the language PPSSPP reports to the game"
   api POST settings "game-language" >/dev/null
   expect 'any(.notifications[]; . == "Restart your games to play them in English")'
   log ok "changing Game language while a game runs asks to restart it"
-  close_game $key "Mini Mine RT"
+  close_game $key "System Param"
 }
 
 test_time_zone() {
@@ -1507,6 +1511,8 @@ test_time_zone() {
   install_and_play $key "Mini Mine RT"
   [ "$(guest "docker exec $(game_container $key) date +%z")" = "$TEST_ZONE_OFFSET" ] || { log FAIL "$key does not run in $TEST_ZONE" >&2; exit 1; }
   log ok "$key runs in the console's time zone"
+  wait_for $STEP_SECONDS guest "grep -q '(INT_TIMEZONE): $(printf %08x $((TEST_ZONE_MINUTES & 0xFFFFFFFF)))' '$(game_log $key)'"
+  log ok "$key's PSP system time zone is the console's"
   close_game $key "Mini Mine RT"
   api POST settings "time-zone" >/dev/null
 }

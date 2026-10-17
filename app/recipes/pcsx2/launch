@@ -85,7 +85,7 @@ bios=$(system-settings | /opt/pcsx2/bios-settings "$PCSX2/bios")
 find "${1%/*}" -maxdepth 1 -iname '*.pnach' -exec ln -s -t "$PCSX2/patches" {} +
 settings > "$PCSX2/inis/PCSX2.ini"
 exec 3<&0
-RESUME_SLOT= rewind /opt/pcsx2/pine $SAVE_SLOT $LOAD_SLOT .p2s <&3 &
+RESUME_SLOT= rewind /opt/pcsx2/pine $SAVE_SLOT $LOAD_SLOT '.%s.p2s' <&3 &
 set -- -- "$1"
 [ -z "$RESUME_SLOT" ] || set -- -statefile /states/*.state"$RESUME_SLOT" "$@"
 height=${CANVAS#*x}

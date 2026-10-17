@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+SAVE_KEY=F2
+NEXT_SLOT_KEY=F3
+LOAD_KEY=F4
+
+case $1 in
+  save) xdotool key $SAVE_KEY ;;
+  load) xdotool key $NEXT_SLOT_KEY $LOAD_KEY $NEXT_SLOT_KEY ;;
+  *) echo "usage: control save | load" >&2; exit 1 ;;
+esac

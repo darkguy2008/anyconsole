@@ -27,7 +27,7 @@ if [ -e "$LICENSE" ]; then
   mkfifo "$REDREAM_COMMANDS"
   if [ -d "$REDREAM_STATES" ] && [ ! -L "$REDREAM_STATES" ]; then mv "$REDREAM_STATES" "$MENU_STATES"; fi
   ln -sfT /states "$REDREAM_STATES"
-  rewind /opt/redream/control $SAVE_SLOT $LOAD_SLOT .sav <&3 &
+  rewind /opt/redream/control $SAVE_SLOT $LOAD_SLOT '.%s.sav' <&3 &
   preload=LD_PRELOAD=/opt/redream/commands.so
 else
   echo "no $LICENSE: rewind needs redream premium" >&2
