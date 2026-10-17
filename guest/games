@@ -95,8 +95,6 @@ label_of() { printf '%s' "$1" | jq -r --arg name "$2" '.Labels[$name] // empty';
 
 label() { label_of "$(image_config "$1")" "$2"; }
 
-labels() { image_config "$1" | jq -c '.Labels // {}'; }
-
 lock_engine() {
   mkdir -p "$ENGINE_RUN"
   exec 8>"$ENGINE_RUN/$1.lock"
@@ -110,6 +108,7 @@ prepare() {
   published=$(published_digest "$PUBLISHED_ENGINES/$1.json")
   [ "$(image_id "$1")" = "$published" ] || (set -o pipefail; download "$1" | tee "$ENGINE_RUN/$1.progress")
   image=$(image_config "$1")
+  printf '%s' "$image" | jq -c '.Labels // {}' > "$ENGINE_RUN/$1$LABELS_EXTENSION"
   prepare_engine "$1" "$published"
 }
 
@@ -303,11 +302,11 @@ close() { containers "$1" "$2" | xargs -r docker stop >/dev/null; }
 stop() { containers | xargs -r docker rm -f >/dev/null; }
 
 case "${1:-}" in
-  refresh|prepare|install|uninstall|run|rescale|pause|resume|close|stop|labels|upscalable|update) command=$1; shift; $command "$@" ;;
+  refresh|prepare|install|uninstall|run|rescale|pause|resume|close|stop|upscalable|update) command=$1; shift; $command "$@" ;;
   *) cat >&2 <<'USAGE'
 usage: games <command>
   refresh                         mount every store in /data/stores and list its games
-  prepare <platform>              download the platform's published engine unless it is current, printing "<step> [percent]"
+  prepare <platform>              download the platform's published engine unless it is current, printing "<step> [percent]", and save its image labels as JSON
   install <store> <slug> <platform>  prepare the platform's engine and copy the game from a store, printing "<step> [percent]"
   uninstall <slug> <platform>     delete an installed game, keeping every profile's saves, and the engine with the platform's last game
   run <slug> <platform> <wayland dir> <states dir> <profile> <slot> <language>  play an installed game in its sandbox with the profile's saves and that system language, starting from the states dir's state in that slot unless it is empty
@@ -316,7 +315,6 @@ usage: games <command>
   resume <slug> <platform>        unfreeze a running game and show its second screen if chosen
   close <slug> <platform>         stop a running game, killing it if it hasn't quit by docker's stop timeout
   stop                            remove every running game container
-  labels <platform>               print the labels of the platform's image as JSON
   upscalable                      print every downloaded engine that can render above its native resolution as JSON {platform: {name, height}}
   update                          while no game runs, bring every downloaded engine to its published version
 USAGE

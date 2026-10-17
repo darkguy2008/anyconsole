@@ -156,13 +156,13 @@ struct game {
     json_object *emulate, *analog;
     double thumbnail_aspect;
     time_t thumbnail_time;
-    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, probe_output, owner, second_screen, screen_shown, error_output, enhanced, restart_slot, booted, dial_absolute;
+    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, owner, second_screen, screen_shown, error_output, enhanced, restart_slot, booted, dial_absolute;
     struct port ports[PADS];
     size_t job_length, error_length;
     enum task task;
     enum restart restart;
     unsigned stores;
-    pid_t pid, job, freezer, probe;
+    pid_t pid, job, freezer;
 };
 
 struct view { enum screen screen; int game, selected; enum action action; int arg; enum tab tab; };
@@ -2038,16 +2038,11 @@ static void freeze(int index, int pause) {
     if (game->freezer < 0) game->freezer = 0;
 }
 
-static void probe_labels(int index) {
-    struct game *game = &games[index];
-    game->probe = spawn_reading((char *[]){"games", "labels", game->platform, NULL}, &game->probe_output, log_file);
-    if (game->probe < 0) game->probe = 0;
-}
-
-static void read_probe(int index) {
+static void read_labels(int index) {
     char path[PATH_MAX];
     struct game *game = &games[index];
-    json_object *labels = json_object_from_fd(game->probe_output), *manifest, *platform = NULL, *overrides = NULL;
+    snprintf(path, sizeof path, ENGINE_RUN "/%s" LABELS_EXTENSION, game->platform);
+    json_object *labels = json_object_from_file(path), *manifest, *platform = NULL, *overrides = NULL;
     game->rewinds = *string_at(labels, REWIND_LABEL, NULL);
     game->second_screen = *string_at(labels, SCREEN_LABEL, NULL);
     screen_path(index, path);
@@ -2064,10 +2059,6 @@ static void read_probe(int index) {
     }
     game->enhanced = json_object_object_get_ex(platform, pictures[ENHANCED].name, NULL);
     json_object_put(manifest);
-    close(game->probe_output);
-    game->probe = 0;
-    if (index == active) apply_modes();
-    changed = 1;
 }
 
 static void finish_close(int index) {
@@ -2090,7 +2081,6 @@ static void play(int index) {
     if (game->restart == CLOSING) snprintf(resume_slot, sizeof resume_slot, "%d", newest_slot());
     game->restart = PLAYING;
     memset(guide_depths, 0, sizeof guide_depths);
-    game->rewinds = 0;
     save_slot = 0;
     game->paused = game->closing = game->booted = game->dial_absolute = 0;
     for (int seat = 0; seat < PADS; seat++) game->ports[seat] = (struct port){.analog = -1, .forced = 1};
@@ -2194,7 +2184,10 @@ static void job_done(int index, int status) {
     if (game->task == LAUNCHING) {
         if (game->cancelled) game->cancelled = 0;
         else if (status) fail(index, _("Could not start %s%s"), game->title, detail);
-        else if (owner_seated(index)) play(index);
+        else if (owner_seated(index)) {
+            read_labels(index);
+            play(index);
+        }
         return;
     }
     rescan_installed();
@@ -2853,7 +2846,7 @@ static int settled(const struct request *request) {
     if (capture.current || refresher > 0 || helper_count) return 0;
     if (request->game < 0) return 1;
     const struct game *game = &games[request->game];
-    return !game->job && !game->freezer && !game->probe && !game->restart && !(game->pid && (!game_window(request->game) || game->closing));
+    return !game->job && !game->freezer && !game->restart && !(game->pid && (!game_window(request->game) || game->closing));
 }
 
 static void remove_request(int index) {
@@ -2987,7 +2980,6 @@ static void reap(void) {
             if (games[i].pid == pid) ended(i, failed);
             if (!games[i].pid && games[i].restart == CLOSING) play(i);
             if (games[i].job == pid) job_done(i, failed);
-            if (games[i].probe == pid) read_probe(i);
             if (games[i].freezer == pid) {
                 games[i].freezer = 0;
                 if (failed) games[i].paused = !games[i].paused;
@@ -3044,8 +3036,6 @@ static void on_toplevel_app_id(void *data, struct zwlr_foreign_toplevel_handle_v
     (void)data;
     for (int i = 0; i < window_count; i++)
         if (windows[i].handle == handle) snprintf(windows[i].app_id, sizeof windows[i].app_id, "%s", app_id);
-    for (int i = 0; i < game_count; i++)
-        if (games[i].pid && game_window(i) && game_window(i)->handle == handle) probe_labels(i);
     changed = 1;
 }
 
