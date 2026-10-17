@@ -4,8 +4,8 @@ STATES=/states
 CONTROL=$1
 SAVE_SLOT=$2
 LOAD_SLOT=$3
-SAVED_SUFFIX=.$SAVE_SLOT$4
-LOADED_SUFFIX=.$LOAD_SLOT$4
+SAVED_SUFFIX=$(printf "$4" "$SAVE_SLOT")
+LOADED_SUFFIX=$(printf "$4" "$LOAD_SLOT")
 
 next_slot() {
   next=1

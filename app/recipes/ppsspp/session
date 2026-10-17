@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+RESUME_SLOT= rewind /opt/ppsspp/control "$1" "$2" '_%s.ppst' <&0 &
+shift 2
+exec /opt/ppsspp/AppRun "$@" < /dev/null

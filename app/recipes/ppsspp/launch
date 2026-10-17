@@ -1,0 +1,48 @@
+#!/bin/sh
+set -eu
+MEMSTICK=$XDG_CONFIG_HOME/ppsspp/PSP
+PSP_WIDTH=480
+PSP_HEIGHT=272
+SAVE_SLOT=0
+LOAD_SLOT=1
+SLOTS=2
+NOTIFICATIONS_NONE=-1
+LOG_INFO=4
+SECONDS_PER_MINUTE=60
+
+settings() {
+  cat <<SETTINGS
+[General]
+FirstRun = False
+CheckForNewVersion = False
+NotificationPos = $NOTIFICATIONS_NONE
+SaveStateSlotCount = $SLOTS
+StateSlot = $SAVE_SLOT
+EnableStateUndo = False
+[Graphics]
+GraphicsBackend = $backend
+InternalResolution = $scale
+FullScreen = True
+VerticalSync = True
+[SystemParam]
+$(system-settings)
+TimeZone = $(python3 -c "import time; print(time.localtime().tm_gmtoff // $SECONDS_PER_MINUTE)")
+[Log]
+SAVESTATELevel = $LOG_INFO
+SCEUTILLevel = $LOG_INFO
+SETTINGS
+}
+
+backend=OPENGL
+if [ "${1:-}" = --vulkan ]; then
+  backend=VULKAN
+  shift
+fi
+scale=$(cat "$RESOLUTION_STATE")
+mkdir -p "$MEMSTICK/SYSTEM" /saves/PSP/SAVEDATA
+ln -sfT /saves/PSP/SAVEDATA "$MEMSTICK/SAVEDATA"
+ln -sfT /states "$MEMSTICK/PPSSPP_STATE"
+settings > "$MEMSTICK/SYSTEM/ppsspp.ini"
+cp /opt/ppsspp/controls.ini "$MEMSTICK/SYSTEM/"
+[ -z "$RESUME_SLOT" ] || set -- --state="$(printf %s /states/*.state"$RESUME_SLOT")" "$@"
+exec xwayland-run -geometry "$((PSP_WIDTH * scale))x$((PSP_HEIGHT * scale))" -- with-window-manager /opt/ppsspp/session $SAVE_SLOT $LOAD_SLOT "$@"
