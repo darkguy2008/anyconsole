@@ -1168,7 +1168,9 @@ test_nes() {
   key KEY_ESC
   expect "(.guide | not) and ($(status_of lan-master/nes running))"
   send "1 back 1" "1 start 1" "1 start 0" "1 back 0"
+  tap guide
   expect '.guide'
+  log ok "Select+Start on a pad with a Guide button did not open the guide"
   tap guide
   expect "(.guide | not) and ($(status_of lan-master/nes running))"
 
