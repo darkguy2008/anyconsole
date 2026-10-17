@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+FLASH=$XDG_CONFIG_HOME/rpcs3/dev_flash/sys
+
+mkdir -p "${RPCS3_CONFIG%/*}"
+[ -d "$FLASH" ] || /opt/rpcs3/AppRun --installfw /bios/PS3UPDAT.PUP --headless || [ -d "$FLASH" ]
+/opt/rpcs3/precompile /dev_flash/sys

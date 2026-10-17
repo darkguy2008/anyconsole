@@ -1,12 +1,6 @@
 #!/bin/sh
 set -eu
-FLASH=$XDG_CONFIG_HOME/rpcs3/dev_flash/sys
 STAGING=/game/.install
-
-install_firmware() {
-  [ ! -d "$FLASH" ] || return 0
-  /opt/rpcs3/AppRun --installfw /bios/PS3UPDAT.PUP --headless || [ -d "$FLASH" ]
-}
 
 install_packages() {
   set -- /game/*.pkg
@@ -19,6 +13,5 @@ install_packages() {
   rm -rf "$STAGING" /game/*.pkg
 }
 
-mkdir -p "${RPCS3_CONFIG%/*}"
-install_firmware
 install_packages
+[ ! -f /game/PARAM.SFO ] || /opt/rpcs3/precompile /host_root//game

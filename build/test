@@ -21,6 +21,7 @@ SSH_ALIVE_SECONDS=1
 POLL_INTERVAL=$(awk "BEGIN { print 1 / $POLLS_PER_SECOND }")
 STEP_SECONDS=15
 PS2_BOOT_SECONDS=40
+PS3_BOOT_SECONDS=30
 PSP_WIDTH=480
 PSP_HEIGHT=272
 PSP_SHOWN_HEIGHT=270
@@ -52,6 +53,10 @@ STRONG_RUMBLE_EFFECT=4
 REDREAM_ENGINE=$ENGINES/dreamcast/engine
 REDREAM_LICENSE=dreamcast/redream.key
 PCSX2_CONFIG=$ENGINES/ps2/engine/PCSX2
+RPCS3_LOGS=$ENGINES/ps3/engine/cache/rpcs3
+GCM_CUBE=gcm-cube/ps3
+GCM_CUBE_DRAWING="local_size ="
+FIRMWARE_COMPILED='LLVM: Compiling module .*\.sprx/'
 PS2_CONFIG_BLOCK=$((0x2C0))
 PS2_LANGUAGE_BITS=0x1F
 PS2_INITIALIZED=0x80
@@ -113,11 +118,10 @@ diagnose() {
   guest ". /etc/profile; wpctl status; pw-dump | jq -c '.[] | select(.info.props[\"media.class\"]? == \"Audio/Source\") | {id, props: [.info.params.Props[]? | {channelVolumes, softVolumes, volume}]}'" >&2 || true
 }
 wait_for() {
-  attempts=$(($1 * POLLS_PER_SECOND)) attempt=0
+  deadline=$(($(date +%s) + $1))
   shift
   until "$@" >/dev/null 2>&1; do
-    attempt=$((attempt + 1))
-    [ $attempt -le $attempts ] || { "$@" >/dev/null || :; log FAIL "timed out waiting for: $*" >&2; diagnose; exit 1; }
+    [ "$(date +%s)" -lt $deadline ] || { "$@" >/dev/null || :; log FAIL "timed out waiting for: $*" >&2; diagnose; exit 1; }
     sleep $POLL_INTERVAL
   done
 }
@@ -541,6 +545,7 @@ play_every_other_game() {
   for directory in "$TEST_STORE"/*/*/; do
     key=${directory#"$TEST_STORE/"}
     key=${key%/}
+    case " $ON_REQUEST " in *" ${key#*/} "*) continue ;; esac
     holds "$(status_of "$key" "")" >/dev/null || continue
     title=$(jq -r .title "$TEST_STORE/${key%/*}/manifest.json")
     install_and_play "$key" "$title"
@@ -937,6 +942,7 @@ redream_gave_second_pad() {
   [ -n "$port" ] && guest "grep -qF '$port name=$PAD_NAME #2' $REDREAM_ENGINE/redream.log"
 }
 
+has_test_bios() { [ -d "$TEST_BIOS/$1" ] || { log skip "$1: no $2 in $TEST_BIOS/$1 on the build host"; return 1; }; }
 push_test_bios() { [ ! -d "$TEST_BIOS" ] || tar -C "$TEST_BIOS" -c . | guest "mkdir -p $BIOS_DIR && tar -C $BIOS_DIR -x"; }
 
 redream_preloaded() { guest "tr '\\0' '\\n' < /proc/\$(pidof redream)/environ | grep -q '^LD_PRELOAD='"; }
@@ -1291,10 +1297,7 @@ choose_analog() {
 }
 
 test_ps1() {
-  if [ ! -d "$TEST_BIOS/ps1" ]; then
-    log skip "ps1: no PS1 BIOS in $TEST_BIOS/ps1 on the build host"
-    return
-  fi
+  has_test_bios ps1 "PS1 BIOS" || return 0
   key=a-small-journey/ps1
   install_and_play $key "A Small Journey"
   wait_for $STEP_SECONDS analog_state_has $key "1 on usable"
@@ -1528,10 +1531,7 @@ BYTES
 }
 
 test_ps2() {
-  if [ ! -d "$TEST_BIOS/ps2" ]; then
-    log skip "ps2: no PS2 BIOS in $TEST_BIOS/ps2 on the build host"
-    return
-  fi
+  has_test_bios ps2 "PS2 BIOS" || return 0
   key=cubes-demo/ps2
   api POST settings "game-language es_419" >/dev/null
   api POST settings "time-zone $TEST_ZONE" >/dev/null
@@ -1567,6 +1567,29 @@ test_ps2() {
   ps2_nvm_holds $PS2_ENGLISH 0
   log ok "a manifest region boots $key on the matching BIOS with its own first-boot settings"
   close_game $key "Cubes Demo Europe"
+}
+
+shows_magenta() {
+  python3 -I - "$OUT/$1.png" <<'PYTHON'
+import sys
+from PIL import Image
+CHANNEL_MAX = 255
+pixels = Image.open(sys.argv[1]).convert("RGB").get_flattened_data()
+sys.exit(not any(red > CHANNEL_MAX // 2 and blue > CHANNEL_MAX // 2 and green < CHANNEL_MAX // 4 for red, green, blue in pixels))
+PYTHON
+}
+
+gcm_cube_spins() { screen_moves && shows_magenta before && shows_magenta after; }
+
+test_ps3() {
+  has_test_bios ps3 "PS3 firmware" || return 0
+  install_and_play $GCM_CUBE "GCM Cube"
+  wait_for $PS3_BOOT_SECONDS guest "grep -qF '$GCM_CUBE_DRAWING' $RPCS3_LOGS/TTY.log"
+  guest "! grep -q '$FIRMWARE_COMPILED' $RPCS3_LOGS/RPCS3.log"
+  log ok "$GCM_CUBE reached its draw loop with the firmware compiled before launch"
+  wait_for $STEP_SECONDS gcm_cube_spins
+  log ok "RPCS3 draws $GCM_CUBE's spinning cube"
+  leave_game $GCM_CUBE
 }
 
 test_gpu() {
@@ -1636,11 +1659,12 @@ test_thumbnails() {
 }
 
 TESTS="capture symlinks display audio controllers nes atari ps1 genesis snes actions dreamcast msdos msx2 stores all_games gpu logout reboot skins engines thumbnails resolution ps2 language time_zone"
+ON_REQUEST="ps3"
 names=${*:-$TESTS}
 for name in $names; do
-  case " $TESTS " in
+  case " $TESTS $ON_REQUEST " in
     *" $name "*) ;;
-    *) log FAIL "no test named $name, tests are: $TESTS" >&2; exit 1 ;;
+    *) log FAIL "no test named $name, tests are: $TESTS $ON_REQUEST" >&2; exit 1 ;;
   esac
 done
 

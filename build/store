@@ -86,4 +86,5 @@ add_download mini-mine-rt "Mini Mine RT" psp "$GITHUB/Saymond/PSP-apps/releases/
 [ ! -d "$TEST_BIOS/ps1" ] || add_cue_disc a-small-journey "A Small Journey" ps1 "$ARCHIVE/asj-1.0/asj-1.0.zip"
 [ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo "Cubes Demo" ps2 "$CUBES_DEMO" '{"enhanced": {"widescreen": true}}'
 [ ! -d "$TEST_BIOS/ps2" ] || add_ps2_disc cubes-demo-europe "Cubes Demo Europe" ps2 "$CUBES_DEMO" '{"region": "europe"}'
+[ ! -d "$TEST_BIOS/ps3" ] || add_download gcm-cube "GCM Cube" ps3 "$GITHUB/RPCS3/rpcs3/raw/2ba2f75bcea7ef6bdd687046c7fcfb790faf9853/bin/test/gs_gcm_cube.elf"
 add_download gravity-wave-twin-stick-shooter "Gravity Wave" dreamcast "$GITHUB/richstokes/dreamcast-homebrew/releases/download/continuous/gravity-wave.cdi" "{\"pad\": $TWIN_STICK}"
