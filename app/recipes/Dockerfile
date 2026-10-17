@@ -69,26 +69,26 @@ ENTRYPOINT ["/retroarch/launch"]
 
 # nes Nintendo Entertainment System
 FROM retroarch AS nes
-LABEL anyconsole.launch="nes fds unf unif" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Nintendo - Nintendo Entertainment System"
+LABEL anyconsole.launch="nes fds unf unif" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="https://thumbnails.libretro.com/Nintendo%20-%20Nintendo%20Entertainment%20System/Named_Boxarts/{name}.png"
 COPY --from=cores /cores/fceumm_libretro.so /retroarch/core.so
 COPY nes-system.jq /usr/lib/jq/system.jq
 
 # msdos MS-DOS
 FROM retroarch AS msdos
-LABEL anyconsole.launch="dosz zip exe com bat conf iso cue" anyconsole.thumbnails="DOS"
+LABEL anyconsole.launch="dosz zip exe com bat conf iso cue" anyconsole.thumbnails="https://thumbnails.libretro.com/DOS/Named_Boxarts/{name}.png"
 COPY --from=cores /cores/dosbox_pure_libretro.so /retroarch/core.so
 COPY msdos.opt /retroarch/core.opt
 COPY msdos-refresh.jq /retroarch/refresh.jq
 
 # snes Super Nintendo
 FROM retroarch AS snes
-LABEL anyconsole.launch="sfc smc fig swc bs" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Nintendo - Super Nintendo Entertainment System"
+LABEL anyconsole.launch="sfc smc fig swc bs" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="https://thumbnails.libretro.com/Nintendo%20-%20Super%20Nintendo%20Entertainment%20System/Named_Boxarts/{name}.png"
 COPY --from=cores /cores/snes9x_libretro.so /retroarch/core.so
 COPY snes-system.jq /usr/lib/jq/system.jq
 
 # n64 Nintendo 64
 FROM retroarch AS n64
-LABEL anyconsole.launch="z64 n64 v64" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Nintendo - Nintendo 64" anyconsole.resolution="{\"height\":480,\"scales\":[1,2,4,8]}"
+LABEL anyconsole.launch="z64 n64 v64" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="https://thumbnails.libretro.com/Nintendo%20-%20Nintendo%2064/Named_Boxarts/{name}.png" anyconsole.resolution="{\"height\":480,\"scales\":[1,2,4,8]}"
 COPY --from=cores /cores/parallel_n64_libretro.so /retroarch/core.so
 COPY n64.opt /retroarch/core.opt
 COPY n64-vulkan.opt /retroarch/vulkan.opt
@@ -96,46 +96,46 @@ COPY n64-resolution.jq /usr/lib/jq/resolution.jq
 
 # genesis Sega Genesis
 FROM retroarch AS genesis
-LABEL anyconsole.launch="md gen smd bin mdx" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Sega - Mega Drive - Genesis"
+LABEL anyconsole.launch="md gen smd bin mdx" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="https://thumbnails.libretro.com/Sega%20-%20Mega%20Drive%20-%20Genesis/Named_Boxarts/{name}.png"
 COPY --from=cores /cores/genesis_plus_gx_libretro.so /retroarch/core.so
 COPY genesis-system.jq /usr/lib/jq/system.jq
 
 # gba Game Boy Advance
 FROM retroarch AS gba
-LABEL anyconsole.launch="gba" anyconsole.analog="{\"sticks\":false}" anyconsole.bios="/system" anyconsole.thumbnails="Nintendo - Game Boy Advance"
+LABEL anyconsole.launch="gba" anyconsole.analog="{\"sticks\":false}" anyconsole.bios="/system" anyconsole.thumbnails="https://thumbnails.libretro.com/Nintendo%20-%20Game%20Boy%20Advance/Named_Boxarts/{name}.png"
 COPY --from=cores /cores/mgba_libretro.so /retroarch/core.so
 
 # gb Game Boy
 FROM retroarch AS gb
-LABEL anyconsole.launch="gb gbc dmg" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Nintendo - Game Boy"
+LABEL anyconsole.launch="gb gbc dmg" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="https://thumbnails.libretro.com/Nintendo%20-%20Game%20Boy/Named_Boxarts/{name}.png"
 COPY --from=cores /cores/gambatte_libretro.so /retroarch/core.so
 
 # wsc WonderSwan Color
 FROM retroarch AS wsc
-LABEL anyconsole.launch="wsc ws pc2" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Bandai - WonderSwan Color"
+LABEL anyconsole.launch="wsc ws pc2" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="https://thumbnails.libretro.com/Bandai%20-%20WonderSwan%20Color/Named_Boxarts/{name}.png"
 COPY --from=cores /cores/mednafen_wswan_libretro.so /retroarch/core.so
 COPY wsc-system.jq /usr/lib/jq/system.jq
 
 # msx2 MSX2
 FROM retroarch AS msx2
-LABEL anyconsole.launch="m3u dsk mx2 rom cas" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="Microsoft - MSX2"
+LABEL anyconsole.launch="m3u dsk mx2 rom cas" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="https://thumbnails.libretro.com/Microsoft%20-%20MSX2/Named_Boxarts/{name}.png"
 COPY --from=cores /cores/bluemsx_libretro.so /retroarch/core.so
 COPY --from=bluemsx /system /system
 
 # intellivision Intellivision
 FROM retroarch AS intellivision
-LABEL anyconsole.launch="int bin rom" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/system" anyconsole.thumbnails="Mattel - Intellivision"
+LABEL anyconsole.launch="int bin rom" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/system" anyconsole.thumbnails="https://thumbnails.libretro.com/Mattel%20-%20Intellivision/Named_Boxarts/{name}.png"
 COPY --from=cores /cores/freeintv_libretro.so /retroarch/core.so
 
 # atari2600 Atari 2600
 FROM retroarch AS atari2600
-LABEL anyconsole.launch="a26 bin" anyconsole.analog="{\"sticks\":false,\"dial\":\"stella_paddle_analog_absolute\"}" anyconsole.thumbnails="Atari - 2600"
+LABEL anyconsole.launch="a26 bin" anyconsole.analog="{\"sticks\":false,\"dial\":\"stella_paddle_analog_absolute\"}" anyconsole.thumbnails="https://thumbnails.libretro.com/Atari%20-%202600/Named_Boxarts/{name}.png"
 COPY --from=cores /cores/stella_libretro.so /retroarch/core.so
 
 # ps1 PlayStation
 FROM retroarch AS ps1
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gawk
-LABEL anyconsole.launch="m3u chd cue pbp" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"forced\":[\"swanstation_Controller1_ForceAnalog\",\"swanstation_Controller2_ForceAnalog\",\"swanstation_Controller3_ForceAnalog\",\"swanstation_Controller4_ForceAnalog\"]}}" anyconsole.bios="/system" anyconsole.thumbnails="Sony - PlayStation" anyconsole.resolution="{\"height\":240,\"scales\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]}"
+LABEL anyconsole.launch="m3u chd cue pbp" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"forced\":[\"swanstation_Controller1_ForceAnalog\",\"swanstation_Controller2_ForceAnalog\",\"swanstation_Controller3_ForceAnalog\",\"swanstation_Controller4_ForceAnalog\"]}}" anyconsole.bios="/system" anyconsole.thumbnails="https://thumbnails.libretro.com/Sony%20-%20PlayStation/Named_Boxarts/{name}.png" anyconsole.resolution="{\"height\":240,\"scales\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]}"
 COPY --from=cores /cores/swanstation_libretro.so /retroarch/core.so
 COPY ps1.opt /retroarch/core.opt
 COPY ps1-system.jq /usr/lib/jq/system.jq
@@ -148,7 +148,7 @@ ENTRYPOINT ["/retroarch/analog-log", "/retroarch/ps1-analog.awk", "/retroarch/la
 
 # gamecube Nintendo GameCube
 FROM retroarch AS gamecube
-LABEL anyconsole.launch="m3u rvz gcm iso ciso gcz wia tgc dol elf" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Nintendo - GameCube" anyconsole.resolution="{\"height\":528,\"scales\":[1,2,3,4,5,6]}"
+LABEL anyconsole.launch="m3u rvz gcm iso ciso gcz wia tgc dol elf" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="https://thumbnails.libretro.com/Nintendo%20-%20GameCube/Named_Boxarts/{name}.png" anyconsole.resolution="{\"height\":528,\"scales\":[1,2,3,4,5,6]}"
 COPY --from=cores /cores/dolphin_libretro.so /retroarch/core.so
 COPY --from=dolphin /system /system
 COPY gamecube-system.jq /usr/lib/jq/system.jq
@@ -156,7 +156,7 @@ COPY gamecube-resolution.jq /usr/lib/jq/resolution.jq
 
 # psp PlayStation Portable
 FROM retroarch AS psp
-LABEL anyconsole.launch="iso cso pbp" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="Sony - PlayStation Portable" anyconsole.resolution="{\"height\":272,\"scales\":[1,2,3,4,5,6,7,8,9,10]}"
+LABEL anyconsole.launch="iso cso pbp" anyconsole.analog="{\"sticks\":true}" anyconsole.thumbnails="https://thumbnails.libretro.com/Sony%20-%20PlayStation%20Portable/Named_Boxarts/{name}.png" anyconsole.resolution="{\"height\":272,\"scales\":[1,2,3,4,5,6,7,8,9,10]}"
 COPY --from=cores /cores/ppsspp_libretro.so /retroarch/core.so
 COPY --from=ppsspp /system /system
 COPY psp-system.jq /usr/lib/jq/system.jq
@@ -164,7 +164,7 @@ COPY psp-resolution.jq /usr/lib/jq/resolution.jq
 
 # n3ds Nintendo 3DS
 FROM retroarch AS n3ds
-LABEL anyconsole.launch="3ds cci cxi 3dsx zcci" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/saves/Azahar/sysdata" anyconsole.thumbnails="Nintendo - Nintendo 3DS" anyconsole.resolution="{\"height\":240,\"scales\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]}"
+LABEL anyconsole.launch="3ds cci cxi 3dsx zcci" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/saves/Azahar/sysdata" anyconsole.thumbnails="https://thumbnails.libretro.com/Nintendo%20-%20Nintendo%203DS/Named_Boxarts/{name}.png" anyconsole.resolution="{\"height\":240,\"scales\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]}"
 COPY --from=azahar /cores/azahar_libretro.so /retroarch/core.so
 COPY n3ds-system.jq /usr/lib/jq/system.jq
 COPY n3ds-resolution.jq /usr/lib/jq/resolution.jq
@@ -197,7 +197,7 @@ RUN /addresses /redream > /addresses.flags \
 
 # dreamcast Sega Dreamcast
 FROM x11-rewind AS dreamcast
-LABEL anyconsole.launch="m3u gdi chd cdi cue" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.rewind="true" anyconsole.thumbnails="Sega - Dreamcast" anyconsole.resolution="{\"height\":480,\"scales\":[1,2,3,4,5,6,7,8]}"
+LABEL anyconsole.launch="m3u gdi chd cdi cue" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.rewind="true" anyconsole.thumbnails="https://thumbnails.libretro.com/Sega%20-%20Dreamcast/Named_Boxarts/{name}.png" anyconsole.resolution="{\"height\":480,\"scales\":[1,2,3,4,5,6,7,8]}"
 COPY --from=redream-download /redream/redream /opt/redream/redream
 COPY --from=redream-commands /commands.so /opt/redream/
 COPY redream/ /opt/redream/
@@ -212,7 +212,7 @@ RUN appimage /cemu
 # wiiu Nintendo Wii U
 FROM x11 AS wiiu
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y xdotool
-LABEL anyconsole.launch="wux wud iso rpx wua" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.screen="/opt/cemu/screen" anyconsole.thumbnails="Nintendo - Wii U"
+LABEL anyconsole.launch="wux wud iso rpx wua" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.screen="/opt/cemu/screen" anyconsole.thumbnails="https://thumbnails.libretro.com/Nintendo%20-%20Wii%20U/Named_Boxarts/{name}.png"
 COPY --from=cemu-download /cemu /opt/cemu
 COPY cemu/ /opt/cemu/
 COPY wiiu-system.jq /usr/lib/jq/system.jq
@@ -233,9 +233,9 @@ RUN patchelf --add-needed /opt/rpcs3/config-reload.so /rpcs3/usr/bin/rpcs3 \
 
 # ps3 PlayStation 3
 FROM x11 AS ps3
-RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y matchbox-window-manager yq inotify-tools
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y matchbox-window-manager yq inotify-tools 7zip
 COPY with-window-manager /usr/local/bin/
-LABEL anyconsole.launch="sfo" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.install="/opt/rpcs3/install" anyconsole.thumbnails="Sony - PlayStation 3" anyconsole.resolution="{\"height\":720,\"exact\":true}"
+LABEL anyconsole.launch="sfo iso" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.install="/opt/rpcs3/install" anyconsole.thumbnails="https://raw.githubusercontent.com/aldostools/Resources/main/COV/{name}.JPG" anyconsole.resolution="{\"height\":720,\"exact\":true}"
 COPY --from=rpcs3-config-reload /rpcs3 /opt/rpcs3
 RUN ln -s /opt/rpcs3/usr/share/rpcs3 /usr/share/rpcs3
 COPY rpcs3/ /opt/rpcs3/
@@ -251,7 +251,7 @@ RUN appimage /pcsx2
 FROM x11-rewind AS ps2
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y fontconfig freetype harfbuzz libcom_err libSM libICE matchbox-window-manager gawk
 COPY with-window-manager /usr/local/bin/
-LABEL anyconsole.launch="chd iso cso" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"button\":\"guide\"}}" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true" anyconsole.thumbnails="Sony - PlayStation 2" anyconsole.resolution="{\"height\":448,\"scales\":[1,2,3,4,5,6,7,8,9,10,11,12]}"
+LABEL anyconsole.launch="chd iso cso" anyconsole.analog="{\"sticks\":true,\"toggle\":{\"button\":\"guide\"}}" anyconsole.bios="/bios" anyconsole.vulkan="--vulkan" anyconsole.rewind="true" anyconsole.thumbnails="https://thumbnails.libretro.com/Sony%20-%20PlayStation%202/Named_Boxarts/{name}.png" anyconsole.resolution="{\"height\":448,\"scales\":[1,2,3,4,5,6,7,8,9,10,11,12]}"
 COPY --from=pcsx2-download /pcsx2 /opt/pcsx2
 COPY pcsx2/ analog-state.awk analog-log /opt/pcsx2/
 COPY ps2-system.jq /usr/lib/jq/system.jq

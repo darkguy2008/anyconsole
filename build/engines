@@ -12,11 +12,11 @@ RETROARCH_REPO=https://github.com/libretro/RetroArch
 RETROARCH_WAYLAND_FIX=a0e2372730
 HTTP_NOT_FOUND=404
 
-platforms() { docker build -q --call targets,format=json $RECIPES | jq -r '.targets[] | select(.description) | .name'; }
+platforms() { docker build -q --call targets,format=json $RECIPES | jq -r '.targets[] | select(.description) | "\(.name)\t\(.description)"'; }
 
 export_engine() {
   name=docker.io/$GAME_IMAGE/$1:latest
-  export_engine_image "$name" "$BUILT" --target "$1" $RECIPES
+  export_engine_image "$name" "$BUILT" --target "$1" --label "$NAME_LABEL=$2" $RECIPES
   index=$BUILT/$LIST/$1.json
   jq --arg name "$name" '.manifests |= [map(select(.annotations["io.containerd.image.name"] == $name)) | last]' "$BUILT/index.json" > "$index"
   config=$BUILT/$(blob_paths '.config.digest' "$BUILT/$(blob_paths '.manifests[0].digest' "$index")")
@@ -49,7 +49,7 @@ build() {
   warn_retroarch_pin
   rm -rf "$BUILT/index.json" "$BUILT/contracts"
   mkdir -p "$BUILT/$LIST"
-  for platform in $(platforms); do export_engine "$platform"; done
+  platforms | while IFS="$(printf '\t')" read -r platform description; do export_engine "$platform" "$description"; done
   prune "$BUILT"
 }
 

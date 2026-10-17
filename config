@@ -38,7 +38,7 @@ run_qemu() {
     -netdev "user,id=net0,$forwards,smb=$PWD/$TEST_STORE" -device e1000e,netdev=net0,id=$NIC \
     -audiodev none,id=sound -device ich9-intel-hda -device hda-micro,audiodev=sound -vga none -device virtio-vga-gl -display egl-headless "$@"
 }
-engine_contract() { sha256sum "$1/guest/games" | cut -d' ' -f1; }
+engine_contract() { cat "$1/guest/games" "$1/guest/thumbnails" | sha256sum | cut -d' ' -f1; }
 RELEASE_LOCK_SECONDS=1800
 UNDATED=0
 lock_releases() {

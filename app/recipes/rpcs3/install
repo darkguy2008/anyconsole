@@ -9,13 +9,14 @@ install_firmware() {
 }
 
 install_packages() {
+  set -- /game/*.pkg
+  [ -f "$1" ] || return 0
   rm -rf "$STAGING"
-  for package in /game/*.pkg; do
+  for package; do
     XDG_CONFIG_HOME=$STAGING /opt/rpcs3/AppRun --installpkg "$package" --headless || true
   done
   for title in "$STAGING"/rpcs3/dev_hdd0/game/*/PARAM.SFO; do mv "${title%/*}"/* /game/; done
   rm -rf "$STAGING" /game/*.pkg
-  [ -f /game/PARAM.SFO ]
 }
 
 install_firmware
