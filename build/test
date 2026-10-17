@@ -39,6 +39,9 @@ FAKEPAD_L1=5
 FAKEPAD_R1=6
 FAKEPAD_SHARE=9
 FAKEPAD_OPTIONS=10
+GUIDELESS_NAME="Guideless Gamepad"
+GUIDELESS_SELECT=11
+GUIDELESS_START=12
 PLAYSTATION_FACES='{"confirm": "cross", "back": "circle", "x": "square", "y": "triangle"}'
 KEYBOARD_FACES='{"confirm": "Enter", "back": "Esc", "x": "Space", "y": "Tab"}'
 REMOTE_PAD="$REMOTE_PAD_NAME 1"
@@ -135,6 +138,10 @@ states_of() { echo "$PROFILES_DIR/1/states/$(game_name "$1")"; }
 closed_and_running() { echo "(.guide | not) and ($(status_of "$1" running))"; }
 game_has() { echo "(.games[] | select(.key == \"$1\") | .$2 == \"$3\")"; }
 status_of() { game_has "$1" status "$2"; }
+log_out() {
+  expect_reply $STEP_SECONDS 200 .ok --arg action log-out --arg profile "$1"
+  [ "$(jq -r .state.screen $OUT/reply.json)" != logout ] || expect_reply $STEP_SECONDS 200 .ok --arg action confirm-log-out --arg profile "$1"
+}
 close_by_action() { expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of "$1" installed))" --arg action close --arg game "$1"; }
 row_value() { echo ".rows[] | select(.label == \"$1\") | .value"; }
 send() { api POST input "$(printf '%s\n' "$@")" >/dev/null; }
@@ -699,6 +706,12 @@ plug_fakepad() {
   wait_for $STEP_SECONDS fakepad_created "$1"
 }
 fakepad() { bus=$1; shift; guest "docker exec fakepad-$bus sh -c 'echo $* > /tmp/control'"; }
+fakepad_chord() {
+  fakepad "$1" press "$2"
+  fakepad "$1" press "$3"
+  fakepad "$1" release "$3"
+  fakepad "$1" release "$2"
+}
 has_fakepad() { echo ".controllers.controllers | any(.name == \"$FAKEPAD_NAME\" and .connection == \"$1\" and .battery != null)"; }
 
 login_wired_fakepad() {
@@ -722,10 +735,7 @@ hotplug_wired_controller() {
   fakepad usb press
   fakepad usb release
   expect ".guide and .screen == \"guide\" and .rows[.selected].label == \"Controllers\" and .session.input == $wired"
-  fakepad usb press $FAKEPAD_SHARE
-  fakepad usb press $FAKEPAD_OPTIONS
-  fakepad usb release $FAKEPAD_OPTIONS
-  fakepad usb release $FAKEPAD_SHARE
+  fakepad_chord usb $FAKEPAD_SHARE $FAKEPAD_OPTIONS
   expect '.guide and .screen == "controllers"'
   log ok "Share+Options on a pad with a PS button pressed Options instead of closing the guide"
   fakepad usb press $FAKEPAD_CIRCLE
@@ -768,9 +778,25 @@ play_wireless_controller() {
   expect '(.controllers.controllers | length) == 0'
 }
 
+guideless_pad_opens_guide_with_select_start() {
+  plug_fakepad guideless
+  guideless=$(device_id "$GUIDELESS_NAME")
+  expect_reply $STEP_SECONDS 200 .ok --arg action login --arg arg 2 --arg device "$guideless"
+  expect "[$(device_named "$GUIDELESS_NAME") | .pad, .guide] == [2, false]"
+  fakepad_chord guideless $GUIDELESS_SELECT $GUIDELESS_START
+  expect ".guide and .session.input == $guideless"
+  log ok "Select+Start on a pad with no Guide button opened the guide"
+  fakepad_chord guideless $GUIDELESS_SELECT $GUIDELESS_START
+  expect '.guide | not'
+  log_out 2
+  fakepad guideless unplug
+  expect "[$(device_named "$GUIDELESS_NAME")] == []"
+}
+
 test_controllers() {
   hotplug_wired_controller
   play_wireless_controller
+  guideless_pad_opens_guide_with_select_start
   api POST settings "sleep 30" >/dev/null
   expect '.settings.sleep == 30'
   ! api POST settings "sleep 7" 2>/dev/null || { log FAIL "accepted a sleep outside SLEEP_MINUTES" >&2; exit 1; }
@@ -1279,8 +1305,7 @@ test_ps1() {
   expect_reply $STEP_SECONDS 200 .ok --arg action login --arg arg 2 --arg device "$keyboard"
   wait_for $STEP_SECONDS analog_state_has $key "2 off usable"
   log ok "a player with only a keyboard, which has no sticks, gets a digital DualShock on Auto"
-  expect_reply $STEP_SECONDS 200 .ok --arg action log-out --arg profile 2
-  [ "$(jq -r .state.screen $OUT/reply.json)" != logout ] || expect_reply $STEP_SECONDS 200 .ok --arg action confirm-log-out --arg profile 2
+  log_out 2
   close_game $key "A Small Journey"
 }
 
