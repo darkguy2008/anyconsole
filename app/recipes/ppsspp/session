@@ -6,6 +6,6 @@ BOOTED="Booted "
 : > "$LOG"
 mkfifo "$LOG_LINES"
 tail --pid=$$ -n +1 -F "$LOG" > "$LOG_LINES" &
-{ grep -q -F "$BOOTED" < "$LOG_LINES"; RESUME_SLOT= exec rewind /opt/ppsspp/control "$1" "$2" '_%s.ppst'; } <&0 &
+{ grep -q -F "$BOOTED" < "$LOG_LINES"; RESUME_SLOT= exec rewind /opt/ppsspp/control "$1" "$2" "$STATE_SUFFIX"; } <&0 &
 shift 2
 exec /opt/ppsspp/AppRun --log="$LOG" "$@" < /dev/null

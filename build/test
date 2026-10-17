@@ -1424,6 +1424,8 @@ test_all_games() {
   log ok "switch-black shows All games as the last tile in its row of games"
 }
 
+saved_in_background() { guest "grep -q 'ChunkReader: Error opening file for write' $(game_log "$1")"; }
+
 psp_scale_holds() {
   [ "$(guest "cat $REWIND_DIR/$(game_name "$1")/states/$RESOLUTION_FILE")" = "$2" ] &&
     ppsspp_setting_holds "InternalResolution = $2" &&
@@ -1434,6 +1436,8 @@ test_resolution() {
   key=mini-mine-rt/psp
   install_and_play $key "Mini Mine RT"
   expect '.rewind.states >= 1'
+  wait_for $STEP_SECONDS saved_in_background $key
+  log ok "PPSSPP's own save gave way to the forked background save, so its emulator thread skipped the compression"
   tap guide
   expect '.guide and .screen == "guide"'
   highlight "Game resolution"
