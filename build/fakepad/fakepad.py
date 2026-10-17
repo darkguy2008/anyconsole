@@ -3,6 +3,8 @@ import select
 import sys
 import zlib
 
+from hidtools import hid
+from hidtools.device.base_gamepad import BaseGamepad
 from hidtools.device.sony_gamepad import PS4ControllerBluetooth, PS4ControllerUSB
 from hidtools.uhid import UHIDDevice
 
@@ -11,20 +13,53 @@ PS_BUTTON = 13
 HID_DATA_PRESENT = 0xC0
 BLUETOOTH_INPUT_SEED = 0xA1
 BLUETOOTH_CRC_OFFSET = 74
+GUIDELESS_BUTTONS = 12
+BITS_PER_REPORT_BYTE = 8
+PADDING_BITS = -GUIDELESS_BUTTONS % BITS_PER_REPORT_BYTE
+AXIS_MAXIMUM = (1 << BITS_PER_REPORT_BYTE) - 1
+AXES = ("X", "Y", "Z", "Rz")
+AXIS_USAGES = "".join(f" Usage ({axis})\n" for axis in AXES)
+GUIDELESS_DESCRIPTOR = hid.ReportDescriptor.from_human_descr(f"""
+Usage Page (Generic Desktop)
+Usage (Game Pad)
+Collection (Application)
+ Usage Page (Button)
+ Usage Minimum (1)
+ Usage Maximum ({GUIDELESS_BUTTONS})
+ Logical Minimum (0)
+ Logical Maximum (1)
+ Report Size (1)
+ Report Count ({GUIDELESS_BUTTONS})
+ Input (Data,Var,Abs)
+ Report Size ({PADDING_BITS})
+ Report Count (1)
+ Input (Cnst,Arr,Abs)
+ Usage Page (Generic Desktop)
+{AXIS_USAGES} Logical Minimum (0)
+ Logical Maximum ({AXIS_MAXIMUM})
+ Report Size ({BITS_PER_REPORT_BYTE})
+ Report Count ({len(AXES)})
+ Input (Data,Var,Abs)
+End Collection
+""")
 
 
-class Rumble:
+class DualShock:
+    def __init__(self):
+        super().__init__()
+        self.buttons += (PS_BUTTON,)
+
     def output_report(self, data, size, rtype):
         weak, strong = data[self.MOTOR_OFFSET], data[self.MOTOR_OFFSET + 1]
         if weak or strong:
             print(f"rumble {strong} {weak}", flush=True)
 
 
-class UsbPad(Rumble, PS4ControllerUSB):
+class UsbPad(DualShock, PS4ControllerUSB):
     MOTOR_OFFSET = 4
 
 
-class BluetoothPad(Rumble, PS4ControllerBluetooth):
+class BluetoothPad(DualShock, PS4ControllerBluetooth):
     MOTOR_OFFSET = 6
 
     def __init__(self):
@@ -39,7 +74,13 @@ class BluetoothPad(Rumble, PS4ControllerBluetooth):
         return report
 
 
-BUSES = {"usb": UsbPad, "bluetooth": BluetoothPad}
+class GuidelessPad(BaseGamepad):
+    def __init__(self):
+        super().__init__(GUIDELESS_DESCRIPTOR, name="Guideless Gamepad")
+        self.buttons = tuple(range(1, GUIDELESS_BUTTONS + 1))
+
+
+PADS = {"usb": UsbPad, "bluetooth": BluetoothPad, "guideless": GuidelessPad}
 
 
 def obey(pad, words):
@@ -53,8 +94,7 @@ def obey(pad, words):
 
 
 def main():
-    pad = BUSES[sys.argv[1]]()
-    pad.buttons += (PS_BUTTON,)
+    pad = PADS[sys.argv[1]]()
     pad.create_kernel_device()
     os.mkfifo(CONTROL)
     control = os.open(CONTROL, os.O_RDWR)
