@@ -191,11 +191,11 @@ static struct game games[GAMES_MAX];
 static int game_count, active = -1;
 static char stores[STORES_MAX][PATH_MAX];
 static int store_count;
-static pid_t refresher, monitor, thumbnail_fetcher, thumbnail_refresher, thumbnail_clearer, upscalable_probe;
+static pid_t refresher, monitor, thumbnail_fetcher, thumbnail_refresher, thumbnail_clearer, upscalable_probe, image_events;
 static int upscalable_output, upscalable_wanted;
 static char **wanted_thumbnails;
 static int wanted_thumbnail_count, sent_thumbnail_count;
-static int refresh_pending, monitor_output = -1;
+static int refresh_pending, monitor_output = -1, image_events_output = -1;
 static json_tokener *monitor_parser;
 static struct view dashboard[DEPTH_MAX] = {{.screen = HOME, .game = -1}}, guides[PROFILES + 1][DEPTH_MAX];
 static int dashboard_depth = 1, guide_depths[PROFILES + 1], guide_shown, dashboard_open = 1;
@@ -629,8 +629,7 @@ static void scan(const char *directory, int store) {
 }
 
 static void probe_upscalable(void) {
-    if (upscalable_probe || !upscalable_wanted) return;
-    upscalable_wanted = 0;
+    if (upscalable_probe) { upscalable_wanted = 1; return; }
     upscalable_probe = spawn_reading((char *[]){"games", "upscalable", NULL}, &upscalable_output, log_file);
     if (upscalable_probe < 0) upscalable_probe = 0;
 }
@@ -641,14 +640,27 @@ static void read_upscalable(void) {
     if (!upscalable) upscalable = json_object_new_object();
     close(upscalable_output);
     upscalable_probe = 0;
+    if (upscalable_wanted) {
+        upscalable_wanted = 0;
+        probe_upscalable();
+    }
+}
+
+static void start_image_events(void) {
+    if (image_events > 0 || access(DOCKER_SOCKET, F_OK)) return;
+    image_events = spawn_reading((char *[]){"docker", "events", "--filter", "type=image", NULL}, &image_events_output, log_file);
+    if (image_events < 0) image_events = 0;
     probe_upscalable();
+}
+
+static void read_image_events(void) {
+    char chunk[BUFSIZ];
+    if (read(image_events_output, chunk, sizeof chunk) > 0) probe_upscalable();
 }
 
 static void rescan_installed(void) {
     for (int i = 0; i < game_count; i++) games[i].installed = 0;
     scan(GAMES_DIR, -1);
-    upscalable_wanted = 1;
-    probe_upscalable();
 }
 
 static void rescan(void) {
@@ -2963,6 +2975,10 @@ static void reap(void) {
             monitor = 0;
             close(monitor_output);
         }
+        if (pid == image_events) {
+            image_events = 0;
+            close(image_events_output);
+        }
         if (pid == upscalable_probe) {
             read_upscalable();
             changed = 1;
@@ -2999,7 +3015,7 @@ static int read_game_change(struct inotify_event *event) {
     return 0;
 }
 
-static void read_changes(int runtime_watch, int display_watch, int controllers_watch) {
+static void read_changes(int runtime_watch, int display_watch, int controllers_watch, int docker_watch) {
     char buffer[BUFSIZ] __attribute__((aligned(__alignof__(struct inotify_event))));
     ssize_t count = read(watcher, buffer, sizeof buffer);
     for (char *at = buffer; count > 0 && at < buffer + count;) {
@@ -3007,6 +3023,7 @@ static void read_changes(int runtime_watch, int display_watch, int controllers_w
         at += sizeof *event + event->len;
         if (!event->len || read_game_change(event) || skin_changed(event)) continue;
         if (event->wd == runtime_watch && !strcmp(event->name, PIPEWIRE_SOCKET)) start_monitor();
+        else if (event->wd == docker_watch && !strcmp(event->name, basename(DOCKER_SOCKET))) start_image_events();
         else if (event->wd == display_watch && !strcmp(event->name, basename(DISPLAY_FILE))) {
             read_display();
         } else if (event->wd == controllers_watch && !strcmp(event->name, basename(CONTROLLERS_FILE))) {
@@ -3293,10 +3310,10 @@ static int numbers(const char *list, int *parsed, int max) {
 }
 
 int main(void) {
-    enum { WAYLAND, CHANGES, SIGNALS, REPEAT, NOTIFICATIONS, MESSAGES, SAVE, SKIN, DECODED, MONITOR, LISTENER, FIXED };
+    enum { WAYLAND, CHANGES, SIGNALS, REPEAT, NOTIFICATIONS, MESSAGES, SAVE, SKIN, DECODED, MONITOR, IMAGE_EVENTS, LISTENER, FIXED };
     struct pollfd watched[FIXED + JOB_FDS * GAMES_MAX + REQUESTS_MAX];
     int jobs[GAMES_MAX], served[REQUESTS_MAX];
-    char stores_directory[PATH_MAX], display_directory[PATH_MAX], settings_directory[PATH_MAX], controllers_directory[PATH_MAX];
+    char stores_directory[PATH_MAX], display_directory[PATH_MAX], settings_directory[PATH_MAX], controllers_directory[PATH_MAX], docker_directory[PATH_MAX];
     sigset_t signals;
     signal(SIGPIPE, SIG_IGN);
     sigemptyset(&signals);
@@ -3314,6 +3331,7 @@ int main(void) {
     directory_of(DISPLAY_FILE, display_directory);
     directory_of(SETTINGS_FILE, settings_directory);
     directory_of(CONTROLLERS_FILE, controllers_directory);
+    directory_of(DOCKER_SOCKET, docker_directory);
     resolution_count = numbers(RESOLUTIONS, resolutions, RESOLUTIONS_MAX);
     upscalable = json_object_new_object();
     sleep_choice_count = numbers(SLEEP_MINUTES, sleep_choices, SLEEP_CHOICES_MAX);
@@ -3324,6 +3342,7 @@ int main(void) {
     inotify_add_watch(watcher, settings_directory, IN_MOVED_TO | IN_MASK_ADD);
     int display_watch = inotify_add_watch(watcher, display_directory, IN_MOVED_TO);
     int controllers_watch = inotify_add_watch(watcher, controllers_directory, IN_MOVED_TO);
+    int docker_watch = inotify_add_watch(watcher, docker_directory, IN_CREATE);
     repeat_timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
     notification_timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
     save_timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
@@ -3355,10 +3374,12 @@ int main(void) {
     rescan();
     refresh();
     start_monitor();
+    start_image_events();
     settle();
     for (;;) {
         int count = FIXED, job_count = 0, served_count = 0;
         watched[MONITOR] = (struct pollfd){.fd = monitor > 0 ? monitor_output : -1, .events = POLLIN};
+        watched[IMAGE_EVENTS] = (struct pollfd){.fd = image_events > 0 ? image_events_output : -1, .events = POLLIN};
         for (int i = 0; i < game_count; i++) {
             if (!games[i].job) continue;
             jobs[job_count++] = i;
@@ -3381,9 +3402,10 @@ int main(void) {
             if (watched[FIXED + JOB_FDS * i + 1].revents) read_errors(jobs[i]);
         }
         if (watched[MONITOR].revents) read_monitor();
+        if (watched[IMAGE_EVENTS].revents) read_image_events();
         uint64_t expirations;
         struct signalfd_siginfo signal_info;
-        if (watched[CHANGES].revents) read_changes(runtime_watch, display_watch, controllers_watch);
+        if (watched[CHANGES].revents) read_changes(runtime_watch, display_watch, controllers_watch, docker_watch);
         if (watched[SIGNALS].revents && read(watched[SIGNALS].fd, &signal_info, sizeof signal_info) > 0) {
             if (signal_info.ssi_signo == SIGUSR1) refresh();
             else reap();
