@@ -24,7 +24,7 @@ PS2_BOOT_SECONDS=40
 PS3_BOOT_SECONDS=30
 PSP_WIDTH=480
 PSP_HEIGHT=272
-PPSSPP_INI=/engine/ppsspp/PSP/SYSTEM/ppsspp.ini
+PPSSPP_INI=$ENGINES/psp/engine/ppsspp/PSP/SYSTEM/ppsspp.ini
 CRAB_PRIDE_FLAG_PRESSES="rightshoulder rightshoulder start"
 BOOT_SECONDS=180
 INSTALL_SECONDS=1200
@@ -140,6 +140,7 @@ game_log() { echo "$LOG_DIR/$(game_name "$1").log"; }
 saves_of() { echo "$PROFILES_DIR/1/saves/$(game_name "$1")"; }
 states_of() { echo "$PROFILES_DIR/1/states/$(game_name "$1")"; }
 closed_and_running() { echo "(.guide | not) and ($(status_of "$1" running))"; }
+close_guide() { tap guide; expect "$(closed_and_running "$1")"; }
 game_has() { echo "(.games[] | select(.key == \"$1\") | .$2 == \"$3\")"; }
 status_of() { game_has "$1" status "$2"; }
 log_out() {
@@ -383,8 +384,7 @@ rewind_to_older_state() {
   open_rewind_row "$1"
   tap dpleft
   expect '.rewind.back == 1 and .rows[.selected].value != "Now"'
-  tap guide
-  expect "$(closed_and_running "$1")"
+  close_guide "$1"
   tap guide
   expect '.guide and .rewind.back == 0 and .rows[.selected].label == "Rewind" and .rows[.selected].value == "Now"'
   snapshot rewind-now
@@ -429,8 +429,7 @@ save_states() {
   expect '.guide and .views[-1].screen == "guide" and .saves.slots[1] == null'
   guest "[ ! -e $saved ]"
   log ok "Y deletes the slot after the dialog confirms"
-  tap guide
-  expect "$(closed_and_running "$1")"
+  close_guide "$1"
 }
 
 install_and_play() {
@@ -520,7 +519,7 @@ close_game() {
 
 game_container() { echo "\$(docker ps -q --filter label=$GAME_LABEL=$1)"; }
 
-ppsspp_setting_holds() { guest "docker exec $(game_container "$1") grep -qx '$2' $PPSSPP_INI"; }
+ppsspp_setting_holds() { guest "grep -qx '$1' $PPSSPP_INI"; }
 
 core_options_hold() {
   for file in core vulkan; do
@@ -535,12 +534,16 @@ container_of() { guest "echo $(game_container "$1")"; }
 
 restarted_with_state() { [ "$(container_of "$1")" != "$2" ] && loaded_a_state "$1" "$3"; }
 
+guide_view() { state | jq -c '{guide, screen, selected}'; }
+playing_under_guide() { echo "((.guide and $(status_of "$1" paused)) or $(closed_and_running "$1"))"; }
+restart_settled() { echo "$(playing_under_guide "$1") and .restarting == null and .launching == null and .display.held == null"; }
+
 restart_into() {
   restarting=$1 loaded=$2 container=$(container_of "$1") states=$(state | jq .rewind.states)
   shift 2
   "$@" >/dev/null
   wait_for $STEP_SECONDS restarted_with_state "$restarting" "$container" "$loaded"
-  expect "$(closed_and_running "$restarting") and .rewind.states > $states"
+  expect "$(restart_settled "$restarting") and .rewind.states > $states"
 }
 
 play_every_other_game() {
@@ -1009,7 +1012,7 @@ resume_game() {
 }
 
 back_to_dashboard() {
-  tap guide
+  holds .guide >/dev/null || tap guide
   expect '.guide and .screen == "guide"'
   choose Dashboard
   expect '.dashboard and (.guide | not) and .screen == "home"'
@@ -1422,8 +1425,8 @@ test_all_games() {
 }
 
 psp_scale_holds() {
-  [ "$(guest "docker exec $(game_container "$1") cat /states/resolution")" = "$2" ] &&
-    ppsspp_setting_holds "$1" "InternalResolution = $2" &&
+  [ "$(guest "cat $REWIND_DIR/$(game_name "$1")/states/$RESOLUTION_FILE")" = "$2" ] &&
+    ppsspp_setting_holds "InternalResolution = $2" &&
     holds ".display.frame == \"$((PSP_WIDTH * $2))x$((PSP_HEIGHT * $2))\""
 }
 
@@ -1435,12 +1438,24 @@ test_resolution() {
   expect '.guide and .screen == "guide"'
   highlight "Game resolution"
   expect "($(row_value "Game resolution")) == \"Auto (272p)\""
-  restart_into $key 'Loading state' tap dpright
-  expect '.settings.resolution.psp == 720'
+  view=$(guide_view) container=$(container_of $key)
+  tap dpright
+  expect ".restarting.game == \"$key\" and .launching == null and {guide, screen, selected} == $view and $(status_of $key restarting)"
+  log ok "720p restarts $key behind the guide with a loader on the game, keeping the guide on Game resolution"
+  wait_for $STEP_SECONDS restarted_with_state $key "$container" 'Loading state'
+  expect "$(restart_settled $key) and .guide and {guide, screen, selected} == $view and .settings.resolution.psp == 720"
   wait_for $STEP_SECONDS psp_scale_holds $key 2
-  log ok "720p restarts $key from the guide at 2x, the biggest scale whose 544 lines fit, and loads the state it left"
+  log ok "the guide stays up on Game resolution while $key shows its state at 2x under it, the biggest scale whose 544 lines fit"
+  container=$(container_of $key)
+  tap dpright
+  expect ".restarting.game == \"$key\""
+  tap guide
+  wait_for $STEP_SECONDS restarted_with_state $key "$container" 'Loading state'
+  expect "$(restart_settled $key) and (.guide | not) and .settings.resolution.psp == 1080"
+  wait_for $STEP_SECONDS psp_scale_holds $key 3
+  log ok "closing the guide while 1080p restarts $key lets it play on at 3x as soon as its state is up"
   expect_reply $STEP_SECONDS 200 '.ok and .state.screen == "resolutions"' --arg action open-resolutions
-  expect "($(row_value "PlayStation Portable")) == \"720p\" and all(.rows[]; .label != \"Nintendo Entertainment System\")"
+  expect "($(row_value "PlayStation Portable")) == \"1080p\" and all(.rows[]; .label != \"Nintendo Entertainment System\")"
   log ok "Settings lists the Game resolution of each installed platform that can upscale"
   expect_reply $STEP_SECONDS 200 ".ok and (.state | $(status_of $key running)) and (.state.dashboard | not)" --arg action resume --arg game $key
   restart_into $key 'Loading state' api POST settings "resolution psp 1440"
@@ -1550,7 +1565,7 @@ test_ps2() {
   api POST settings "game-language en" >/dev/null
   expect ".display.frame == \"$(picture_frame 4 3)\""
   wait_for $STEP_SECONDS ps2_patch_enabled $key "$PS2_STANDARD_PATCH"
-  restart_into $key 'Loading GS' expect_reply $STEP_SECONDS 200 ".ok and .state.settings.picture == \"enhanced\" and (.state | $(closed_and_running $key))" --arg action picture --arg step -1
+  restart_into $key 'Loading GS' expect_reply $STEP_SECONDS 200 ".ok and .state.settings.picture == \"enhanced\" and (.state | .guide and $(restart_settled $key))" --arg action picture --arg step -1
   expect ".display.frame == \"$(picture_frame 16 9)\""
   wait_for $STEP_SECONDS ps2_patch_enabled $key "$PS2_WIDESCREEN_PATCH"
   log ok "Enhanced restarts $key with its widescreen patch, loads the state it left, and the compositor widens its window to 16:9"
@@ -1559,7 +1574,7 @@ test_ps2() {
   wait_for $STEP_SECONDS ps2_patch_enabled $key "$PS2_STANDARD_PATCH"
   log ok "Original restarts $key in its 4:3 window with its standard patch and loads the state it left"
   restart_into $key 'Loading GS' api POST settings "resolution ps2 1080"
-  wait_for $STEP_SECONDS guest "docker exec $(game_container $key) grep -qx 'upscale_multiplier = 2' /engine/PCSX2/inis/PCSX2.ini"
+  wait_for $STEP_SECONDS guest "grep -qx 'upscale_multiplier = 2' $PCSX2_CONFIG/inis/PCSX2.ini"
   log ok "1080p restarts $key with PCSX2 at 2x, the biggest scale whose 896 lines fit"
   restart_into $key 'Loading GS' api POST settings "resolution ps2 0"
   ps2_nvm_holds $PS2_ENGLISH $TEST_ZONE_MINUTES

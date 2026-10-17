@@ -376,16 +376,32 @@ function Attract({ state, theme }) {
     </view>`;
 }
 
+function Bar({ percent, width, theme }) {
+  return html`
+    <view style=${{ width, height: 14, borderRadius: 7, backgroundColor: theme.surface }}>
+      <view style=${{ width: `${percent}%`, height: '100%', borderRadius: 7, backgroundColor: accent }} transition=${{ width: 300 }} />
+    </view>`;
+}
+
 function Launch({ game, percent, theme }) {
   return html`
     <view style=${{ ...fill, backgroundColor: theme.background, alignItems: 'center', justifyContent: 'center', gap: 40 }}
       from=${{ opacity: 0 }} transition=${{ opacity: 200 }}>
       <${Tile} game=${game} size=${360} theme=${theme} />
       <text style=${{ fontSize: 44, fontWeight: 800, maxWidth: 1400, textAlign: 'center' }}>${game.title}</text>
-      <view style=${{ width: 560, height: 14, borderRadius: 7, backgroundColor: theme.surface }}>
-        <view style=${{ width: `${percent}%`, height: '100%', borderRadius: 7, backgroundColor: accent }} transition=${{ width: 300 }} />
-      </view>
+      <${Bar} percent=${percent} width=${560} theme=${theme} />
       <text style=${{ fontSize: 28, color: theme.muted, fontWeight: 700 }}>${game.status}</text>
+    </view>`;
+}
+
+function Restart({ game, percent, right, theme }) {
+  return html`
+    <view style=${{ position: 'absolute', left: 0, right, top: 0, bottom: barHeight, alignItems: 'center', justifyContent: 'center' }}>
+      <view style=${{ backgroundColor: theme.panel, backdropBlur: 1, borderRadius: 32, paddingVertical: 28, paddingHorizontal: 40, gap: 18, alignItems: 'center',
+        shadowColor: '#00000066', shadowBlur: 30 }} from=${{ opacity: 0 }} transition=${{ opacity: 180 }}>
+        <${Bar} percent=${percent} width=${360} theme=${theme} />
+        <text style=${{ fontSize: 28, color: theme.muted, fontWeight: 700 }}>${game.status}</text>
+      </view>
     </view>`;
 }
 
@@ -444,6 +460,8 @@ export function app(theme) {
     const shownDashboard = useLatest(dashboard);
     const launch = state.launching;
     const launched = launch && state.games.find(game => game.key === launch.game);
+    const restart = state.restarting;
+    const restarted = restart && state.games.find(game => game.key === restart.game);
     const preview = state.rewind.preview ?? state.saves.preview;
     const shownHints = hints(state);
     const lastTile = useNavigation(dashboard);
@@ -456,6 +474,7 @@ export function app(theme) {
           </view>`}
         ${launched && html`<${Launch} game=${launched} percent=${launch.percent} theme=${theme} />`}
         ${preview && html`<view style=${{ ...fill, backgroundColor: '#000000' }}><image src=${preview} style=${fill} /></view>`}
+        ${restarted && html`<${Restart} game=${restarted} percent=${restart.percent} right=${guide ? guideSpace : 0} theme=${theme} />`}
         <${Guide} state=${state} view=${guide} theme=${theme} />
         ${state.rewind.choosing && html`<${Carousel} cells=${rewindCells(state.rewind)} selected=${state.rewind.back} reverse=${true} theme=${theme} />`}
         ${state.saves.choosing && html`<${Carousel} cells=${saveCells(state.saves)} selected=${state.saves.slot} theme=${theme} />`}

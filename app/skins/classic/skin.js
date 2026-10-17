@@ -78,14 +78,30 @@ function Attract({ state }) {
     </view>`;
 }
 
+function Bar({ percent, width }) {
+  return html`
+    <view style=${{ width, height: 24, borderRadius: 12, borderWidth: 3, borderColor: white, padding: 4 }}>
+      <view style=${{ width: `${percent}%`, height: '100%', borderRadius: 8, backgroundColor: white }} transition=${{ width: 300 }} />
+    </view>`;
+}
+
 function Launch({ game, percent }) {
   return html`
     <view style=${{ ...fill, backgroundColor: black, alignItems: 'center', justifyContent: 'center', gap: 32 }} from=${{ opacity: 0 }} transition=${fade}>
       <text style=${{ fontSize: 48, fontWeight: 600, maxWidth: 1400, textAlign: 'center' }}>${game.title}</text>
-      <view style=${{ width: 640, height: 24, borderRadius: 12, borderWidth: 3, borderColor: white, padding: 4 }}>
-        <view style=${{ width: `${percent}%`, height: '100%', borderRadius: 8, backgroundColor: white }} transition=${{ width: 300 }} />
-      </view>
+      <${Bar} percent=${percent} width=${640} />
       <text style=${{ fontSize: 32, color: grey }}>${game.status}</text>
+    </view>`;
+}
+
+function Restart({ game, percent, left }) {
+  return html`
+    <view style=${{ position: 'absolute', left, right: 0, top: 0, bottom: barHeight, alignItems: 'center', justifyContent: 'center' }}>
+      <view style=${{ backgroundColor: dim, borderRadius: 18, paddingVertical: 24, paddingHorizontal: 32, gap: 16, alignItems: 'center' }}
+        from=${{ opacity: 0 }} transition=${fade}>
+        <${Bar} percent=${percent} width=${320} />
+        <text style=${{ fontSize: 28 }}>${game.status}</text>
+      </view>
     </view>`;
 }
 
@@ -150,6 +166,8 @@ function App() {
   const players = state.session.players;
   const launch = state.launching;
   const launched = launch && state.games.find(game => game.key === launch.game);
+  const restart = state.restarting;
+  const restarted = restart && state.games.find(game => game.key === restart.game);
   const preview = state.rewind.preview ?? state.saves.preview;
   const shownHints = hints(state);
   return html`
@@ -158,6 +176,7 @@ function App() {
         <${Panel} view=${dashboard} players=${players} width=${1920} shown=${!!dashboard && !launch} side=${0} />`}
       ${launched && html`<${Launch} game=${launched} percent=${launch.percent} />`}
       ${preview && html`<view style=${{ ...fill, backgroundColor: black }}><image src=${preview} style=${fill} /></view>`}
+      ${restarted && html`<${Restart} game=${restarted} percent=${restart.percent} left=${guide ? guideWidth : 0} />`}
       <${Panel} view=${guide} players=${players} width=${guideWidth} shown=${!!guide} side=${-guideWidth} />
       ${state.rewind.choosing && html`<${Carousel} cells=${rewindCells(state.rewind)} selected=${state.rewind.back} reverse=${true} />`}
       ${state.saves.choosing && html`<${Carousel} cells=${saveCells(state.saves)} selected=${state.saves.slot} />`}

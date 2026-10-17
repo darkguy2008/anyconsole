@@ -203,9 +203,9 @@ static int retro_pass_count;
 static struct wlr_swapchain *retro_chain;
 static GLuint retro_frames;
 static int retro;
-static char pinned[TEXT_MAX], chosen_mode[TEXT_MAX], *written_state;
+static char pinned[TEXT_MAX], chosen_mode[TEXT_MAX], held_game[TEXT_MAX], *written_state;
 static struct wlr_output_mode *applied_mode;
-static int shown_refresh, watcher, log_watch, manifest_watch = -1;
+static int shown_refresh, watcher, log_watch, hold_watch, releasing, manifest_watch = -1;
 static int canvas_width, canvas_height, started, stopping, dirty;
 static unsigned connections;
 static double pointer_x, pointer_y;
@@ -401,6 +401,7 @@ static void redraw(void) {
 }
 
 static void forget_still(void) {
+    if (*held_game) return;
     if (still) wlr_texture_destroy(still);
     if (still_soft) wlr_texture_destroy(still_soft);
     if (still_buffer) wlr_buffer_unlock(still_buffer);
@@ -470,6 +471,7 @@ static void write_state(void) {
     json_object_object_add(state, "canvas", json_object_new_string(canvas));
     json_object_object_add(state, "pending", pending ? json_object_new_string(label(pending->output)) : NULL);
     json_object_object_add(state, "shown", shown ? json_object_new_string(shown->app_id) : NULL);
+    json_object_object_add(state, "held", *held_game ? json_object_new_string(held_game) : NULL);
     json_object_object_add(state, "frame", json_object_new_string(frame));
     json_object_object_add(state, "retro", *tv_size ? json_object_new_string(tv_size) : NULL);
     char *serialized = strdup(json_object_to_json_string_ext(state, JSON_C_TO_STRING_PLAIN));
@@ -561,7 +563,7 @@ static int overlay_visible(void) { return overlay && overlay->surface->mapped; }
 
 static int scan_out(struct wlr_output_state *state) {
     struct wlr_surface *surface = shown ? shown->toplevel->base->surface : NULL;
-    if (!surface || !surface->buffer || overlay_visible() || retro_shown() || !wlr_output_is_direct_scanout_allowed(active->output)) return 0;
+    if (!surface || !surface->buffer || overlay_visible() || *held_game || retro_shown() || !wlr_output_is_direct_scanout_allowed(active->output)) return 0;
     struct wlr_buffer *buffer = &surface->buffer->base;
     struct wlr_box picture = place(area(), shown->display_width, buffer->height);
     if (picture.width != buffer->width || picture.height != buffer->height) return 0;
@@ -959,11 +961,11 @@ static void paint(struct wlr_output_state *state) {
     struct wlr_texture *surface = shown ? wlr_surface_get_texture(shown->toplevel->base->surface) : NULL, *game;
     struct wlr_texture *interface = overlay_visible() ? wlr_surface_get_texture(overlay->surface) : NULL;
     struct wlr_buffer *held = NULL;
-    int width = box.width;
-    if (interface) game = freeze(surface);
+    int width = box.width, frozen = interface || *held_game;
+    if (frozen) game = freeze(surface);
     else game = game_picture(surface, &held, &width);
     if (interface && overlay_blur() && still && !still_soft) still_soft = blurred(still, still_blur);
-    enum filter filter = game && !interface ? choose_filter(place(box, width, game->height), game->width, game->height)
+    enum filter filter = game && !frozen ? choose_filter(place(box, width, game->height), game->width, game->height)
                                             : NEAREST;
     if (!(filter == PIXEL && game && draw_pixel(state, box, game, width))) {
         struct wlr_render_pass *pass = wlr_output_begin_render_pass(output, state, NULL);
@@ -971,6 +973,31 @@ static void paint(struct wlr_output_state *state) {
         wlr_render_pass_submit(pass);
     }
     release_picture(game, held);
+}
+
+static void release_hold(void) {
+    *held_game = '\0';
+    releasing = 0;
+    forget_still();
+    write_state();
+    redraw();
+}
+
+static void read_hold(void) {
+    json_object *hold = json_object_from_file(PICTURE_HOLD_FILE), *game;
+    char key[TEXT_MAX];
+    snprintf(key, sizeof key, "%s", json_object_object_get_ex(hold, "game", &game) ? json_object_get_string(game) : "");
+    json_object_put(hold);
+    if (!*key && !*held_game) return;
+    if (!*key && shown && !strcmp(shown->app_id, held_game)) releasing = 1;
+    else if (!*key) release_hold();
+    else {
+        if (!*held_game && active) freeze(shown ? wlr_surface_get_texture(shown->toplevel->base->surface) : NULL);
+        snprintf(held_game, sizeof held_game, "%s", key);
+        releasing = 0;
+        write_state();
+        redraw();
+    }
 }
 
 static void on_frame(struct wl_listener *listener, void *data) {
@@ -1050,6 +1077,7 @@ static void read_manifest(struct window *window) {
 }
 
 static void show(struct window *window) {
+    if (*held_game && (window ? strcmp(window->app_id, held_game) != 0 : releasing)) release_hold();
     if (shown) {
         wlr_xdg_toplevel_set_activated(shown->toplevel, false);
         wlr_foreign_toplevel_handle_v1_set_activated(shown->handle, false);
@@ -1171,7 +1199,10 @@ static void on_window_commit(struct wl_listener *listener, void *data) {
         write_state();
     }
     if (window != shown) return;
-    if (surface->current.committed & WLR_SURFACE_STATE_BUFFER) forget_still();
+    if (surface->current.committed & WLR_SURFACE_STATE_BUFFER) {
+        if (releasing) release_hold();
+        else forget_still();
+    }
     redraw();
 }
 
@@ -1400,6 +1431,10 @@ static int on_watched_change(int fd, uint32_t mask, void *data) {
         at += sizeof *event + event->len;
         if (!event->len) continue;
         if (event->wd == manifest_watch && !strcmp(event->name, MANIFEST)) read_manifest(shown);
+        else if (event->wd == hold_watch) {
+            if (!strcmp(event->name, basename(PICTURE_HOLD_FILE))) read_hold();
+            continue;
+        }
         else if (!strcmp(event->name, basename(SETTINGS_FILE))) load_settings();
         else if (event->wd == log_watch) {
             struct window *window;
@@ -1410,6 +1445,8 @@ static int on_watched_change(int fd, uint32_t mask, void *data) {
     }
     return 0;
 }
+
+static void directory_of(const char *path, char *directory) { snprintf(directory, PATH_MAX, "%.*s", (int)(strrchr(path, '/') - path), path); }
 
 static int on_child(int signal_number, void *data) {
     (void)signal_number, (void)data;
@@ -1434,7 +1471,7 @@ static pid_t spawn_session(char *argv[]) {
 
 int main(int argc, char *argv[]) {
     static struct wl_listener new_output, new_input, new_toplevel, new_layer_surface, new_constraint;
-    char settings_directory[PATH_MAX];
+    char settings_directory[PATH_MAX], hold_directory[PATH_MAX];
     if (argc < 2) { fprintf(stderr, "usage: compositor <session command>...\n"); return 1; }
     wlr_log_init(WLR_INFO, NULL);
     wl_list_init(&displays);
@@ -1481,10 +1518,12 @@ int main(int argc, char *argv[]) {
     const char *socket = wl_display_add_socket_auto(display);
     if (!socket) { fprintf(stderr, "compositor: no wayland socket\n"); return 1; }
     setenv("WAYLAND_DISPLAY", socket, 1);
-    snprintf(settings_directory, sizeof settings_directory, "%.*s", (int)(strrchr(SETTINGS_FILE, '/') - SETTINGS_FILE), SETTINGS_FILE);
+    directory_of(SETTINGS_FILE, settings_directory);
     watcher = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
     inotify_add_watch(watcher, settings_directory, IN_MOVED_TO);
     log_watch = inotify_add_watch(watcher, LOG_DIR, IN_MODIFY);
+    directory_of(PICTURE_HOLD_FILE, hold_directory);
+    hold_watch = inotify_add_watch(watcher, hold_directory, IN_MOVED_TO | IN_DELETE);
     wl_event_loop_add_fd(loop, watcher, WL_EVENT_READABLE, on_watched_change, NULL);
     wl_event_loop_add_signal(loop, SIGCHLD, on_child, NULL);
     flip_retry = wl_event_loop_add_timer(loop, on_flip_retry, NULL);

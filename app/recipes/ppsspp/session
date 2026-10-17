@@ -1,5 +1,11 @@
 #!/bin/sh
 set -eu
-RESUME_SLOT= rewind /opt/ppsspp/control "$1" "$2" '_%s.ppst' <&0 &
+LOG=/tmp/ppsspp.log
+LOG_LINES=/tmp/ppsspp-log-lines
+BOOTED="Booted "
+: > "$LOG"
+mkfifo "$LOG_LINES"
+tail --pid=$$ -n +1 -F "$LOG" > "$LOG_LINES" &
+{ grep -q -F "$BOOTED" < "$LOG_LINES"; RESUME_SLOT= exec rewind /opt/ppsspp/control "$1" "$2" '_%s.ppst'; } <&0 &
 shift 2
-exec /opt/ppsspp/AppRun "$@" < /dev/null
+exec /opt/ppsspp/AppRun --log="$LOG" "$@" < /dev/null
