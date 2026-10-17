@@ -1,0 +1,93 @@
+#!/usr/bin/python3
+#
+# Find the addresses the screenshot-retry hook needs in PPSSPPSDL.
+#
+# PPSSPPSDL is stripped and links libstdc++ statically, so there are no symbols to read.
+# The hook needs the address of the pending screenshot's std::function
+# (g_pendingScreenshot.callback) and the addresses of the failure paths that dispatch it.
+# Rather than hardcode them, read them from the binary, so a re-released v1.20.4 build or
+# a rebased binary still works. See PPSSPP_BUG.md for the bug itself.
+#
+# Every failure path ends with the same two instructions: load the std::function into
+# %rdi, then call through its _M_invoke slot (the third pointer, at +0x18):
+#
+#     lea    rdi, [rip + X]             # X = &g_pendingScreenshot.callback
+#     call   qword ptr [rip + X + 0x18] # callback._M_invoke
+#
+# Four of these share one X, and no other std::function in the binary is dispatched
+# exactly four times this way. That group is what the hook patches. Prints gcc -D flags,
+# or exits non-zero so the build stops instead of shipping a hook that patches nothing.
+
+import sys
+
+from capstone import CS_ARCH_X86, CS_MODE_64, Cs
+from capstone.x86 import X86_OP_MEM, X86_OP_REG, X86_REG_RDI, X86_REG_RIP
+from elftools.elf.elffile import ELFFile
+
+DISPATCHES = 4
+INVOKE_OFFSET = 0x18
+LEA_RDI_RIP = b"\x48\x8d\x3d"
+
+
+def slot_lea(instruction):
+    return (
+        instruction.mnemonic == "lea"
+        and len(instruction.operands) == 2
+        and instruction.operands[0].type == X86_OP_REG
+        and instruction.operands[0].reg == X86_REG_RDI
+        and instruction.operands[1].type == X86_OP_MEM
+        and instruction.operands[1].mem.base == X86_REG_RIP
+    )
+
+
+def slot_call(instruction):
+    return (
+        instruction.mnemonic == "call"
+        and len(instruction.operands) == 1
+        and instruction.operands[0].type == X86_OP_MEM
+        and instruction.operands[0].mem.base == X86_REG_RIP
+    )
+
+
+def rip_target(instruction, operand):
+    return instruction.address + instruction.size + operand.mem.disp
+
+
+def dispatch_sites(data, base):
+    decoder = Cs(CS_ARCH_X86, CS_MODE_64)
+    decoder.detail = True
+    sites = []
+    for offset in range(len(data) - 13 + 1):
+        if data[offset : offset + 3] != LEA_RDI_RIP:
+            continue
+        decoded = list(decoder.disasm(data[offset : offset + 13], base + offset))
+        if len(decoded) < 2 or not slot_lea(decoded[0]) or not slot_call(decoded[1]):
+            continue
+        callback = rip_target(decoded[0], decoded[0].operands[1])
+        if rip_target(decoded[1], decoded[1].operands[0]) != callback + INVOKE_OFFSET:
+            continue
+        sites.append((decoded[0].address, callback))
+    return sites
+
+
+def main(path):
+    with open(path, "rb") as binary:
+        text = ELFFile(binary).get_section_by_name(".text")
+        if not text:
+            sys.exit(f"{path}: no .text section")
+        by_callback = {}
+        for site, callback in dispatch_sites(text.data(), text["sh_addr"]):
+            by_callback.setdefault(callback, []).append(site)
+    found = [
+        (callback, sorted(sites))
+        for callback, sites in by_callback.items()
+        if len(sites) == DISPATCHES
+    ]
+    if len(found) != 1:
+        sys.exit(f"{path}: expected one callback with {DISPATCHES} failure sites, found {len(found)}")
+    callback, sites = found[0]
+    print(f"-DSCREENSHOT_CALLBACK={callback:#x}")
+    print("-DSCREENSHOT_SITES=" + ",".join(f"{site:#x}" for site in sites))
+
+
+main(sys.argv[1])

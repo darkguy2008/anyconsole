@@ -260,11 +260,14 @@ ADD --checksum=sha256:661c098e6b7f7610171a57b7c533ce8bba6f2312b71e76d61e85046197
 RUN appimage /ppsspp
 
 FROM fedora AS ppsspp-background-save
-RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gcc patchelf
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gcc patchelf python3-capstone python3-pyelftools
 COPY --from=ppsspp-download /ppsspp /ppsspp
-COPY ppsspp/background-save.c /
+COPY ppsspp/background-save.c ppsspp/screenshot-retry.c ppsspp/addresses /
 RUN patchelf --add-needed /opt/ppsspp/background-save.so /ppsspp/shared/bin/PPSSPPSDL \
- && gcc -O2 -Wall -Wextra -Werror -shared -fPIC -o /ppsspp/background-save.so /background-save.c
+ && patchelf --add-needed /opt/ppsspp/screenshot-retry.so /ppsspp/shared/bin/PPSSPPSDL \
+ && gcc -O2 -Wall -Wextra -Werror -shared -fPIC -o /ppsspp/background-save.so /background-save.c \
+ && /addresses /ppsspp/shared/bin/PPSSPPSDL > /screenshot-retry.flags \
+ && gcc -O2 -Wall -Wextra -Werror -shared -fPIC $(cat /screenshot-retry.flags) -o /ppsspp/screenshot-retry.so /screenshot-retry.c
 
 # psp PlayStation Portable
 FROM x11-rewind AS psp
