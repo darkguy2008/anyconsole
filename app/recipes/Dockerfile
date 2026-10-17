@@ -40,6 +40,10 @@ FROM unzip AS azahar
 ADD --checksum=sha256:2223444b74de2c922bae1efcfed60002f696b3c2aaf4fc73fc03e66a395dc26e https://github.com/azahar-emu/azahar/releases/download/2126.2/azahar-libretro-linux-x86_64-2126.2.zip .
 RUN 7z e azahar-libretro-linux-x86_64-2126.2.zip >/dev/null
 
+FROM unzip AS melondsds
+ADD --checksum=sha256:ca6b0be914a9d3f822a885547879b279e3fa25326e41d0dc9b8a670fc79df0d0 https://github.com/JesseTG/melonds-ds/releases/download/v1.4.0/melondsds_libretro-linux-x86_64-Release.zip .
+RUN 7z e melondsds_libretro-linux-x86_64-Release.zip '*/cores/melondsds_libretro.so' >/dev/null
+
 FROM fedora AS retroarch-frame-size
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gcc
 ADD --checksum=sha256:bd3398d29c3763d18617087020ff56b5450a48a63123403a4b674f8e79947acb https://raw.githubusercontent.com/libretro/RetroArch/69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576/libretro-common/include/libretro.h /
@@ -106,6 +110,10 @@ FROM retroarch AS gb
 LABEL anyconsole.launch="gb gbc dmg" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="https://thumbnails.libretro.com/Nintendo%20-%20Game%20Boy/Named_Boxarts/{name}.png"
 COPY --from=cores /cores/gambatte_libretro.so /retroarch/core.so
 
+# gbc Game Boy Color
+FROM gb AS gbc
+LABEL anyconsole.thumbnails="https://thumbnails.libretro.com/Nintendo%20-%20Game%20Boy%20Color/Named_Boxarts/{name}.png"
+
 # wsc WonderSwan Color
 FROM retroarch AS wsc
 LABEL anyconsole.launch="wsc ws pc2" anyconsole.analog="{\"sticks\":false}" anyconsole.thumbnails="https://thumbnails.libretro.com/Bandai%20-%20WonderSwan%20Color/Named_Boxarts/{name}.png"
@@ -156,6 +164,20 @@ LABEL anyconsole.launch="3ds cci cxi 3dsx zcci" anyconsole.analog="{\"sticks\":t
 COPY --from=azahar /cores/azahar_libretro.so /retroarch/core.so
 COPY n3ds-system.jq /usr/lib/jq/system.jq
 COPY n3ds-resolution.jq /usr/lib/jq/resolution.jq
+
+# nds Nintendo DS
+FROM retroarch AS nds
+LABEL anyconsole.launch="nds" anyconsole.analog="{\"sticks\":false}" anyconsole.vulkan="" anyconsole.thumbnails="https://thumbnails.libretro.com/Nintendo%20-%20Nintendo%20DS/Named_Boxarts/{name}.png" anyconsole.resolution="{\"height\":576,\"scales\":[1,2,3,4,5,6,7,8]}"
+COPY --from=melondsds /cores/melondsds_libretro.so /retroarch/core.so
+COPY nds.opt /retroarch/core.opt
+COPY nds-system.jq /usr/lib/jq/system.jq
+COPY nds-resolution.jq /usr/lib/jq/resolution.jq
+
+# saturn Sega Saturn
+FROM retroarch AS saturn
+LABEL anyconsole.launch="m3u chd cue ccd toc" anyconsole.analog="{\"sticks\":false}" anyconsole.bios="/system" anyconsole.thumbnails="https://thumbnails.libretro.com/Sega%20-%20Saturn/Named_Boxarts/{name}.png"
+COPY --from=cores /cores/mednafen_saturn_libretro.so /retroarch/core.so
+COPY saturn-system.jq /usr/lib/jq/system.jq
 
 FROM gpu AS x11
 RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y xorg-x11-server-Xwayland xwayland-run xorg-x11-xauth libglvnd-opengl alsa-plugins-pulseaudio python3-pysdl2 libgpg-error jq
