@@ -2,6 +2,7 @@
 tty1::respawn:/opt/anyconsole/kiosk
 ::respawn:/bin/sh -c '. /etc/profile; . /etc/anyconsole.conf; exec /bin/padd >>$LOG_DIR/padd.log 2>&1'
 ttyS0::respawn:-/bin/sh
+::respawn:/bin/sh -c '. /etc/anyconsole.conf; exec cat /dev/kmsg >>$KERNEL_LOG'
 ::respawn:/bin/dhcpcd -B -4
 ::respawn:/bin/dropbear -F -R -E
 ::respawn:/bin/sh -c '. /etc/anyconsole.conf; exec /bin/httpd -f -p $API_PORT -h /www'

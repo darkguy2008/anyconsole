@@ -1716,6 +1716,18 @@ test_reboot() {
   expect '.settings.resolution.psp == 0'
 }
 
+test_crash_log() {
+  guest "grep -q 'Linux version' $KERNEL_LOG"
+  log ok "the kernel log is kept in $KERNEL_LOG"
+  boots=$(guest cat /data/boots)
+  crash_log=$CRASH_LOG_PREFIX$boots
+  guest "echo c > /proc/sysrq-trigger" || true
+  wait_for $BOOT_SECONDS booted $((boots + 1))
+  guest "grep -rq 'sysrq triggered crash' $crash_log"
+  log ok "a kernel panic rebooted the console and its log is kept in $crash_log"
+  sign_in_from_attract
+}
+
 open_store_by_action() { expect_reply $STEP_SECONDS 200 .ok --arg action open-store; }
 
 test_thumbnails() {
@@ -1751,7 +1763,7 @@ test_thumbnails() {
   log ok "one fetch downloads every boxart it asks for"
 }
 
-TESTS="capture symlinks display audio controllers nes atari ps1 genesis nds saturn snes actions dreamcast msdos msx2 stores all_games gpu logout reboot skins engines thumbnails resolution ps2 language time_zone"
+TESTS="capture symlinks display audio controllers nes atari ps1 genesis nds saturn snes actions dreamcast msdos msx2 stores all_games gpu logout reboot skins engines thumbnails resolution ps2 language time_zone crash_log"
 ON_REQUEST="ps3"
 names=${*:-$TESTS}
 for name in $names; do

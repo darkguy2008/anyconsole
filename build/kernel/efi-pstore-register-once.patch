@@ -1,0 +1,51 @@
+From: "Guilherme G. Piccoli" <gpiccoli@igalia.com>
+Subject: [PATCH] efi: pstore: Fix pstore_disable parameter setting (if built
+ as module)
+
+Commit a28655c330ab ("efi: pstore: Allow dynamic initialization based on
+module parameter") introduced the functionality of switching the
+pstore_disable parameter, effectively allowing efi-pstore to be used even
+if builtin and having pstore_disabled=Y (a lot of distros do that at
+Kconfig level).
+
+Well, it also introduced a bug if efi-pstore is built as module and loaded
+with pstore_disable=N parameter. On load time, load_module() -> parse_args()
+calls our mod_param callback efi_pstore_disable_set(), which initializes
+efi_pstore, registering it as a pstore backend. Happens that, slightly
+later in the module loading process, do_init_module() calls our module
+init function, which currently ... retries registering us as a pstore
+backend. Since this was done successfully before, in the module parameter
+parsing, pstore_register() refuses to re-register us and efi-pstore ends-up
+clearing some structures, like freeing its data buffer allocated memory
+and setting its size to 0.
+
+Net effect of that: efi-pstore ends-up in a weird state, partially
+initialized but with cleared structures. More than that, if we try to
+unload it, it won't call pstore_unregister() but will get the module
+unloaded, hence pstore writes on oops or with other frontends will
+trigger NULL pointer dereferences.
+
+Fix it by guarding efivars_pstore_init() against re-running if the
+driver was previously initialized - this is kind of an analog to
+what is already done on efivars_pstore_exit() and fixes the issue.
+
+Fixes: a28655c330ab ("efi: pstore: Allow dynamic initialization based on module parameter")
+Cc: stable@vger.kernel.org
+Signed-off-by: Guilherme G. Piccoli <gpiccoli@igalia.com>
+Link: https://lore.kernel.org/all/20260906235838.2928815-1-gpiccoli@igalia.com/
+---
+ drivers/firmware/efi/efi-pstore.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+--- a/drivers/firmware/efi/efi-pstore.c
++++ b/drivers/firmware/efi/efi-pstore.c
+@@ -261,6 +261,9 @@ static int efivars_pstore_init(void)
+ 	if (pstore_disable)
+ 		return 0;
+ 
++	if (efi_pstore_info.bufsize)
++		return 0;
++
+ 	/*
+ 	 * Notice that 1024 is the minimum here to prevent issues with
+ 	 * decompression algorithms that were spotted during tests;
