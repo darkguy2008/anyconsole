@@ -24,6 +24,11 @@ mkdir -m 700 -p "$XDG_RUNTIME_DIR"
 mount -t cgroup2 cgroup2 /sys/fs/cgroup
 otad mark-good
 read -r boot_count 2>/dev/null < /data/boots || boot_count=0
+mount -t pstore pstore "$PSTORE_DIR"
+for record in "$PSTORE_DIR"/*; do
+  [ -e "$record" ] || continue
+  mkdir -p "$CRASH_LOG_PREFIX$boot_count" && mv "$record" "$CRASH_LOG_PREFIX$boot_count/"
+done
 boot_count=$((boot_count + 1))
 echo "$boot_count" > /data/boots
 . /etc/anyconsole-release
