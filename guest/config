@@ -1,4 +1,4 @@
-MODULES="af_packet vfat nls_cp437 nls_utf8 evdev uinput uhid overlay cifs"
+MODULES="af_packet vfat nls_cp437 nls_utf8 evdev uinput uhid overlay cifs efi_pstore"
 MODULE_TREES="kernel/drivers/net/usb kernel/sound kernel/drivers/cpufreq kernel/arch/x86/kvm kernel/drivers/hid kernel/drivers/input/joystick kernel/drivers/bluetooth kernel/net/bluetooth kernel/crypto"
 API_PORT=8080
 
@@ -33,6 +33,9 @@ SOCKETS_DIR=/run/games
 REWIND_DIR=/data/rewind
 KEPT_REWIND_DIR=/data/rewind-kept
 LOG_DIR=/data/log
+KERNEL_LOG=$LOG_DIR/kernel.log
+CRASH_LOG_PREFIX=$LOG_DIR/crash-
+PSTORE_DIR=/sys/fs/pstore
 VOLUME_LIMIT=1.0
 GAME_IMAGE=anyconsole
 REWIND_LABEL=anyconsole.rewind
@@ -108,5 +111,5 @@ AUTO_REBOOT=0
 GRUB_DIR=/boot/efi/grub
 GRUBENV=$GRUB_DIR/grubenv
 GRUB_CONFIG=/usr/share/anyconsole/grub.cfg
-KERNEL_ARGS="drm_kms_helper.fbdev_emulation=0 mitigations=off"
+KERNEL_ARGS="drm_kms_helper.fbdev_emulation=0 mitigations=off efi_pstore.pstore_disable=0 softlockup_panic=1 nmi_watchdog=panic panic=-1"
 IDLE_LATENCIES="/sys/devices/system/cpu/cpu*/cpuidle/state*/latency"

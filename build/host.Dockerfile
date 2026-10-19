@@ -1,14 +1,14 @@
 ARG ALPINE=3.24
 FROM alpine:$ALPINE AS kernel
 ARG KERNEL=linux-lts
-RUN apk add --no-cache alpine-sdk patch patchutils \
- && . /etc/os-release \
- && git clone -q --depth 1 --filter=blob:none --sparse -b "${VERSION_ID%.*}-stable" https://gitlab.alpinelinux.org/alpine/aports.git /aports \
- && git -C /aports sparse-checkout set "main/$KERNEL"
+RUN apk add --no-cache alpine-sdk patch patchutils
 COPY *.patch /patches/
 COPY build-modules /usr/local/bin/
-WORKDIR /aports/main/$KERNEL
-RUN build-modules /patches /out
+RUN . /etc/os-release \
+ && git clone -q --depth 1 --filter=blob:none --sparse -b "${VERSION_ID%.*}-stable" https://gitlab.alpinelinux.org/alpine/aports.git /aports \
+ && git -C /aports sparse-checkout set "main/$KERNEL" \
+ && cd "/aports/main/$KERNEL" \
+ && build-modules /patches /out
 
 FROM alpine:$ALPINE
 COPY --from=kernel /out/ /kernel/
