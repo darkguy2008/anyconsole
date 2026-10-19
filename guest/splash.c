@@ -65,7 +65,7 @@ static void show_on_card(const char *path) {
 		drmModeEncoder *encoder = drmModeGetEncoder(fd, connector->encoder_id ? connector->encoder_id : connector->encoders[0]);
 		uint32_t crtc_id = encoder->crtc_id ? encoder->crtc_id : resources->crtcs[__builtin_ctz(encoder->possible_crtcs)];
 		drmModeCrtc *crtc = drmModeGetCrtc(fd, crtc_id);
-		drmModeModeInfo mode = crtc->mode_valid ? crtc->mode : connector->modes[0];
+		drmModeModeInfo mode = crtc->mode_valid && crtc->mode.htotal && crtc->mode.vtotal ? crtc->mode : connector->modes[0];
 		struct drm_mode_create_dumb dumb = {.width = mode.hdisplay, .height = mode.vdisplay, .bpp = BYTES_PER_PIXEL * 8};
 		struct drm_mode_map_dumb map = {0};
 		uint32_t framebuffer;
