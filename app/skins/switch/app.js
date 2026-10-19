@@ -7,8 +7,9 @@ const sound = name => play(`../switch/${name}.ogg`);
 const accent = '#00c3e3';
 const storeColumns = 5;
 const pulseMilliseconds = 900;
-const artMarginDivisor = 16;
-const maxFillRatio = 5 / 4;
+const rectangleMarginDivisor = 12;
+const squareMarginDivisor = 32;
+const maxSquareRatio = 5 / 4;
 const backdropDim = '#000000b3';
 const coverBlur = 0.05;
 const tileRadius = 6;
@@ -63,8 +64,8 @@ function Frame({ index, radius, theme, active, inset = -10 }) {
       track=${index} transition=${{ shadowBlur: pulseMilliseconds, opacity: 150, track: 'spring' }} />`;
 }
 
-function fillsSquare(aspect) {
-  return aspect && Math.max(aspect, 1 / aspect) <= maxFillRatio;
+function squareish(aspect) {
+  return aspect && Math.max(aspect, 1 / aspect) <= maxSquareRatio;
 }
 
 function tileFrame(size) {
@@ -73,17 +74,15 @@ function tileFrame(size) {
 
 function Tile({ game, size, theme }) {
   const art = game.thumbnailCached;
-  const filled = fillsSquare(game.thumbnailAspect);
-  const backdrop = art && !filled;
+  const margin = size / (squareish(game.thumbnailAspect) ? squareMarginDivisor : rectangleMarginDivisor);
   return html`
     <view style=${{ ...tileFrame(size), overflow: 'hidden', backgroundColor: hsl(hue(game.title), 0.45, theme.tileLightness),
       padding: 24, justifyContent: 'space-between', color: '#ffffff' }}>
       <text style=${{ fontSize: size / 8, fontWeight: 800, lineHeight: 1.1, opacity: art ? 0 : 1 }}>${game.title}</text>
       <text style=${{ fontSize: size / 16, fontWeight: 700, opacity: art ? 0 : 0.8 }}>${game.platform.toUpperCase()}</text>
-      ${backdrop && html`<image src=${game.thumbnail} style=${{ ...fill, borderRadius: tileRadius, blur: coverBlur }} objectFit="cover" />`}
-      ${backdrop && html`<view style=${{ ...fill, borderRadius: tileRadius, backgroundColor: backdropDim }} />`}
-      ${game.thumbnail && html`<image src=${game.thumbnail} style=${{ ...fill, borderRadius: tileRadius, margin: filled ? 0 : size / artMarginDivisor }}
-        objectFit=${filled ? 'cover' : 'contain'} />`}
+      ${art && html`<image src=${game.thumbnail} style=${{ ...fill, borderRadius: tileRadius, blur: coverBlur }} objectFit="cover" />`}
+      ${art && html`<view style=${{ ...fill, borderRadius: tileRadius, backgroundColor: backdropDim }} />`}
+      ${game.thumbnail && html`<image src=${game.thumbnail} style=${{ ...fill, borderRadius: tileRadius, margin }} objectFit="contain" />`}
     </view>`;
 }
 
