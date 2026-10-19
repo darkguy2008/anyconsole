@@ -27,7 +27,7 @@ stage_modules() {
   softdeps=$(modinfo -k "$KERNEL_VERSION" -F softdep $MODULES | tr ' ' '\n' | grep -v ':$')
   { { modinfo -k "$KERNEL_VERSION" -n $MODULES; modprobe -S "$KERNEL_VERSION" -q -D -a $softdeps | awk '$1 == "insmod" { print $2 }'; } |
       grep "^$MODULE_DIR/" | sed "s|^$MODULE_DIR/||"; printf "%s\n" $MODULE_TREES; } > "$MODULE_FEATURES/anyconsole.modules"
-  mkinitfs -l -k -t "$PWD/$MODULE_TREE" -P "$PWD/$MODULE_FEATURES" -F "base kms anyconsole" "$KERNEL_VERSION" >/dev/null
+  mkinitfs -l -k -t "$PWD/$MODULE_TREE" -P "$PWD/$MODULE_FEATURES" -F "base kms network anyconsole" "$KERNEL_VERSION" >/dev/null
   cp -a "$MODULE_TREE/lib/modules" "$MODULE_TREE/lib/firmware" "$STAGE/lib/"
   find "$STAGE/lib/modules" -name '*.ko.gz' -exec gunzip {} +
   depmod -b "$STAGE" "$KERNEL_VERSION"
