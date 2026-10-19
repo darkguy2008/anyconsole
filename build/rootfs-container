@@ -21,7 +21,7 @@ PROTOCOLS=$(pkg-config --variable=pkgdatadir wayland-protocols)
 BACKGROUND_EFFECT=$PROTOCOLS/staging/ext-background-effect/ext-background-effect-v1.xml
 CFLAGS="-O2 -Wall -Wextra -Werror -I/tmp"
 GLES_SHADER="--es --version 300 --glsl-emit-ubo-as-plain-uniforms"
-RETRO_PRESET=/src/guest/shaders/retro.slangp
+RETRO_SEMANTICS="MVP OutputSize SourceSize OriginalSize FrameCount Rotation"
 SYSTEM_LOCALES=/usr/lib/locale
 MESSAGES_TEMPLATE=/tmp/$TEXT_DOMAIN.pot
 
@@ -107,7 +107,7 @@ build_compositor() {
     wayland-scanner server-header "$protocol" "/tmp/$(basename "$protocol" .xml)-protocol.h"
   done
   gcc $CFLAGS -DWLR_USE_UNSTABLE -o /bin/compositor /src/guest/compositor.c /src/guest/shader.c /tmp/ext-image-capture-source-v1.c /tmp/ext-foreign-toplevel-list-v1.c /tmp/ext-background-effect-v1.c \
-    $(pkg-config --cflags --libs wlroots-0.19 pixman-1 wayland-server xkbcommon libdrm json-c vulkan egl glesv2) -lm
+    $(pkg-config --cflags --libs wlroots-0.19 pixman-1 wayland-server xkbcommon libdrm json-c vulkan egl glesv2 libpng) -lm
 }
 
 copy_binaries() {
@@ -223,10 +223,10 @@ slang_expand() {
         included = line
         gsub(/^#include "|"$/, "", included)
         expand(folder included)
-      } else if (line ~ /^#pragma / && line !~ /^#pragma (stage|parameter) /) {
+      } else if (line ~ /^#pragma / && line !~ /^#pragma (stage|parameter|name) /) {
         print "unsupported in " path ": " line > "/dev/stderr"
         exit 1
-      } else print line
+      } else if (line !~ /^#pragma name /) print line
     }
     if (status < 0) {
       print "cannot read " path > "/dev/stderr"
@@ -241,19 +241,52 @@ slang_stage() { awk -v wanted="$1" '/^#pragma stage /{stage = $3; next} stage ==
 
 slang_parameters() { awk -F '"' '/^#pragma parameter /{split($1, words, " "); split($3, numbers, " "); print words[3], numbers[1]}' "$1"; }
 
-preset_pairs() { awk -F ' *= *' '/^[^#]/ && NF == 2 { gsub(/"/, "", $2); print $1, $2 }' "$1"; }
+preset_pairs() {
+  awk 'function read(path,  folder, line, status, referenced, key, separator) {
+    folder = path
+    sub(/[^\/]*$/, "", folder)
+    while ((status = (getline line < path)) > 0) {
+      if (line ~ /^#reference "[^"]*"$/) {
+        referenced = line
+        gsub(/^#reference "|"$/, "", referenced)
+        read(folder referenced)
+      } else if (line !~ /^[ \t]*(#|$)/) {
+        separator = index(line, "=")
+        if (!separator) {
+          print "unparsed line in " path ": " line > "/dev/stderr"
+          exit 1
+        }
+        key = substr(line, 1, separator - 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", key)
+        value[key] = substr(line, separator + 1)
+        gsub(/^[ \t]+|[ \t]+$|"/, "", value[key])
+        folder_of[key] = folder
+      }
+    }
+    if (status < 0) {
+      print "cannot read " path > "/dev/stderr"
+      exit 1
+    }
+    close(path)
+  }
+  BEGIN {
+    read(ARGV[1])
+    if ("textures" in value) split(value["textures"], names, ";")
+    for (n in names) texture[names[n]]
+    for (key in value) print key, (key ~ /^shader[0-9]+$/ || key in texture) ? folder_of[key] value[key] : value[key]
+    exit
+  }' "$1"
+}
 
 preset_values() { awk 'NR == FNR { value[$1] = $2; next } { print $1, ($1 in value) ? value[$1] : $2 }' "$1" -; }
 
 preset_passes() {
-  awk -v unread="$2" '
+  awk -v unread="$2" -v textures="$3" '
   function pick(key, fallback) { asked[key]; return (key in value) ? value[key] : fallback }
-  function checked(type) {
-    if (type != "source" && type != "viewport" && type != "absolute") {
-      print "unsupported scale_type " type > "/dev/stderr"
-      exit 1
-    }
-    return type
+  function allowed(kind, choice, choices) {
+    if (index(" " choices " ", " " choice " ")) return choice
+    print "unsupported " kind " " choice > "/dev/stderr"
+    exit 1
   }
   { value[$1] = $2 }
   END {
@@ -261,10 +294,14 @@ preset_passes() {
     for (pass = 0; pass < shaders; pass++) {
       type = pick("scale_type" pass, pass == shaders - 1 ? "viewport" : "source")
       scale = pick("scale" pass, 1)
-      print pick("shader" pass, ""), checked(pick("scale_type_x" pass, type)), pick("scale_x" pass, scale), checked(pick("scale_type_y" pass, type)),
+      print pick("shader" pass, ""), allowed("scale_type", pick("scale_type_x" pass, type), "source viewport absolute"), pick("scale_x" pass, scale), allowed("scale_type", pick("scale_type_y" pass, type), "source viewport absolute"),
         pick("scale_y" pass, scale), (pick("filter_linear" pass, "false") == "true"), (pick("float_framebuffer" pass, "false") == "true"),
         pick("frame_count_mod" pass, 0)
     }
+    count = split(pick("textures", ""), names, ";")
+    for (n = 1; n <= count; n++)
+      print names[n], pick(names[n], ""), (pick(names[n] "_linear", "false") == "true"), (pick(names[n] "_mipmap", "false") == "true"),
+        allowed("wrap_mode", pick(names[n] "_wrap_mode", "clamp_to_border"), "clamp_to_border clamp_to_edge repeat mirrored_repeat") > textures
     for (key in value) if (!(key in asked)) print key > unread
   }' "$1"
 }
@@ -274,25 +311,64 @@ reject_unread() {
   END { for (key in unread) { print "unsupported preset key " key > "/dev/stderr"; failed = 1 }; exit failed }' "$@"
 }
 
-build_shaders() {
-  install_assets /src/guest/shaders/assets /tmp/shaders
-  mkdir -p $ROOTFS$SHADERS_DIR
-  preset_pairs $RETRO_PRESET > /tmp/preset
+reject_samplers() {
+  slang_stage fragment "$1" | awk -v source="$1" -v pass="$2" -v last="$3" 'function earlier(name, prefix, limit) { return name ~ ("^" prefix "[0-9]+$") && substr(name, length(prefix) + 1) + 0 < limit }
+  FILENAME == ARGV[1] { texture[$1]; next }
+  match($0, /uniform sampler2D [A-Za-z_][A-Za-z0-9_]*/) {
+    split(substr($0, RSTART, RLENGTH), words)
+    name = words[3]
+    if (name == "Source" || name == "Original" || name in texture || earlier(name, "PassFeedback", last) || earlier(name, "PassOutput", pass)) next
+    print "unsupported sampler " name " in " source > "/dev/stderr"
+    failed = 1
+  }
+  END { exit failed }' "$4" -
+}
+
+reject_uniforms() {
+  { slang_parameters "$1"; printf '%s\n' $RETRO_SEMANTICS; } | cut -d ' ' -f 1 > /tmp/known
+  for stage in vert frag; do spirv-cross "/tmp/$2.$stage.spv" --reflect; done |
+    jq -r '[(.ubos + .push_constants)[]?.type] as $blocks | .types[$blocks[]].members[].name' | sort -u | grep -vxF -f /tmp/known |
+    awk -v source="$1" '{ print "unsupported uniform " $0 " in " source > "/dev/stderr"; failed = 1 } END { exit failed }'
+}
+
+install_textures() {
+  while read -r name image _; do
+    case $image in *.png) ;; *) echo "unsupported texture image $image" >&2; return 1 ;; esac
+    install -m 644 "$image" "$1/$name.png"
+  done < /tmp/textures
+  cut -d ' ' -f 1,3- /tmp/textures > "$1/textures"
+}
+
+build_chain() {
+  chain=$ROOTFS$SHADERS_DIR/$(basename "$1" .slangp)
+  mkdir -p "$chain"
+  preset_pairs "$1" > /tmp/preset
   : > /tmp/preset.unread
-  preset_passes /tmp/preset /tmp/preset.unread > /tmp/passes
-  cut -d ' ' -f 2- /tmp/passes > $ROOTFS$SHADERS_DIR/passes
+  : > /tmp/textures
+  preset_passes /tmp/preset /tmp/preset.unread /tmp/textures > /tmp/passes
+  cut -d ' ' -f 2- /tmp/passes > "$chain/passes"
+  install_textures "$chain"
+  last=$(($(wc -l < /tmp/passes) - 1))
   pass=0
   for shader in $(cut -d ' ' -f 1 /tmp/passes); do
-    output=$ROOTFS$SHADERS_DIR/$pass
-    slang_expand "/tmp/shaders/$shader" > "/tmp/$pass.slang"
+    output=$chain/$pass
+    slang_expand "$shader" > "/tmp/$pass.slang"
+    reject_samplers "/tmp/$pass.slang" $pass $last "$chain/textures"
     slang_stage vertex "/tmp/$pass.slang" | glslang --stdin -V -S vert -o "/tmp/$pass.vert.spv"
     slang_stage fragment "/tmp/$pass.slang" | glslang --stdin -V -S frag -o "/tmp/$pass.frag.spv"
+    reject_uniforms "/tmp/$pass.slang" $pass
     spirv-cross "/tmp/$pass.vert.spv" $GLES_SHADER --output "$output.vert"
     spirv-cross "/tmp/$pass.frag.spv" $GLES_SHADER --output "$output.frag"
     slang_parameters "/tmp/$pass.slang" | preset_values /tmp/preset > "$output.parameters"
     pass=$((pass + 1))
   done
-  reject_unread /tmp/preset.unread $ROOTFS$SHADERS_DIR/*.parameters
+  reject_unread /tmp/preset.unread "$chain"/*.parameters
+}
+
+build_shaders() {
+  install_assets /src/guest/shaders/assets /tmp/shaders
+  cp /src/guest/shaders/*.slangp /tmp/shaders/
+  for preset in /tmp/shaders/*.slangp; do build_chain "$preset"; done
 }
 
 finalize() {

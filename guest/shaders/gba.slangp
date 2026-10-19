@@ -1,0 +1,12 @@
+shaders = 2
+
+shader0 = slang-shaders/handheld/shaders/color/vba-color.slang
+filter_linear0 = false
+scale_type0 = source
+scale0 = 1.0
+
+shader1 = slang-shaders/handheld/shaders/lcd3x.slang
+filter_linear1 = false
+scale_type1 = viewport
+
+darken_screen = 0.5
