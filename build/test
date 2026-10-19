@@ -1073,11 +1073,14 @@ test_skins() {
   tap dpright
   expect '.rows[.selected].label == "Store"'
   log ok "classic leaves left and right to the rows"
-  tap rightshoulder
+  PAD=2 tap guide
+  expect '.screen == "whois"'
+  PAD=2 tap rightshoulder
   expect '.selected == (.rows | length) - 1'
-  tap leftshoulder
+  PAD=2 tap leftshoulder
   expect '.selected == 0'
   log ok "classic pages to the ends of a list that fits on screen with R1 and L1"
+  PAD=2 tap b
   highlight Store
   api POST settings "skin switch-black" >/dev/null
   expect '.settings.skin == "switch-black" and .skin == "switch-black"'
