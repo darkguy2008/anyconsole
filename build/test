@@ -219,6 +219,8 @@ start_vm() {
 
 install_from_stick() {
   wait_for $BOOT_SECONDS guest true
+  wait_for $STEP_SECONDS guest "grep -qF 'ssh root@$TEST_SUBNET.' /dev/vcs1"
+  log ok "the installer shows its ssh address"
   for key in 1 ret y ret; do monitor "sendkey $key"; done
   wait_for $BOOT_SECONDS guest 'findfs LABEL=data && ! pidof mkdisk'
   monitor "device_del stick"
@@ -1764,6 +1766,8 @@ run_tests() {
   install_from_stick
   wait_for $BOOT_SECONDS booted 1
   log ok "booted v$VERSION from the installed disk"
+  api GET status | jq -e --arg subnet "$TEST_SUBNET." '.address | startswith($subnet)' >/dev/null
+  log ok "the status shows the address DHCP gave"
   push_test_bios
   preload_fakepad
   sign_in_from_attract

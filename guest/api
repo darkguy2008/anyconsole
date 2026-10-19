@@ -31,7 +31,7 @@ status() {
   [ -f $STATE_DIR/state ] && . $STATE_DIR/state
   printf '{"version":%s,"slot":"%s","inactive_staged":%s,"ota":"%s","boots":%s,"address":"%s","uptime":%s}' \
     "$VERSION" "$(otad slot)" "${STAGED_VERSION:-0}" "${STATE:-none}" "$(cat /data/boots)" \
-    "$(ip addr show eth0 | awk '$1 == "inet" { print $2 }')" "$(cut -d. -f1 /proc/uptime)"
+    "$(global_addresses | head -n 1)" "$(cut -d. -f1 /proc/uptime)"
 }
 
 case "$REQUEST_METHOD $PATH_INFO" in
