@@ -198,6 +198,16 @@ choose() {
 capture() { gvnccapture "127.0.0.1:$VM_VNC_DISPLAY" "$OUT/$1.png"; }
 snapshot() { wait_for $STEP_SECONDS capture "$1"; }
 capture_settled() { capture "$1-previous" && capture "$1" && cmp -s "$OUT/$1-previous.png" "$OUT/$1.png"; }
+capture_lit() {
+  capture "$1" && python3 -I - "$OUT/$1.png" "$2" <<'PYTHON'
+import json
+import sys
+from PIL import Image
+box = json.loads(sys.argv[2])
+picture = Image.open(sys.argv[1]).convert("L").crop((box["x"], box["y"], box["x"] + box["width"], box["y"] + box["height"]))
+sys.exit(not picture.getbbox())
+PYTHON
+}
 capture_differs() { capture "$2" && ! cmp -s "$OUT/$1.png" "$OUT/$2.png"; }
 screen_moves() { capture before && capture_differs before after; }
 booted() { guest "grep -q VERSION=$VERSION /etc/anyconsole-release && [ \$(cat /data/boots) = $1 ] && pidof overlay && [ -s $STATE_FILE ]"; }
@@ -445,6 +455,11 @@ install_and_play() {
 
 kiosk_log_lacks() { guest "! grep '$1' $LOG_DIR/kiosk.log" || { log FAIL "$2" >&2; exit 1; }; }
 
+retro_logs_clean() {
+  kiosk_log_lacks '^compositor: shader:' "the compositor could not build the Retro shader"
+  kiosk_log_lacks '\[GLES2\] GL_' "the compositor made a GL error"
+}
+
 core_geometry() { guest "grep -o '[0-9]*x[0-9]*, Aspect: ' $(game_log "$1") | tail -1 | cut -d, -f1"; }
 core_aspect() { guest "grep -o ', Aspect: [0-9]*\.[0-9]*' $(game_log "$1") | tail -1 | cut -d' ' -f3"; }
 
@@ -473,11 +488,10 @@ retro_picture() {
   expect ".settings.picture == \"retro\" and .display.picture_box == $box"
   log ok "Retro keeps the game's size and place while the guide is open"
   tap guide
-  expect "$(closed_at_box "$1" "$geometry" "$box") and .display.retro == \"$geometry\""
-  log ok "Retro keeps the game's size and place after the guide closes and filters its own pixels"
+  expect "$(closed_at_box "$1" "$geometry" "$box") and .display.retro == \"$geometry\" and .display.shader == \"retro\""
+  log ok "Retro keeps the game's size and place after the guide closes and filters its own pixels through the TV chain"
   snapshot "${1%/*}-retro"
-  kiosk_log_lacks '^compositor: shader:' "the compositor could not build the Retro shader"
-  kiosk_log_lacks '\[GLES2\] GL_' "the compositor made a GL error"
+  retro_logs_clean
   log ok "the compositor draws $1 through NTSC and CRT Geom"
   back_to_dashboard
   expect "$(status_of "$1" paused) and .display.shown == null and .display.retro == null"
@@ -1685,6 +1699,25 @@ test_ps3() {
   leave_game $GCM_CUBE
 }
 
+retro_shader() {
+  install_and_play "$1" "$2"
+  expect "$(status_of "$1" running) and .display.shader == \"$3\" and .notifications == [] and (.moving | not)"
+  wait_for $STEP_SECONDS capture_lit "$(game_name "$1")-retro" "$(state | jq -c .display.picture_box)"
+  log ok "Retro draws $1 through the $3 shader chain"
+  retro_logs_clean
+  close_game "$1" "$2"
+}
+
+test_handhelds() {
+  api POST settings "picture retro" >/dev/null
+  expect '.settings.picture == "retro"'
+  retro_shader libbet/gb "Libbet and the Magic Floor" gb
+  retro_shader the-hat-chooses-the-wizard/gba "The Hat Chooses the Wizard" gba
+  retro_shader ucity/gbc uCity gbc
+  api POST settings "picture original" >/dev/null
+  expect '.settings.picture == "original"'
+}
+
 test_gpu() {
   install_and_play alter-ego/nes "Alter Ego"
   switch_gpu_after_games alter-ego/nes
@@ -1751,7 +1784,7 @@ test_thumbnails() {
   log ok "one fetch downloads every boxart it asks for"
 }
 
-TESTS="capture symlinks display audio controllers nes atari ps1 genesis nds saturn snes actions dreamcast msdos msx2 stores all_games gpu logout reboot skins engines thumbnails resolution ps2 language time_zone"
+TESTS="capture symlinks display audio controllers nes handhelds atari ps1 genesis nds saturn snes actions dreamcast msdos msx2 stores all_games gpu logout reboot skins engines thumbnails resolution ps2 language time_zone"
 ON_REQUEST="ps3"
 names=${*:-$TESTS}
 for name in $names; do

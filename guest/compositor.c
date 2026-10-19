@@ -6,6 +6,7 @@
 #include <json-c/json.h>
 #include <limits.h>
 #include <math.h>
+#include <png.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -75,8 +76,12 @@
 #define CORNERS 4
 #define BACKGROUND_EFFECT_VERSION 1
 #define GAME_REFRESH_MHZ (60 * MHZ_PER_HZ)
-#define RETRO_PASSES SHADERS_DIR "/passes"
-#define RETRO_PASS SHADERS_DIR "/%d.%s"
+#define RETRO_FILE SHADERS_DIR "/%s/%s"
+#define RETRO_PASS SHADERS_DIR "/%s/%d.%s"
+#define RETRO_IMAGE SHADERS_DIR "/%s/%s.png"
+#define RETRO_DEFAULT_PRESET "retro"
+#define RETRO_UNROTATED 0
+#define RETRO_TEXTURE_UNIT 2
 #define RETRO_PICTURE "retro"
 #define RETRO_POSITION 0
 #define RETRO_COORDINATE 1
@@ -143,7 +148,7 @@ struct window {
     struct wlr_foreign_toplevel_handle_v1 *handle;
     struct wlr_ext_foreign_toplevel_handle_v1 *listed;
     struct wlr_ext_image_capture_source_v1 source;
-    char app_id[TEXT_MAX];
+    char app_id[TEXT_MAX], retro_preset[TEXT_MAX];
     char log_name[TEXT_MAX + sizeof ".log"];
     int sandboxed, display_width, width, height;
     long log_read;
@@ -156,15 +161,27 @@ struct keyboard { struct wlr_keyboard *keyboard; struct wl_listener key, modifie
 struct pointer { struct wl_listener motion, button, axis, frame, destroy; };
 struct program { GLuint id; GLint position, coordinate, size, extent; };
 enum scale_type { SOURCE_SCALE, VIEWPORT_SCALE, ABSOLUTE_SCALE };
-struct retro_target { GLuint texture, framebuffer; int width, height; GLint filter; };
+struct retro_target { GLuint texture, framebuffer; int width, height; };
 struct retro_pass {
     GLuint program;
     GLint output_size[RETRO_BLOCKS], source_size[RETRO_BLOCKS], original_size[RETRO_BLOCKS], frame_count[RETRO_BLOCKS];
     enum scale_type type_x, type_y;
     float scale_x, scale_y;
-    int floating;
+    int floating, fed_back, output_read;
+    GLint filter;
+    char blocks[RETRO_BLOCKS][TEXT_MAX];
     unsigned frame_count_mod;
-    struct retro_target target;
+    struct retro_target target, previous;
+};
+struct retro_texture { GLuint id; char *name; };
+struct retro_preset {
+    char name[TEXT_MAX];
+    struct retro_pass *passes;
+    struct retro_texture *textures;
+    int pass_count, texture_count;
+    GLint original_filter;
+    struct retro_target original;
+    GLuint frames;
 };
 
 static struct wl_display *display;
@@ -196,12 +213,9 @@ static struct wlr_buffer *still_buffer, *still_blur[2 * BLUR_LEVELS];
 static struct wlr_texture *still, *still_soft;
 static struct program programs[sizeof sampler_prefixes / sizeof *sampler_prefixes];
 static const char *const scale_types[] = {[SOURCE_SCALE] = "source", [VIEWPORT_SCALE] = "viewport", [ABSOLUTE_SCALE] = "absolute"};
-static const char *const retro_blocks[RETRO_BLOCKS] = {"global", "registers"};
-static struct retro_pass *retro_passes;
-static struct retro_target retro_original;
-static int retro_pass_count;
+static struct retro_preset *retro_presets;
+static int retro_preset_count;
 static struct wlr_swapchain *retro_chain;
-static GLuint retro_frames;
 static int retro;
 static char pinned[TEXT_MAX], chosen_mode[TEXT_MAX], held_game[TEXT_MAX], *written_state;
 static struct wlr_output_mode *applied_mode;
@@ -474,6 +488,7 @@ static void write_state(void) {
     json_object_object_add(state, "held", *held_game ? json_object_new_string(held_game) : NULL);
     json_object_object_add(state, "frame", json_object_new_string(frame));
     json_object_object_add(state, "retro", *tv_size ? json_object_new_string(tv_size) : NULL);
+    json_object_object_add(state, "shader", retro_shown() ? json_object_new_string(shown->retro_preset) : NULL);
     char *serialized = strdup(json_object_to_json_string_ext(state, JSON_C_TO_STRING_PLAIN));
     json_object_put(state);
     if (written_state && !strcmp(serialized, written_state)) { free(serialized); return; }
@@ -788,11 +803,29 @@ static char *read_text(const char *path) {
     return text;
 }
 
-static void retro_locations(GLuint program, const char *name, GLint *locations) {
+static void find_blocks(struct retro_pass *pass) {
+    char uniform[TEXT_MAX];
+    GLint count, size;
+    GLenum type;
+    int found = 0;
+    memset(pass->blocks, 0, sizeof pass->blocks);
+    glGetProgramiv(pass->program, GL_ACTIVE_UNIFORMS, &count);
+    for (GLint index = 0; index < count && found < RETRO_BLOCKS; index++) {
+        glGetActiveUniform(pass->program, index, sizeof uniform, NULL, &size, &type, uniform);
+        char *member = strchr(uniform, '.');
+        if (!member) continue;
+        *member = '\0';
+        int known = 0;
+        for (int block = 0; block < found; block++) known |= !strcmp(pass->blocks[block], uniform);
+        if (!known) snprintf(pass->blocks[found++], sizeof pass->blocks[0], "%s", uniform);
+    }
+}
+
+static void retro_locations(const struct retro_pass *pass, const char *name, GLint *locations) {
     char uniform[TEXT_MAX];
     for (int block = 0; block < RETRO_BLOCKS; block++) {
-        snprintf(uniform, sizeof uniform, "%s.%s", retro_blocks[block], name);
-        locations[block] = glGetUniformLocation(program, uniform);
+        snprintf(uniform, sizeof uniform, "%s.%s", pass->blocks[block], name);
+        locations[block] = glGetUniformLocation(pass->program, uniform);
     }
 }
 
@@ -808,55 +841,144 @@ static enum scale_type parse_scale_type(char *name) {
     return type;
 }
 
-static GLuint retro_program(int index) {
+static GLint parse_wrap(char *name) {
+    static const char *const names[] = {"clamp_to_border", "clamp_to_edge", "repeat", "mirrored_repeat"};
+    static const GLint modes[] = {GL_CLAMP_TO_BORDER, GL_CLAMP_TO_EDGE, GL_REPEAT, GL_MIRRORED_REPEAT};
+    GLint mode = GL_CLAMP_TO_BORDER;
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++)
+        if (!strcmp(name, names[i])) mode = modes[i];
+    free(name);
+    return mode;
+}
+
+static GLuint retro_image(const char *preset, const char *name, int linear, int mipmap, GLint wrap) {
+    char path[PATH_MAX];
+    GLuint texture = 0;
+    snprintf(path, sizeof path, RETRO_IMAGE, preset, name);
+    png_image png = {.version = PNG_IMAGE_VERSION};
+    if (!png_image_begin_read_from_file(&png, path)) {
+        fprintf(stderr, "compositor: shader: %s: %s\n", path, png.message);
+        return texture;
+    }
+    png.format = PNG_FORMAT_RGBA;
+    void *pixels = malloc(PNG_IMAGE_SIZE(png));
+    png_image_finish_read(&png, NULL, pixels, 0, NULL);
+    GLint filter = linear ? GL_LINEAR : GL_NEAREST, smallest = linear ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, png.width, png.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    free(pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, mipmap ? smallest : filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
+    if (mipmap) glGenerateMipmap(GL_TEXTURE_2D);
+    return texture;
+}
+
+static int set_sampler(GLuint program, const char *name, int unit) {
+    GLint location = glGetUniformLocation(program, name);
+    if (location < 0) return 0;
+    glUseProgram(program);
+    glUniform1i(location, unit);
+    return 1;
+}
+
+static void retro_program(struct retro_preset *preset, int index, struct retro_pass *pass) {
     static const GLfloat identity[] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     char path[PATH_MAX], *name;
     GLint locations[RETRO_BLOCKS];
     float value;
-    snprintf(path, sizeof path, RETRO_PASS, index, "vert");
+    snprintf(path, sizeof path, RETRO_PASS, preset->name, index, "vert");
     char *vertex = read_text(path);
-    snprintf(path, sizeof path, RETRO_PASS, index, "frag");
+    snprintf(path, sizeof path, RETRO_PASS, preset->name, index, "frag");
     char *fragment = read_text(path);
-    GLuint program = link_shaders(vertex, (const char *[]){fragment}, 1);
+    GLuint program = pass->program = link_shaders(vertex, (const char *[]){fragment}, 1);
     free(vertex);
     free(fragment);
+    find_blocks(pass);
     glUseProgram(program);
     glUniform1i(glGetUniformLocation(program, "Source"), 0);
     glUniform1i(glGetUniformLocation(program, "Original"), RETRO_ORIGINAL_UNIT);
-    retro_locations(program, "MVP", locations);
+    for (int i = 0; i < preset->texture_count; i++) set_sampler(program, preset->textures[i].name, RETRO_TEXTURE_UNIT + i);
+    retro_locations(pass, "MVP", locations);
     for (int block = 0; block < RETRO_BLOCKS; block++) glUniformMatrix4fv(locations[block], 1, GL_FALSE, identity);
-    snprintf(path, sizeof path, RETRO_PASS, index, "parameters");
+    retro_locations(pass, "Rotation", locations);
+    for (int block = 0; block < RETRO_BLOCKS; block++) glUniform1ui(locations[block], RETRO_UNROTATED);
+    snprintf(path, sizeof path, RETRO_PASS, preset->name, index, "parameters");
     FILE *parameters = fopen(path, "r");
     while (fscanf(parameters, "%ms %f", &name, &value) == 2) {
-        retro_locations(program, name, locations);
+        retro_locations(pass, name, locations);
         for (int block = 0; block < RETRO_BLOCKS; block++) glUniform1f(locations[block], value);
         free(name);
     }
     fclose(parameters);
-    return program;
 }
 
-static void load_retro(void) {
-    char *type_x, *type_y;
-    int linear;
+static int feedback_unit(struct retro_preset *preset, int pass) { return RETRO_TEXTURE_UNIT + preset->texture_count + pass; }
+
+static int output_unit(struct retro_preset *preset, int pass) { return feedback_unit(preset, preset->pass_count + pass); }
+
+static int link_pass_sampler(struct retro_preset *preset, const char *format, int pass, int unit) {
+    char name[TEXT_MAX];
+    int linked = 0;
+    snprintf(name, sizeof name, format, pass);
+    for (int reader = 0; reader < preset->pass_count; reader++) linked |= set_sampler(preset->passes[reader].program, name, unit);
+    return linked;
+}
+
+static void link_pass_samplers(struct retro_preset *preset) {
+    for (int pass = 0; pass < preset->pass_count; pass++) {
+        preset->passes[pass].fed_back = link_pass_sampler(preset, "PassFeedback%d", pass, feedback_unit(preset, pass));
+        preset->passes[pass].output_read = link_pass_sampler(preset, "PassOutput%d", pass, output_unit(preset, pass));
+    }
+}
+
+static struct retro_preset *load_retro(const char *name) {
+    char path[PATH_MAX], *type_x, *type_y, *wrap;
+    int linear, mipmap;
     struct retro_pass pass = {0};
-    FILE *passes = fopen(RETRO_PASSES, "r");
+    struct retro_texture texture;
+    for (int i = 0; i < retro_preset_count; i++)
+        if (!strcmp(retro_presets[i].name, name)) return &retro_presets[i];
+    retro_presets = realloc(retro_presets, (retro_preset_count + 1) * sizeof *retro_presets);
+    struct retro_preset *preset = &retro_presets[retro_preset_count++];
+    *preset = (struct retro_preset){0};
+    snprintf(preset->name, sizeof preset->name, "%s", name);
+    snprintf(path, sizeof path, RETRO_FILE, name, "textures");
+    FILE *textures = fopen(path, "r");
+    while (fscanf(textures, "%ms %d %d %ms", &texture.name, &linear, &mipmap, &wrap) == 4) {
+        texture.id = retro_image(name, texture.name, linear, mipmap, parse_wrap(wrap));
+        preset->textures = realloc(preset->textures, (preset->texture_count + 1) * sizeof *preset->textures);
+        preset->textures[preset->texture_count++] = texture;
+    }
+    fclose(textures);
+    snprintf(path, sizeof path, RETRO_FILE, name, "passes");
+    FILE *passes = fopen(path, "r");
     while (fscanf(passes, "%ms %f %ms %f %d %d %u", &type_x, &pass.scale_x, &type_y, &pass.scale_y, &linear, &pass.floating, &pass.frame_count_mod) == 7) {
-        (retro_pass_count ? &retro_passes[retro_pass_count - 1].target : &retro_original)->filter = linear ? GL_LINEAR : GL_NEAREST;
+        *(preset->pass_count ? &preset->passes[preset->pass_count - 1].filter : &preset->original_filter) = linear ? GL_LINEAR : GL_NEAREST;
         pass.type_x = parse_scale_type(type_x);
         pass.type_y = parse_scale_type(type_y);
-        pass.program = retro_program(retro_pass_count);
-        retro_locations(pass.program, "OutputSize", pass.output_size);
-        retro_locations(pass.program, "SourceSize", pass.source_size);
-        retro_locations(pass.program, "OriginalSize", pass.original_size);
-        retro_locations(pass.program, "FrameCount", pass.frame_count);
-        retro_passes = realloc(retro_passes, (retro_pass_count + 1) * sizeof *retro_passes);
-        retro_passes[retro_pass_count++] = pass;
+        retro_program(preset, preset->pass_count, &pass);
+        retro_locations(&pass, "OutputSize", pass.output_size);
+        retro_locations(&pass, "SourceSize", pass.source_size);
+        retro_locations(&pass, "OriginalSize", pass.original_size);
+        retro_locations(&pass, "FrameCount", pass.frame_count);
+        preset->passes = realloc(preset->passes, (preset->pass_count + 1) * sizeof *preset->passes);
+        preset->passes[preset->pass_count++] = pass;
     }
     fclose(passes);
+    link_pass_samplers(preset);
+    return preset;
 }
 
-static void bind_target(struct retro_target *target, int width, int height, int floating) {
+static void bind_unit(int unit, GLuint texture) {
+    glActiveTexture(GL_TEXTURE0 + unit);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+static void bind_target(struct retro_target *target, int width, int height, int floating, GLint filter) {
     if (target->width == width && target->height == height) {
         glBindFramebuffer(GL_FRAMEBUFFER, target->framebuffer);
         return;
@@ -868,7 +990,14 @@ static void bind_target(struct retro_target *target, int width, int height, int 
     target->width = width;
     target->height = height;
     attach_texture(target->texture, target->framebuffer, width, height, floating ? GL_RGBA16F : GL_RGBA8, floating ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE,
-        target->filter, GL_CLAMP_TO_BORDER);
+        filter, GL_CLAMP_TO_BORDER);
+}
+
+static void bind_inputs(struct retro_preset *preset) {
+    bind_unit(RETRO_ORIGINAL_UNIT, preset->original.texture);
+    for (int i = 0; i < preset->texture_count; i++) bind_unit(RETRO_TEXTURE_UNIT + i, preset->textures[i].id);
+    for (int i = 0; i < preset->pass_count; i++)
+        if (preset->passes[i].fed_back) bind_unit(feedback_unit(preset, i), preset->passes[i].previous.texture);
 }
 
 static int pass_size(enum scale_type type, float scale, int source, int viewport) {
@@ -885,21 +1014,26 @@ static struct wlr_texture *retro_picture(struct wlr_texture *game, struct wlr_bu
     struct wlr_gles2_texture_attribs attributes;
     wlr_gles2_texture_get_attribs(game, &attributes);
     struct wlr_box tv = tv_signal(game->width, game->height);
-    if (!retro_passes) load_retro();
+    struct retro_preset *preset = load_retro(shown->retro_preset);
     glDisable(GL_BLEND);
-    bind_target(&retro_original, tv.width, tv.height, 0);
+    bind_target(&preset->original, tv.width, tv.height, 0, preset->original_filter);
     glViewport(0, 0, tv.width, tv.height);
     blit(attributes, GL_LINEAR, game->width, game->height, (GLfloat)game->width / tv.width, (GLfloat)game->height / tv.height, corners);
-    glActiveTexture(GL_TEXTURE0 + RETRO_ORIGINAL_UNIT);
-    glBindTexture(GL_TEXTURE_2D, retro_original.texture);
-    glActiveTexture(GL_TEXTURE0);
-    struct retro_target *source = &retro_original;
-    for (int i = 0; i < retro_pass_count; i++) {
-        struct retro_pass *pass = &retro_passes[i];
+    for (int i = 0; i < preset->pass_count; i++) {
+        struct retro_pass *pass = &preset->passes[i];
+        if (!pass->fed_back) continue;
+        struct retro_target last = pass->target;
+        pass->target = pass->previous;
+        pass->previous = last;
+    }
+    bind_inputs(preset);
+    struct retro_target *source = &preset->original;
+    for (int i = 0; i < preset->pass_count; i++) {
+        struct retro_pass *pass = &preset->passes[i];
         int width = pass_size(pass->type_x, pass->scale_x, source->width, picture.width), height = pass_size(pass->type_y, pass->scale_y, source->height, picture.height);
-        GLuint frame = pass->frame_count_mod ? retro_frames % pass->frame_count_mod : retro_frames;
+        GLuint frame = pass->frame_count_mod ? preset->frames % pass->frame_count_mod : preset->frames;
         int x = 0, y = 0;
-        if (i < retro_pass_count - 1) bind_target(&pass->target, width, height, pass->floating);
+        if (i < preset->pass_count - 1) bind_target(&pass->target, width, height, pass->floating, pass->filter);
         else {
             *held = acquire(&retro_chain, screen.width, screen.height);
             if (!*held) break;
@@ -917,12 +1051,10 @@ static struct wlr_texture *retro_picture(struct wlr_texture *game, struct wlr_bu
         retro_size(pass->source_size, source->width, source->height);
         retro_size(pass->original_size, tv.width, tv.height);
         draw_quad(RETRO_POSITION, RETRO_COORDINATE, corners);
+        if (pass->output_read) bind_unit(output_unit(preset, i), pass->target.texture);
         source = &pass->target;
     }
-    retro_frames++;
-    glActiveTexture(GL_TEXTURE0 + RETRO_ORIGINAL_UNIT);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glActiveTexture(GL_TEXTURE0);
+    preset->frames++;
     glBindTexture(GL_TEXTURE_2D, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glFlush();
@@ -1262,6 +1394,10 @@ static void on_new_toplevel(struct wl_listener *listener, void *data) {
     snprintf(window->app_id, sizeof window->app_id, "%s", context && context->app_id ? context->app_id : "");
     const char *platform = strchr(window->app_id, '/');
     if (platform) snprintf(window->log_name, sizeof window->log_name, "%.*s-%s.log", (int)(platform - window->app_id), window->app_id, platform + 1);
+    const char *system = platform ? platform + 1 : "";
+    char preset[PATH_MAX];
+    snprintf(preset, sizeof preset, RETRO_FILE, system, "passes");
+    snprintf(window->retro_preset, sizeof window->retro_preset, "%s", access(preset, R_OK) ? RETRO_DEFAULT_PRESET : system);
     listen(&window->commit, &toplevel->base->surface->events.commit, on_window_commit);
     listen(&window->map, &toplevel->base->surface->events.map, on_window_map);
     listen(&window->unmap, &toplevel->base->surface->events.unmap, on_window_unmap);
