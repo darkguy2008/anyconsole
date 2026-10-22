@@ -19,6 +19,7 @@ SYMBOLS = {
     "MEMORY_RESET": "_ZN5utils12memory_resetEPvmNS_10protectionEb",
     "MEMORY_DECOMMIT": "_ZN5utils15memory_decommitEPvmb",
     "MEMORY_COMMIT": "_ZN5utils13memory_commitEPvmNS_10protectionE",
+    "SPU_CACHE_INITIALIZE": "_ZN9spu_cache10initializeEb",
 }
 IMMEDIATES = {
     "EXITING_LOOP_MASK": "live_save_exiting_loop_mask",

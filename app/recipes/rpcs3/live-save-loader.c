@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <link.h>
 #include <linux/futex.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -18,11 +19,12 @@
 
 #if !defined(LIVE_SAVE_LIBRARY) || !defined(LOOP_MASK_SITE) || !defined(EXITING_LOOP_MASK) || !defined(LV2_EVENT_QUEUE_SEND) || !defined(CPU_TASK) || !defined(FINALIZE_RUN_REQUEST) || !defined(FAST_CALL) || !defined(GET_SFO_DIR) || \
     !defined(USB_ADD_EVENT) || !defined(GROUP_JOIN) || !defined(SLEEP_UNLOCKED) || !defined(MEMORY_RESET) || !defined(MEMORY_DECOMMIT) || !defined(MEMORY_COMMIT) || !defined(GEM_CONFIG_MUTEX) || !defined(GEM_TRACKER_MUTEX) || !defined(USB_EVENT_MUTEX) || !defined(USB_EVENT_WAITERS) || !defined(USB_EVENTS) || \
-    !defined(SYSUTIL_PENDING_CALLBACKS)
+    !defined(SYSUTIL_PENDING_CALLBACKS) || !defined(SPU_CACHE_INITIALIZE)
 #error "build with -DLIVE_SAVE_LIBRARY=<path of live-save.so> and the flags from app/recipes/rpcs3/addresses"
 #endif
 
 #define COMMANDS_VARIABLE "LIVE_SAVE_COMMANDS"
+#define SAVE_COMMAND "save "
 #define COMMAND_FUNCTION "live_save_command"
 #define SEND_FUNCTION "live_save_send_event"
 #define USB_EVENT_FUNCTION "live_save_usb_add_event"
@@ -34,6 +36,7 @@
 #define CALL_HELD_FUNCTION "live_save_call_held"
 #define CALL_RELEASED_FUNCTION "live_save_call_released"
 #define SFO_DIR_FUNCTION "live_save_sfo_dir"
+#define SPU_CACHE_FUNCTION "live_save_initialize_spu_cache"
 #define HUGEPAGE_ADVICE_GRANULE 0x200000
 
 struct live_save_member {
@@ -49,6 +52,8 @@ typedef void *(*sfo_dir_function)(void *sfo_dir, const void *game_path, const vo
 typedef void (*sfo_dir_fix_function)(void *sfo_dir, const void *game_path);
 typedef void (*memory_decommit_function)(void *pointer, size_t size, bool can_be_jit);
 typedef void (*memory_commit_function)(void *pointer, size_t size, int protection);
+typedef void (*spu_cache_initialize_function)(bool build_existing_cache);
+typedef void (*spu_cache_hook_function)(spu_cache_initialize_function initialize, bool build_existing_cache);
 
 static void *send_event;
 static void *usb_add_event;
@@ -69,6 +74,8 @@ static sfo_dir_fix_function fix_sfo_dir;
 static void *memory_reset;
 static memory_decommit_function memory_decommit;
 static memory_commit_function memory_commit;
+static spu_cache_initialize_function spu_cache_initialize;
+static spu_cache_hook_function initialize_spu_cache;
 static command_function run_command;
 static pthread_once_t library_loaded = PTHREAD_ONCE_INIT;
 static __thread unsigned call_depth;
@@ -174,6 +181,11 @@ static void run_memory_reset(void *pointer, size_t size, int protection, bool ca
     if (size % HUGEPAGE_ADVICE_GRANULE == 0) madvise(pointer, size, MADV_HUGEPAGE);
 }
 
+static void run_spu_cache_initialize(bool build_existing_cache) {
+    pthread_once(&library_loaded, load);
+    initialize_spu_cache(spu_cache_initialize, build_existing_cache);
+}
+
 static void detour(uintptr_t base) {
     funchook_t *hook = funchook_create();
     send_event = (void *)(base + LV2_EVENT_QUEUE_SEND);
@@ -187,11 +199,13 @@ static void detour(uintptr_t base) {
     memory_reset = (void *)(base + MEMORY_RESET);
     memory_decommit = (memory_decommit_function)(base + MEMORY_DECOMMIT);
     memory_commit = (memory_commit_function)(base + MEMORY_COMMIT);
+    spu_cache_initialize = (spu_cache_initialize_function)(base + SPU_CACHE_INITIALIZE);
     if (funchook_prepare(hook, &send_event, route_send_event) || funchook_prepare(hook, &usb_add_event, route_usb_add_event) ||
         funchook_prepare(hook, &group_join, route_group_join) ||
         funchook_prepare(hook, (void **)&cpu_task, run_cpu_task) || funchook_prepare(hook, (void **)&sleep_unlocked, run_sleep_unlocked) ||
         funchook_prepare(hook, (void **)&finalize_run_request, run_finalize_run_request) || funchook_prepare(hook, (void **)&fast_call, run_fast_call) ||
         funchook_prepare(hook, (void **)&get_sfo_dir, run_get_sfo_dir) || funchook_prepare(hook, &memory_reset, run_memory_reset) ||
+        funchook_prepare(hook, (void **)&spu_cache_initialize, run_spu_cache_initialize) ||
         funchook_install(hook, 0))
         fail(funchook_error_message(hook));
     live_save_group_join_original = group_join;
@@ -218,7 +232,8 @@ static void load(void) {
     method_function held = (method_function)dlsym(library, CALL_HELD_FUNCTION);
     method_function released = (method_function)dlsym(library, CALL_RELEASED_FUNCTION);
     fix_sfo_dir = (sfo_dir_fix_function)dlsym(library, SFO_DIR_FUNCTION);
-    if (!run || !send || !usb_event || !join || !entered || !returned ||!asleep || !finalized || !held || !released || !fix_sfo_dir) fail(dlerror());
+    initialize_spu_cache = (spu_cache_hook_function)dlsym(library, SPU_CACHE_FUNCTION);
+    if (!run || !send || !usb_event || !join || !entered || !returned ||!asleep || !finalized || !held || !released || !fix_sfo_dir || !initialize_spu_cache) fail(dlerror());
     __atomic_store_n(&send_event, send, __ATOMIC_RELEASE);
     __atomic_store_n(&usb_add_event, usb_event, __ATOMIC_RELEASE);
     __atomic_store_n(&group_join, join, __ATOMIC_RELEASE);
@@ -231,16 +246,37 @@ static void load(void) {
     run_command = run;
 }
 
+static bool command_waiting(FILE *commands) {
+    struct pollfd waiting = {.fd = fileno(commands), .events = POLLIN};
+    return poll(&waiting, 1, 0) > 0;
+}
+
+static bool saving(const char *line) {
+    return !strncmp(line, SAVE_COMMAND, strlen(SAVE_COMMAND));
+}
+
+static void run_line(char *line) {
+    line[strcspn(line, "\n")] = '\0';
+    pthread_once(&library_loaded, load);
+    run_command(line);
+}
+
 static void *follow(void *path) {
-    char *line = NULL;
-    size_t size = 0;
+    char *line = NULL, *next = NULL;
+    size_t size = 0, next_size = 0;
     for (;;) {
         FILE *commands = fopen(path, "re");
         if (!commands) fail(strerror(errno));
+        setvbuf(commands, NULL, _IONBF, 0);
         while (getline(&line, &size, commands) > 0) {
-            line[strcspn(line, "\n")] = '\0';
-            pthread_once(&library_loaded, load);
-            run_command(line);
+            while (saving(line) && command_waiting(commands) && getline(&next, &next_size, commands) > 0) {
+                if (!saving(next)) run_line(line);
+                char *held = line;
+                size_t held_size = size;
+                line = next, size = next_size;
+                next = held, next_size = held_size;
+            }
+            run_line(line);
         }
         fclose(commands);
     }

@@ -15,6 +15,7 @@
 #include "Emu/Cell/PPUAnalyser.h"
 #include "Emu/Cell/PPUInterpreter.h"
 #include "Emu/Cell/SPUThread.h"
+#include "Emu/Cell/SPURecompiler.h"
 #include "Emu/Cell/lv2/sys_cond.h"
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/Cell/lv2/sys_event_flag.h"
@@ -147,6 +148,7 @@ namespace
 	constexpr auto measured_blocking_hle_call = 3070ms;
 	constexpr auto blocked_save_deadline = 3 * measured_blocking_hle_call;
 	constexpr int graceful_shutdown_event_poll_ms = 5;
+	constexpr u8 spu_interpreter_magnitude = 11;
 	constexpr std::string_view unrestorable_mount = "/app_home/";
 	constexpr std::string_view host_root_mount = "/host_root/";
 	std::vector<std::pair<shared_ptr<named_thread<spu_thread>>, u32>> paused_spus;
@@ -1026,7 +1028,7 @@ namespace
 		return true;
 	}
 
-	bool refused()
+	bool decoding()
 	{
 		if (check_if_vdec_contexts_exist())
 		{
@@ -1038,6 +1040,12 @@ namespace
 			std::fprintf(stderr, "live-save: refused, demuxer contexts exist\n");
 			return true;
 		}
+		return false;
+	}
+
+	bool refused()
+	{
+		if (decoding()) return true;
 		if (unknown_helpers()) return true;
 		if (!g_fxo->get<hle_locks_t>().lock_val.compare_and_swap_test(0, hle_locks_t::waiting_for_evaluation))
 		{
@@ -1080,7 +1088,7 @@ namespace
 	{
 		if (capture_reaper.joinable()) capture_reaper.join();
 		wait_until_booted();
-		if (helpers_missing()) return;
+		if (helpers_missing() || decoding()) return;
 		auto pending = std::make_shared<fs::pending_file>(path);
 		if (!pending->file)
 		{
@@ -1139,7 +1147,7 @@ namespace
 		if (!Emu.IsStopped())
 		{
 			wait_until_booted();
-			if (!freeze_threads(std::chrono::steady_clock::now() + blocked_save_deadline)) std::fprintf(stderr, "live-save: could not stop the PPU threads before loading %s, stopping the emulation with them running\n", path.c_str());
+			if (check_if_vdec_contexts_exist() || !freeze_threads(std::chrono::steady_clock::now() + blocked_save_deadline)) std::fprintf(stderr, "live-save: could not stop the PPU threads before loading %s, stopping the emulation with them running\n", path.c_str());
 			allow_nested_calls();
 		}
 		atomic_t<u32> booted = 0;
@@ -1319,6 +1327,17 @@ extern "C" void live_save_sfo_dir(std::string& sfo_dir, const std::string& game_
 {
 	const std::string archive = iso_device::virtual_device_name + "/";
 	if (game_path.starts_with(archive)) sfo_dir = archive + Emu.*member(emulator_game_dir{});
+}
+
+extern "C" void live_save_initialize_spu_cache(void (*initialize)(bool), bool build_existing_cache)
+{
+	if (!build_existing_cache || !Emu.DeserialManager()) return initialize(build_existing_cache);
+	initialize(false);
+	if (spu_runtime::g_interpreter != spu_runtime::g_gateway) return;
+	if (g_cfg.core.spu_decoder != spu_decoder_type::dynamic && g_cfg.core.spu_decoder != spu_decoder_type::llvm) return;
+	const auto compiler = spu_recompiler_base::make_llvm_recompiler(spu_interpreter_magnitude);
+	compiler->init();
+	ensure(compiler->compile({}) && spu_runtime::g_interpreter);
 }
 
 extern "C" void live_save_run_finalized(void*)
