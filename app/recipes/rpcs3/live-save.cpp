@@ -1147,7 +1147,7 @@ namespace
 		if (!Emu.IsStopped())
 		{
 			wait_until_booted();
-			if (!freeze_threads(std::chrono::steady_clock::now() + blocked_save_deadline)) std::fprintf(stderr, "live-save: could not stop the PPU threads before loading %s, stopping the emulation with them running\n", path.c_str());
+			if (check_if_vdec_contexts_exist() || !freeze_threads(std::chrono::steady_clock::now() + blocked_save_deadline)) std::fprintf(stderr, "live-save: could not stop the PPU threads before loading %s, stopping the emulation with them running\n", path.c_str());
 			allow_nested_calls();
 		}
 		atomic_t<u32> booted = 0;
