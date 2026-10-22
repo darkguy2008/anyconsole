@@ -10,3 +10,5 @@ Miscellaneous:
   Pause emulation on RPCS3 focus loss: false
 Savestate:
   Compatible Savestate Mode: true
+VFS:
+  Enable /host_root/: true
