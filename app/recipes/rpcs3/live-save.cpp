@@ -1321,6 +1321,11 @@ extern "C" void live_save_sfo_dir(std::string& sfo_dir, const std::string& game_
 	if (game_path.starts_with(archive)) sfo_dir = archive + Emu.*member(emulator_game_dir{});
 }
 
+extern "C" bool live_save_booting_from_state()
+{
+	return Emu.DeserialManager();
+}
+
 extern "C" void live_save_run_finalized(void*)
 {
 	(Emu.*member(emulator_state{})).notify_all();
