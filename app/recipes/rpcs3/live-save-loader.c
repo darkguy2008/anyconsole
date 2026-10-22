@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <link.h>
 #include <linux/futex.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -23,6 +24,7 @@
 #endif
 
 #define COMMANDS_VARIABLE "LIVE_SAVE_COMMANDS"
+#define SAVE_COMMAND "save "
 #define COMMAND_FUNCTION "live_save_command"
 #define SEND_FUNCTION "live_save_send_event"
 #define USB_EVENT_FUNCTION "live_save_usb_add_event"
@@ -244,16 +246,37 @@ static void load(void) {
     run_command = run;
 }
 
+static bool command_waiting(FILE *commands) {
+    struct pollfd waiting = {.fd = fileno(commands), .events = POLLIN};
+    return poll(&waiting, 1, 0) > 0;
+}
+
+static bool saving(const char *line) {
+    return !strncmp(line, SAVE_COMMAND, strlen(SAVE_COMMAND));
+}
+
+static void run_line(char *line) {
+    line[strcspn(line, "\n")] = '\0';
+    pthread_once(&library_loaded, load);
+    run_command(line);
+}
+
 static void *follow(void *path) {
-    char *line = NULL;
-    size_t size = 0;
+    char *line = NULL, *next = NULL;
+    size_t size = 0, next_size = 0;
     for (;;) {
         FILE *commands = fopen(path, "re");
         if (!commands) fail(strerror(errno));
+        setvbuf(commands, NULL, _IONBF, 0);
         while (getline(&line, &size, commands) > 0) {
-            line[strcspn(line, "\n")] = '\0';
-            pthread_once(&library_loaded, load);
-            run_command(line);
+            while (saving(line) && command_waiting(commands) && getline(&next, &next_size, commands) > 0) {
+                if (!saving(next)) run_line(line);
+                char *held = line;
+                size_t held_size = size;
+                line = next, size = next_size;
+                next = held, next_size = held_size;
+            }
+            run_line(line);
         }
         fclose(commands);
     }
