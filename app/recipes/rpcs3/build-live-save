@@ -1,0 +1,65 @@
+#!/bin/sh
+set -eu
+REPOSITORY=https://github.com/RPCS3/rpcs3
+SOURCE=/rpcs3
+BUILD=$SOURCE/build
+FLAGS_FROM=rpcs3/Emu/System.cpp
+LAYOUT_SOURCES="rpcs3/Emu/Cell/Modules/cellGem.cpp rpcs3/Emu/Cell/lv2/sys_usbd.cpp rpcs3/Emu/Cell/Modules/cellSysutil.cpp"
+
+fetch_source() {
+  git init -q "$SOURCE"
+  cd "$SOURCE"
+  git remote add origin "$REPOSITORY"
+  git fetch -q --depth 1 origin "$RPCS3_COMMIT"
+  git checkout -q FETCH_HEAD
+  git submodule -q update --init --depth 1 $(awk '/path/ && !/llvm/ && !/opencv/ && !/libsdl-org/ && !/curl/ && !/zlib/ { print $3 }' .gitmodules)
+}
+
+configure() {
+  CC=$CLANG_BINARY CXX=$CLANGXX_BINARY cmake -S "$SOURCE" -B "$BUILD" -G Ninja \
+    -DCMAKE_INSTALL_PREFIX=/usr -DUSE_NATIVE_INSTRUCTIONS=OFF -DUSE_PRECOMPILED_HEADERS=OFF \
+    -DCMAKE_C_FLAGS= -DCMAKE_CXX_FLAGS= \
+    -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld -DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld \
+    -DCMAKE_AR=/usr/bin/llvm-ar-"$LLVMVER" -DCMAKE_RANLIB=/usr/bin/llvm-ranlib-"$LLVMVER" \
+    -DUSE_SYSTEM_CURL=ON -DUSE_SDL=ON -DUSE_SYSTEM_SDL=ON -DUSE_SYSTEM_FFMPEG=ON -DUSE_SYSTEM_OPENCV=ON \
+    -DUSE_DISCORD_RPC=ON -DOpenGL_GL_PREFERENCE=LEGACY -DLLVM_DIR=/opt/llvm/lib/cmake/llvm -DSTATIC_LINK_LLVM=ON \
+    -DBUILD_RPCS3_TESTS=OFF -DRUN_RPCS3_TESTS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null
+}
+
+compile_flags() {
+  python3 - "$BUILD/compile_commands.json" "$SOURCE/$1" <<'PYTHON'
+import json, shlex, sys
+
+entry = next(entry for entry in json.load(open(sys.argv[1])) if entry["file"] == sys.argv[2])
+words = shlex.split(entry["command"])[1:]
+kept = []
+while words:
+    word = words.pop(0)
+    if word in ("-o", "-c"):
+        words.pop(0)
+    elif not word.startswith(("@", "-flto")):
+        kept.append(word)
+print(shlex.join(kept))
+PYTHON
+}
+
+build_layouts() {
+  layouts=$1
+  mkdir -p "$layouts"
+  for source in $LAYOUT_SOURCES; do
+    name=${source##*/}
+    eval "set -- $(compile_flags "$source")"
+    "$CLANGXX_BINARY" "$@" -g -fstandalone-debug -shared -o "$layouts/${name%.cpp}.so" "$SOURCE/$source"
+  done
+}
+
+build_hook() {
+  hook=$1 library=$2
+  eval "set -- $(compile_flags "$FLAGS_FROM")"
+  "$CLANGXX_BINARY" "$@" -shared -o "$library" "$hook"
+}
+
+case $1 in
+  layouts) fetch_source; configure; build_layouts "$2" ;;
+  hook) build_hook "$2" "$3" ;;
+esac

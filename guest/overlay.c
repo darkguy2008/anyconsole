@@ -157,7 +157,7 @@ struct game {
     json_object *emulate, *analog;
     double thumbnail_aspect;
     time_t thumbnail_time, used;
-    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, owner, second_screen, screen_shown, error_output, enhanced, restart_slot, restart_again, booted, dial_absolute;
+    int installed, commands, context, paused, closing, cancelled, job_output, percent, states_watch, rewinds, owner, second_screen, screen_shown, error_output, enhanced, restart_slot, restart_again, booted, dial_absolute, rescales_live;
     struct port ports[PADS];
     size_t job_length, error_length;
     enum task task;
@@ -2049,7 +2049,7 @@ static int running_games(void) {
 static void rescale_active(void) {
     char states[PATH_MAX];
     start((char *[]){"games", "rescale", games[active].platform, rewind_path(states, active, "/" STATES), NULL});
-    restart_active();
+    if (!games[active].rescales_live) restart_active();
 }
 
 static void apply_settings(void) {
@@ -2085,7 +2085,10 @@ static void read_labels(int index) {
     struct game *game = &games[index];
     snprintf(path, sizeof path, ENGINE_RUN "/%s" LABELS_EXTENSION, game->platform);
     json_object *labels = json_object_from_file(path), *manifest, *platform = NULL, *overrides = NULL;
+    json_object *resolution = json_tokener_parse(string_at(labels, RESOLUTION_LABEL, NULL));
     game->rewinds = *string_at(labels, REWIND_LABEL, NULL);
+    game->rescales_live = json_object_get_boolean(json_object_object_get(resolution, "live"));
+    json_object_put(resolution);
     game->second_screen = *string_at(labels, SCREEN_LABEL, NULL);
     game_file(index, SCREEN_FILE, path);
     game->screen_shown = !access(path, F_OK);

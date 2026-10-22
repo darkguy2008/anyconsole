@@ -5,6 +5,7 @@ ARG RETROARCH=1.22.2 RETROARCH_BUILD=$LIBRETRO/nightly/linux/x86_64/2026-10-14_R
 #   lsi53c810  -device lsi53c810 with Windows 98's in-box SYMC8XX driver; builds SeaBIOS and QEMU
 #              from source with the patches in lsi53c810/ (~14% slower disk I/O, nothing fetched from archive.org)
 ARG WIN98_SCSI=lsi
+ARG RPCS3_COMMIT=2ba2f75bcea7ef6bdd687046c7fcfb790faf9853
 
 FROM registry.fedoraproject.org/fedora-minimal:44@sha256:f362951032563f154aa976533e3a77c0a51314777de34971f41d99e6956bbc85 AS fedora
 RUN echo install_weak_deps=False >> /etc/dnf/dnf.conf
@@ -230,29 +231,52 @@ ENV XDG_CONFIG_HOME=/engine XDG_DATA_HOME=/engine XDG_CACHE_HOME=/engine GDK_BAC
 ENTRYPOINT ["/opt/cemu/launch"]
 
 FROM fetch AS rpcs3-download
-ADD --checksum=sha256:21aa550a312b449ad1f1a2868ccd2100c3ae52f5a03e6fcb46774df0632195cb https://github.com/RPCS3/rpcs3-binaries-linux/releases/download/build-2ba2f75bcea7ef6bdd687046c7fcfb790faf9853/rpcs3-v0.0.43-20284-2ba2f75b_linux64.AppImage /app.AppImage
+ARG RPCS3_COMMIT
+ADD --checksum=sha256:21aa550a312b449ad1f1a2868ccd2100c3ae52f5a03e6fcb46774df0632195cb https://github.com/RPCS3/rpcs3-binaries-linux/releases/download/build-$RPCS3_COMMIT/rpcs3-v0.0.43-20284-2ba2f75b_linux64.AppImage /app.AppImage
 RUN appimage /rpcs3
 
-FROM fedora AS rpcs3-config-reload
-RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gcc python3-pyelftools patchelf
+FROM rpcs3/rpcs3-ci-jammy:2.1@sha256:e5f21d10b6e897d578537776877690c75879d0bf0bd4e2745c06588d580d53ff AS rpcs3-live-save
+ARG RPCS3_COMMIT
+COPY rpcs3/build-live-save /
+RUN /build-live-save layouts /layouts
+COPY rpcs3/live-save.cpp /
+RUN /build-live-save hook /live-save.cpp /live-save.so
+
+FROM fedora AS funchook
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gcc cmake make tar gzip
+ADD --checksum=sha256:d49d682f5d2386c173b6e006967ecfee37c45fd1eef3e9d4232992ccdaca4ef5 https://github.com/kubo/funchook/releases/download/v1.1.3/funchook-1.1.3.tar.gz /funchook.tar.gz
+RUN tar xzf /funchook.tar.gz -C / \
+ && cmake -S /funchook-1.1.3 -B /funchook -DCMAKE_BUILD_TYPE=Release -DFUNCHOOK_BUILD_SHARED=OFF -DFUNCHOOK_BUILD_TESTS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+ && cmake --build /funchook \
+ && cp /funchook-1.1.3/include/funchook.h /funchook/
+
+FROM fedora AS rpcs3-hooks
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y gcc gcc-c++ lief-devel span-devel expected-devel python3-capstone python3-pyelftools
+COPY rpcs3/bind-live-save.cpp /
+RUN g++ -std=c++20 -O2 -Wall -Wextra -Werror -o /bind-live-save /bind-live-save.cpp -lLIEF
 COPY --from=rpcs3-download /rpcs3 /rpcs3
-COPY rpcs3/addresses rpcs3/config-reload.c /
-RUN patchelf --add-needed /opt/rpcs3/config-reload.so /rpcs3/usr/bin/rpcs3 \
- && /addresses /rpcs3/usr/bin/rpcs3 > /addresses.flags \
- && gcc -O2 -Wall -Wextra -Werror -shared -fPIC $(cat /addresses.flags) -o /rpcs3/config-reload.so /config-reload.c
+COPY --from=rpcs3-live-save /live-save.so /rpcs3/
+COPY --from=rpcs3-live-save /layouts /layouts
+COPY --from=funchook /funchook/funchook.h /funchook/libfunchook.a /funchook/libdistorm.a /funchook/
+COPY rpcs3/addresses rpcs3/config-reload.c rpcs3/live-save-loader.c /
+RUN /bind-live-save /rpcs3/usr/bin/rpcs3 /rpcs3/live-save.so /rpcs3-bound /opt/rpcs3/config-reload.so /opt/rpcs3/live-save-loader.so \
+ && install -m 755 /rpcs3-bound /rpcs3/usr/bin/rpcs3 \
+ && /addresses /rpcs3/usr/bin/rpcs3 /rpcs3/live-save.so /layouts/*.so > /addresses.flags \
+ && gcc -O2 -Wall -Wextra -Werror -shared -fPIC $(cat /addresses.flags) -o /rpcs3/config-reload.so /config-reload.c \
+ && gcc -O2 -Wall -Wextra -Werror -shared -fPIC $(cat /addresses.flags) -DLIVE_SAVE_LIBRARY='"/opt/rpcs3/live-save.so"' -I/funchook -o /rpcs3/live-save-loader.so /live-save-loader.c /funchook/libfunchook.a /funchook/libdistorm.a -ldl
 
 # ps3 PlayStation 3
-FROM x11 AS ps3
-RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y matchbox-window-manager yq inotify-tools 7zip
+FROM x11-rewind AS ps3
+RUN --mount=type=cache,target=/var/cache/libdnf5,sharing=locked dnf install -y matchbox-window-manager yq 7zip
 COPY with-window-manager /usr/local/bin/
-LABEL anyconsole.launch="sfo iso elf" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.prepare="/opt/rpcs3/prepare" anyconsole.install="/opt/rpcs3/install" anyconsole.thumbnails="https://raw.githubusercontent.com/aldostools/Resources/main/COV/{name}.JPG" anyconsole.resolution="{\"height\":720,\"exact\":true}"
-COPY --from=rpcs3-config-reload /rpcs3 /opt/rpcs3
+LABEL anyconsole.launch="sfo iso elf" anyconsole.analog="{\"sticks\":true}" anyconsole.bios="/bios" anyconsole.rewind="true" anyconsole.prepare="/opt/rpcs3/prepare" anyconsole.install="/opt/rpcs3/install" anyconsole.thumbnails="https://raw.githubusercontent.com/aldostools/Resources/main/COV/{name}.JPG" anyconsole.resolution="{\"height\":720,\"exact\":true,\"live\":true}"
+COPY --from=rpcs3-hooks /rpcs3 /opt/rpcs3
 RUN ln -s /opt/rpcs3/usr/share/rpcs3 /usr/share/rpcs3
 COPY rpcs3/ /opt/rpcs3/
 ADD https://api.rpcs3.net/config/?api=v1 /opt/rpcs3/config_database.dat
 COPY ps3-system.jq /usr/lib/jq/system.jq
 ENV XDG_CONFIG_HOME=/engine/config XDG_CACHE_HOME=/engine/cache QT_QPA_PLATFORM=xcb
-ENV RPCS3_CONFIG=$XDG_CONFIG_HOME/rpcs3/config.yml
+ENV RPCS3_CONFIG=$XDG_CONFIG_HOME/rpcs3/config.yml LIVE_SAVE_COMMANDS=/tmp/live-save-commands
 ENTRYPOINT ["/opt/rpcs3/launch"]
 
 FROM fetch AS ppsspp-download
