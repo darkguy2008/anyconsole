@@ -17,7 +17,7 @@
 #include <unistd.h>
 
 #if !defined(LIVE_SAVE_LIBRARY) || !defined(LOOP_MASK_SITE) || !defined(EXITING_LOOP_MASK) || !defined(LV2_EVENT_QUEUE_SEND) || !defined(CPU_TASK) || !defined(FINALIZE_RUN_REQUEST) || !defined(FAST_CALL) || !defined(GET_SFO_DIR) || \
-    !defined(USB_ADD_EVENT) || !defined(GROUP_JOIN) || !defined(SLEEP_UNLOCKED) || !defined(GEM_CONFIG_MUTEX) || !defined(GEM_TRACKER_MUTEX) || !defined(USB_EVENT_MUTEX) || !defined(USB_EVENT_WAITERS) || !defined(USB_EVENTS) || \
+    !defined(USB_ADD_EVENT) || !defined(GROUP_JOIN) || !defined(SLEEP_UNLOCKED) || !defined(MEMORY_RESET) || !defined(MEMORY_DECOMMIT) || !defined(MEMORY_COMMIT) || !defined(GEM_CONFIG_MUTEX) || !defined(GEM_TRACKER_MUTEX) || !defined(USB_EVENT_MUTEX) || !defined(USB_EVENT_WAITERS) || !defined(USB_EVENTS) || \
     !defined(SYSUTIL_PENDING_CALLBACKS)
 #error "build with -DLIVE_SAVE_LIBRARY=<path of live-save.so> and the flags from app/recipes/rpcs3/addresses"
 #endif
@@ -34,6 +34,7 @@
 #define CALL_HELD_FUNCTION "live_save_call_held"
 #define CALL_RELEASED_FUNCTION "live_save_call_released"
 #define SFO_DIR_FUNCTION "live_save_sfo_dir"
+#define HUGEPAGE_ADVICE_GRANULE 0x200000
 
 struct live_save_member {
     const char *owner;
@@ -46,6 +47,8 @@ typedef bool (*sleep_function)(void *thread, uint64_t timeout, uint64_t current_
 typedef void (*fast_call_function)(void *thread, uint32_t address, uint64_t rtoc, bool thread_entry);
 typedef void *(*sfo_dir_function)(void *sfo_dir, const void *game_path, const void *title_id);
 typedef void (*sfo_dir_fix_function)(void *sfo_dir, const void *game_path);
+typedef void (*memory_decommit_function)(void *pointer, size_t size, bool can_be_jit);
+typedef void (*memory_commit_function)(void *pointer, size_t size, int protection);
 
 static void *send_event;
 static void *usb_add_event;
@@ -63,6 +66,9 @@ static method_function call_held;
 static method_function call_released;
 static sfo_dir_function get_sfo_dir;
 static sfo_dir_fix_function fix_sfo_dir;
+static void *memory_reset;
+static memory_decommit_function memory_decommit;
+static memory_commit_function memory_commit;
 static command_function run_command;
 static pthread_once_t library_loaded = PTHREAD_ONCE_INIT;
 static __thread unsigned call_depth;
@@ -162,6 +168,12 @@ static void *run_get_sfo_dir(void *sfo_dir, const void *game_path, const void *t
     return sfo_dir;
 }
 
+static void run_memory_reset(void *pointer, size_t size, int protection, bool can_be_jit) {
+    memory_decommit(pointer, size, can_be_jit);
+    memory_commit(pointer, size, protection);
+    if (size % HUGEPAGE_ADVICE_GRANULE == 0) madvise(pointer, size, MADV_HUGEPAGE);
+}
+
 static void detour(uintptr_t base) {
     funchook_t *hook = funchook_create();
     send_event = (void *)(base + LV2_EVENT_QUEUE_SEND);
@@ -172,11 +184,15 @@ static void detour(uintptr_t base) {
     finalize_run_request = (method_function)(base + FINALIZE_RUN_REQUEST);
     fast_call = (fast_call_function)(base + FAST_CALL);
     get_sfo_dir = (sfo_dir_function)(base + GET_SFO_DIR);
+    memory_reset = (void *)(base + MEMORY_RESET);
+    memory_decommit = (memory_decommit_function)(base + MEMORY_DECOMMIT);
+    memory_commit = (memory_commit_function)(base + MEMORY_COMMIT);
     if (funchook_prepare(hook, &send_event, route_send_event) || funchook_prepare(hook, &usb_add_event, route_usb_add_event) ||
         funchook_prepare(hook, &group_join, route_group_join) ||
         funchook_prepare(hook, (void **)&cpu_task, run_cpu_task) || funchook_prepare(hook, (void **)&sleep_unlocked, run_sleep_unlocked) ||
         funchook_prepare(hook, (void **)&finalize_run_request, run_finalize_run_request) || funchook_prepare(hook, (void **)&fast_call, run_fast_call) ||
-        funchook_prepare(hook, (void **)&get_sfo_dir, run_get_sfo_dir) || funchook_install(hook, 0))
+        funchook_prepare(hook, (void **)&get_sfo_dir, run_get_sfo_dir) || funchook_prepare(hook, &memory_reset, run_memory_reset) ||
+        funchook_install(hook, 0))
         fail(funchook_error_message(hook));
     live_save_group_join_original = group_join;
 }

@@ -16,6 +16,9 @@ SYMBOLS = {
     "USB_ADD_EVENT": "_ZN18usb_handler_thread9add_eventEmmm",
     "SLEEP_UNLOCKED": "_ZN7lv2_obj14sleep_unlockedER10cpu_threadmm",
     "GROUP_JOIN": "_Z25sys_spu_thread_group_joinR10ppu_threadjN2vm9_ptr_baseIN3stx4se_tIjLb1ELm4EEEjEES6_",
+    "MEMORY_RESET": "_ZN5utils12memory_resetEPvmNS_10protectionEb",
+    "MEMORY_DECOMMIT": "_ZN5utils15memory_decommitEPvmb",
+    "MEMORY_COMMIT": "_ZN5utils13memory_commitEPvmNS_10protectionE",
 }
 IMMEDIATES = {
     "EXITING_LOOP_MASK": "live_save_exiting_loop_mask",
