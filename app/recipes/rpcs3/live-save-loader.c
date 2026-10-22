@@ -34,7 +34,7 @@
 #define CALL_HELD_FUNCTION "live_save_call_held"
 #define CALL_RELEASED_FUNCTION "live_save_call_released"
 #define SFO_DIR_FUNCTION "live_save_sfo_dir"
-#define BOOTING_FROM_STATE_FUNCTION "live_save_booting_from_state"
+#define SPU_CACHE_FUNCTION "live_save_initialize_spu_cache"
 #define HUGEPAGE_ADVICE_GRANULE 0x200000
 
 struct live_save_member {
@@ -51,7 +51,7 @@ typedef void (*sfo_dir_fix_function)(void *sfo_dir, const void *game_path);
 typedef void (*memory_decommit_function)(void *pointer, size_t size, bool can_be_jit);
 typedef void (*memory_commit_function)(void *pointer, size_t size, int protection);
 typedef void (*spu_cache_initialize_function)(bool build_existing_cache);
-typedef bool (*booting_from_state_function)(void);
+typedef void (*spu_cache_hook_function)(spu_cache_initialize_function initialize, bool build_existing_cache);
 
 static void *send_event;
 static void *usb_add_event;
@@ -73,7 +73,7 @@ static void *memory_reset;
 static memory_decommit_function memory_decommit;
 static memory_commit_function memory_commit;
 static spu_cache_initialize_function spu_cache_initialize;
-static booting_from_state_function booting_from_state;
+static spu_cache_hook_function initialize_spu_cache;
 static command_function run_command;
 static pthread_once_t library_loaded = PTHREAD_ONCE_INIT;
 static __thread unsigned call_depth;
@@ -181,7 +181,7 @@ static void run_memory_reset(void *pointer, size_t size, int protection, bool ca
 
 static void run_spu_cache_initialize(bool build_existing_cache) {
     pthread_once(&library_loaded, load);
-    spu_cache_initialize(build_existing_cache && !booting_from_state());
+    initialize_spu_cache(spu_cache_initialize, build_existing_cache);
 }
 
 static void detour(uintptr_t base) {
@@ -230,8 +230,8 @@ static void load(void) {
     method_function held = (method_function)dlsym(library, CALL_HELD_FUNCTION);
     method_function released = (method_function)dlsym(library, CALL_RELEASED_FUNCTION);
     fix_sfo_dir = (sfo_dir_fix_function)dlsym(library, SFO_DIR_FUNCTION);
-    booting_from_state = (booting_from_state_function)dlsym(library, BOOTING_FROM_STATE_FUNCTION);
-    if (!run || !send || !usb_event || !join || !entered || !returned ||!asleep || !finalized || !held || !released || !fix_sfo_dir || !booting_from_state) fail(dlerror());
+    initialize_spu_cache = (spu_cache_hook_function)dlsym(library, SPU_CACHE_FUNCTION);
+    if (!run || !send || !usb_event || !join || !entered || !returned ||!asleep || !finalized || !held || !released || !fix_sfo_dir || !initialize_spu_cache) fail(dlerror());
     __atomic_store_n(&send_event, send, __ATOMIC_RELEASE);
     __atomic_store_n(&usb_add_event, usb_event, __ATOMIC_RELEASE);
     __atomic_store_n(&group_join, join, __ATOMIC_RELEASE);
