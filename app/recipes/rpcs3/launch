@@ -8,6 +8,10 @@ DISC_KEYS=/bios/REDUMP_DKEY.7z
 DISC_KEY_DIR=$CONFIG/data/redump
 SFO=PARAM.SFO
 PERCENT=100
+SAVE_SLOT=0
+LOAD_SLOT=1
+STATE_PREFIX=/states/ps3
+STATE_SUFFIX=_%s.SAVESTAT.zst
 
 pad_config() {
   printf 'Player 1 Input:\n  Handler: Evdev\n  Device: "%s"\n  Buddy Device: "%s"\n  Config:\n' "$PAD_NAME" "$MOTION_NAME"
@@ -52,4 +56,13 @@ write_config
 game_database
 follow_resolution &
 awk -v output="$OUTPUT" 'BEGIN { split(output, size, "x"); print "Setting aspect ratio to " size[1] / size[2] }' >&2
-exec xwayland-run -geometry "$CANVAS" -- with-window-manager /opt/rpcs3/AppRun --no-gui --fullscreen "${1%/"$SFO"}"
+export STATE_PREFIX STATE_SUFFIX
+exec 3<&0
+RESUME_SLOT= rewind /opt/rpcs3/control $SAVE_SLOT $LOAD_SLOT "$STATE_SUFFIX" <&3 &
+set -- "${1%/"$SFO"}"
+if [ -n "$RESUME_SLOT" ]; then
+  resumed=$STATE_PREFIX$(printf "$STATE_SUFFIX" $LOAD_SLOT)
+  ln -f /states/*.state"$RESUME_SLOT" "$resumed"
+  set -- --savestate "$resumed"
+fi
+exec xwayland-run -geometry "$CANVAS" -- with-window-manager /opt/rpcs3/AppRun --no-gui --fullscreen "$@"

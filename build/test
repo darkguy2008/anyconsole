@@ -60,6 +60,7 @@ GCM_CUBE=gcm-cube/ps3
 GCM_CUBE_DRAWING="local_size ="
 FIRMWARE_COMPILED='LLVM: Compiling module .*\.sprx/'
 RPCS3_HOME_MENU_OPENED="opened home menu with result 0"
+RPCS3_LOADED_STATE="Savestate: is iso archive"
 PS2_CONFIG_BLOCK=$((0x2C0))
 PS2_LANGUAGE_BITS=0x1F
 PS2_INITIALIZED=0x80
@@ -117,7 +118,7 @@ screenshot_is_png() {
 }
 log() { echo "$1 +$(($(date +%s) - STARTED))s${slot:+ vm $slot}: $2"; }
 diagnose() {
-  guest "cat $STATE_FILE /tmp/install.log; echo; docker ps -a --format '{{.Names}} {{.Status}}'; for container in \$(docker ps -q); do docker top \$container -o pid,stat,args; for pid in \$(docker top \$container -o pid | tail -n +2); do echo \"\$pid \$(cat /proc/\$pid/wchan)\"; done; done; for log in $LOG_DIR/*.log; do echo \"== \$log\"; tail -n 15 \"\$log\"; done" >&2 || true
+  guest "cat $STATE_FILE /tmp/install.log; echo; docker ps -a --format '{{.Names}} {{.Status}}'; for container in \$(docker ps -q); do docker top \$container -o pid,stat,args; for pid in \$(docker top \$container -o pid | tail -n +2); do echo \"\$pid \$(cat /proc/\$pid/wchan)\"; done; done; for log in $LOG_DIR/*.log $RPCS3_LOGS/RPCS3.log; do [ -f \"\$log\" ] || continue; echo \"== \$log\"; tail -n 15 \"\$log\"; done" >&2 || true
   guest ". /etc/profile; wpctl status; pw-dump | jq -c '.[] | select(.info.props[\"media.class\"]? == \"Audio/Source\") | {id, props: [.info.params.Props[]? | {channelVolumes, softVolumes, volume}]}'" >&2 || true
 }
 wait_for() {
@@ -1660,6 +1661,8 @@ PYTHON
 }
 
 gcm_cube_spins() { screen_moves && shows_magenta before && shows_magenta after; }
+rpcs3_loads() { guest "grep -cF '$RPCS3_LOADED_STATE' $RPCS3_LOGS/RPCS3.log || true"; }
+rpcs3_loaded_another_state() { [ "$(rpcs3_loads)" -gt "$rpcs3_loads_before" ]; }
 
 highlight_top() {
   python3 -I - "$OUT/$1.png" <<'PYTHON'
@@ -1697,6 +1700,16 @@ test_ps3() {
   log ok "$GCM_CUBE reached its draw loop with the firmware compiled before launch"
   wait_for $STEP_SECONDS gcm_cube_spins
   log ok "RPCS3 draws $GCM_CUBE's spinning cube"
+  expect '.rewind.states >= 1'
+  rpcs3_loads_before=$(rpcs3_loads)
+  rewind_one_state $GCM_CUBE
+  wait_for $STEP_SECONDS rpcs3_loaded_another_state
+  wait_for $STEP_SECONDS gcm_cube_spins
+  log ok "rewinding $GCM_CUBE loaded a live save and the cube spins again"
+  rpcs3_loads_before=$(rpcs3_loads)
+  save_states $GCM_CUBE rpcs3_loaded_another_state
+  wait_for $STEP_SECONDS gcm_cube_spins
+  log ok "$GCM_CUBE spins again after loading its save state"
   home_menu_follows_left_stick
   log ok "the left stick moves the selection in RPCS3's Home menu"
   leave_game $GCM_CUBE

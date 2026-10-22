@@ -8,3 +8,5 @@ Miscellaneous:
   Start games in fullscreen mode: true
   Exit RPCS3 when process finishes: true
   Pause emulation on RPCS3 focus loss: false
+Savestate:
+  Compatible Savestate Mode: true
