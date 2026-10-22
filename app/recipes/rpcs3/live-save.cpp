@@ -363,8 +363,8 @@ namespace
 				{
 					std::lock_guard lock(lv2_obj::g_mutex);
 					if (!std::ranges::contains(threads_to_sleep, &ppu)) prepare_replay(ppu);
+					ppu.state -= cpu_flag::suspend;
 				}
-				ppu.state -= cpu_flag::suspend;
 				if (ppu.optional_savestate_state->data.empty()) ppu.optional_savestate_state->clear();
 				ppu.optional_savestate_state->set_reading_state();
 				ppu.loaded_from_savestate = true;
@@ -372,18 +372,20 @@ namespace
 				g_fxo->get<ppu_interpreter_rt>().decode(op)(ppu, {op}, vm::_ptr<u32>(syscall), &step_return);
 				ppu.prio.raw().preserve_bit = 0;
 				ppu.loaded_from_savestate = false;
+				bool replay_parked;
 				{
 					std::lock_guard lock(lv2_obj::g_mutex);
 					note_replay_sleep(ppu);
+					replay_parked = parked(ppu);
+					if (!replay_parked) ppu.state += cpu_flag::suspend;
 				}
-				if (parked(ppu))
+				if (replay_parked)
 				{
 					std::memcpy(&ppu.gpr[3], ppu.syscall_args, sizeof(ppu.syscall_args));
 					ppu.cia = syscall;
 					return true;
 				}
 				ppu.optional_savestate_state->clear();
-				ppu.state += cpu_flag::suspend;
 				ppu.check_state();
 				ppu.cmd_push({ppu_cmd::cia_call, 0});
 				return true;
@@ -452,12 +454,12 @@ namespace
 		{
 			std::lock_guard lock(lv2_obj::g_mutex);
 			scheduler_ready.release(false);
-		}
-		std::atomic_ref{replays_running}.store(true);
-		for (ppu_thread* ppu : replaying)
-		{
-			ppu->state -= cpu_flag::stop + cpu_flag::again + cpu_flag::suspend + cpu_flag::signal;
-			ppu->state.notify_one();
+			std::atomic_ref{replays_running}.store(true);
+			for (ppu_thread* ppu : replaying)
+			{
+				ppu->state -= cpu_flag::stop + cpu_flag::again + cpu_flag::suspend + cpu_flag::signal;
+				ppu->state.notify_one();
+			}
 		}
 		wait_for_replays_to_sleep();
 		std::atomic_ref{replays_running}.store(false);
