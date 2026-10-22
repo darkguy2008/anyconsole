@@ -147,6 +147,8 @@ namespace
 	constexpr auto measured_blocking_hle_call = 3070ms;
 	constexpr auto blocked_save_deadline = 3 * measured_blocking_hle_call;
 	constexpr int graceful_shutdown_event_poll_ms = 5;
+	constexpr std::string_view unrestorable_mount = "/app_home/";
+	constexpr std::string_view host_root_mount = "/host_root/";
 	std::vector<std::pair<shared_ptr<named_thread<spu_thread>>, u32>> paused_spus;
 	std::vector<u32> stopped_threads;
 	std::vector<u32> executing_threads;
@@ -741,6 +743,11 @@ namespace
 
 		const std::string& boot = Emu.GetBoot();
 		const std::string& title_id = Emu.GetTitleID();
+		const auto restorable = [&boot]
+		{
+			std::string mapped = vfs::retrieve(boot);
+			return mapped.starts_with(unrestorable_mount) ? std::string{host_root_mount} + boot : mapped;
+		};
 		if (boot.starts_with(iso_device::virtual_device_name + "/"))
 		{
 			const auto device = ensure(fs::get_virtual_device(iso_device::virtual_device_name + "/"));
@@ -750,13 +757,13 @@ namespace
 		else if (auto dir = vfs::get("/dev_bdvd/PS3_GAME"); fs::is_dir(dir) && !fs::is_file(fs::get_parent_dir(dir) + "/PS3_DISC.SFB"))
 		{
 			ensure(vfs::unmount("/dev_bdvd/PS3_GAME"));
-			ar(vfs::retrieve(boot));
+			ar(restorable());
 			ar(vfs::retrieve(Emu.disc));
 			ensure(vfs::mount("/dev_bdvd/PS3_GAME", dir));
 		}
 		else
 		{
-			ar(vfs::retrieve(boot));
+			ar(restorable());
 			ar(!title_id.empty() && !vfs::get("/dev_bdvd").empty() ? title_id : vfs::retrieve(Emu.disc));
 		}
 		ar(Emu.klic.empty() ? std::array<u8, 16>{} : std::bit_cast<std::array<u8, 16>>(Emu.klic[0]));
