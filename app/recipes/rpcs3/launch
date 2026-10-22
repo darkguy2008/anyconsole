@@ -57,6 +57,7 @@ game_database
 follow_resolution &
 awk -v output="$OUTPUT" 'BEGIN { split(output, size, "x"); print "Setting aspect ratio to " size[1] / size[2] }' >&2
 export STATE_PREFIX STATE_SUFFIX
+mkfifo "$LIVE_SAVE_COMMANDS"
 exec 3<&0
 RESUME_SLOT= rewind /opt/rpcs3/control $SAVE_SLOT $LOAD_SLOT "$STATE_SUFFIX" <&3 &
 set -- "${1%/"$SFO"}"
