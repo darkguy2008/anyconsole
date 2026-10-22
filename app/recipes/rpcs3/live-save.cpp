@@ -1028,7 +1028,7 @@ namespace
 		return true;
 	}
 
-	bool refused()
+	bool decoding()
 	{
 		if (check_if_vdec_contexts_exist())
 		{
@@ -1040,6 +1040,12 @@ namespace
 			std::fprintf(stderr, "live-save: refused, demuxer contexts exist\n");
 			return true;
 		}
+		return false;
+	}
+
+	bool refused()
+	{
+		if (decoding()) return true;
 		if (unknown_helpers()) return true;
 		if (!g_fxo->get<hle_locks_t>().lock_val.compare_and_swap_test(0, hle_locks_t::waiting_for_evaluation))
 		{
@@ -1082,7 +1088,7 @@ namespace
 	{
 		if (capture_reaper.joinable()) capture_reaper.join();
 		wait_until_booted();
-		if (helpers_missing()) return;
+		if (helpers_missing() || decoding()) return;
 		auto pending = std::make_shared<fs::pending_file>(path);
 		if (!pending->file)
 		{
